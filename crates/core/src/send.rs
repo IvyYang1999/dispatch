@@ -67,7 +67,7 @@ pub fn resolve(query: &str) -> Result<Session> {
         });
     }
     let ql = q.to_lowercase();
-    let mut hits: Vec<&Session> = all.iter().filter(|s| s.id.starts_with(&ql)).collect();
+    let mut hits: Vec<&Session> = all.iter().filter(|s| s.id.to_lowercase().starts_with(&ql)).collect();
     if hits.is_empty() {
         hits = all.iter().filter(|s| s.name.as_deref().map(|n| n.to_lowercase().contains(&ql)).unwrap_or(false)).collect();
     }
@@ -125,6 +125,38 @@ fn send_codex(store: &Store, req: &Request, letter: &mut Letter, report: impl Fn
     }
 }
 
+/// The Grok Bot branch: a direct message through the app's gateway, driven by `gbot`. There is
+/// no hook to fall back on, so anything short of a confirmed send stays in the store as queued.
+fn send_grok(store: &Store, req: &Request, letter: &mut Letter, report: impl Fn(&str, String) -> Report) -> Result<Report> {
+    let st = crate::grok::state();
+    let blocked = if !st.app {
+        Some(("no Grok Bot app", t("reach.grok_noapp")))
+    } else if !st.signed_in {
+        Some(("Grok Bot not signed in", t("reach.grok_nologin")))
+    } else if st.cli.is_none() {
+        Some(("gbot not installed", t("reach.grok_nocli")))
+    } else {
+        None
+    };
+    if let Some((why, text)) = blocked {
+        store.append_run(&letter.id, "grok", "skipped", why)?;
+        return Ok(report("stored", t("send.grok_blocked").replace("{why}", text)));
+    }
+    let target = st.bot(&req.to.id).map(|b| b.name.clone()).unwrap_or_else(|| req.to.display_name());
+    let text = envelope(letter);
+    match crate::grok::send(&target, &text) {
+        Ok(out) => {
+            store.set_status(letter, store::DELIVERED_GROK)?;
+            store.append_run(&letter.id, "grok", "sent", out.message_id.as_deref().unwrap_or(&out.detail))?;
+            Ok(report("inbox", t("send.grok_sent").replace("{id}", out.message_id.as_deref().unwrap_or("?"))))
+        }
+        Err(e) => {
+            store.append_run(&letter.id, "grok", "failed", &format!("{e:#}"))?;
+            Ok(report("stored", t("send.grok_failed").replace("{err}", &format!("{e:#}"))))
+        }
+    }
+}
+
 pub fn send(store: &Store, req: Request) -> Result<Report> {
     let mut letter = Letter {
         id: uuid::Uuid::new_v4().to_string(),
@@ -147,6 +179,9 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
 
     if req.to.harness == crate::model::Harness::Codex {
         return send_codex(store, &req, &mut letter, report);
+    }
+    if req.to.harness == crate::model::Harness::Grok {
+        return send_grok(store, &req, &mut letter, report);
     }
 
     let Some(inbox) = claude::find_live(&req.to.id) else {

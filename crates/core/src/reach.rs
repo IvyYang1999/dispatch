@@ -70,7 +70,20 @@ pub fn decide(s: &Session, hook_installed: bool) -> Reach {
                 Reach { level: Level::None, text: t("reach.codex_notloaded").into(), fix: Some("resume".into()) }
             }
         }
-        Harness::Grok => Reach { level: Level::None, text: t("reach.grok").into(), fix: None },
+        Harness::Grok => {
+            let st = crate::grok::state();
+            if !st.app {
+                Reach { level: Level::None, text: t("reach.grok_noapp").into(), fix: Some("install".into()) }
+            } else if !st.signed_in {
+                Reach { level: Level::None, text: t("reach.grok_nologin").into(), fix: Some("login".into()) }
+            } else if st.cli.is_none() {
+                Reach { level: Level::None, text: t("reach.grok_nocli").into(), fix: Some("gbot".into()) }
+            } else if let Some(e) = &st.error {
+                Reach { level: Level::None, text: t("reach.grok_offline").replace("{e}", e), fix: Some("online".into()) }
+            } else {
+                Reach { level: Level::Now, text: t("reach.grok_now").into(), fix: None }
+            }
+        }
         Harness::Human => Reach { level: Level::None, text: t("reach.human").into(), fix: None },
     }
 }

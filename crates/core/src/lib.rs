@@ -11,6 +11,7 @@
 pub mod claude;
 pub mod codex;
 pub mod discover;
+pub mod grok;
 pub mod hook;
 pub mod i18n;
 pub mod mcp;

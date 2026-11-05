@@ -80,14 +80,28 @@ fn open_url(url: &str) -> Result<(), String> {
     }
 }
 
-/// Open the session: a claude:// or codex:// link goes to the system; a terminal session
-/// comes back as a command for the user to run.
+fn open_app(name: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").args(["-a", name]).status();
+    #[cfg(not(target_os = "macos"))]
+    let status: std::io::Result<std::process::ExitStatus> = Err(std::io::Error::other("no app launcher"));
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(t("app.open_failed_status").replace("{url}", name).replace("{s}", &s.to_string())),
+        Err(e) => Err(t("app.open_failed").replace("{url}", name).replace("{e}", &e.to_string())),
+    }
+}
+
+/// Open the session: a claude:// or codex:// link goes to the system; a Grok bot brings its
+/// app forward; a terminal session comes back as a command for the user to run.
 #[tauri::command]
 async fn open_session(id: String) -> Result<Value, String> {
     blocking(move || {
         let v = ops::open_session(&id).map_err(err)?;
         if v["kind"] == "url" {
             open_url(v["url"].as_str().unwrap_or(""))?;
+        } else if v["kind"] == "app" {
+            open_app(v["app"].as_str().unwrap_or(""))?;
         }
         Ok(v)
     })
@@ -119,6 +133,7 @@ async fn setup_status() -> Result<Value, String> {
         let plugin_installed = std::fs::read_to_string(plugins.join("installed_plugins.json")).map(|t| t.contains("dispatch@")).unwrap_or(false)
             || std::fs::read_dir(&plugins).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().contains("dispatch"))).unwrap_or(false);
         let codex = dispatch_core::codex::state();
+        let grok = dispatch_core::grok::state();
         Ok(json!({
             "hook_installed": hook::installed(),
             "binary": bin.is_file().then(|| bin.to_string_lossy().to_string()),
@@ -126,6 +141,11 @@ async fn setup_status() -> Result<Value, String> {
             "codex": dispatch_core::codex::executable().map(|p| p.to_string_lossy().to_string()),
             "codex_daemon": codex.daemon,
             "codex_loaded": codex.loaded.len(),
+            "grok_app": grok.app,
+            "grok_signed_in": grok.signed_in,
+            "gbot": grok.cli.map(|p| p.to_string_lossy().to_string()),
+            "grok_bots": grok.bots.len(),
+            "grok_error": grok.error,
             "store_root": Store::open().root().to_string_lossy(),
             "claude_plugin": plugin_installed,
             "version": env!("CARGO_PKG_VERSION"),

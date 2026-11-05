@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 pub const UNREAD: &str = "未读";
 pub const DELIVERED_INBOX: &str = "已送达（直投）";
 pub const DELIVERED_CODEX: &str = "已送达（Codex 已入队）";
+pub const DELIVERED_GROK: &str = "已送达（Grok 直投）";
 pub const READ_BY_HOOK: &str = "已读（hook代标）";
 pub const REPLIED: &str = "已回复";
 pub const URGENCY_NORMAL: &str = "普通";

@@ -74,6 +74,8 @@ enum Cmd {
     Whoami,
     /// What this machine's Codex can do right now: CLI, daemon, loaded threads
     Codex,
+    /// What this machine's Grok Bot can do right now: app, sign-in, gbot, the bots
+    Grok,
     /// Put the binary at ~/.dispatch/bin/dispatch, install the hook from there, register with Codex
     Install,
     /// Print the store folder
@@ -154,6 +156,19 @@ fn run() -> Result<i32> {
                     }
                     Err(e) => println!("{}", t("cli.appserver_failed").replace("{e}", &format!("{e:#}"))),
                 }
+            }
+        }
+        Cmd::Grok => {
+            let s = dispatch_core::grok::state_now();
+            println!("{}", t("cli.grok_app").replace("{v}", if s.app { t("cli.yes") } else { t("cli.no") }));
+            println!("{}", t("cli.grok_login").replace("{v}", if s.signed_in { t("cli.yes") } else { t("cli.no") }));
+            println!("{}", t("cli.grok_cli").replace("{v}", &s.cli.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| t("cli.no").to_string())));
+            if let Some(e) = &s.error {
+                println!("{}", t("cli.grok_error").replace("{e}", e));
+            }
+            println!("{}", t("cli.grok_bots").replace("{n}", &s.bots.len().to_string()));
+            for b in &s.bots {
+                println!("  {}  {}{}  {}", model::short_id(&b.id), b.name, if b.is_group { " (group)" } else { "" }, truncate(&b.description, 48));
             }
         }
         Cmd::Install => {

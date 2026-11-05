@@ -174,6 +174,30 @@ fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
     out
 }
 
+/// Grok Bot: the bots the signed-in app can reach through its gateway. They live in the cloud,
+/// so they are always "running"; the list itself is remembered for a minute in `grok::state`.
+fn discover_grok(now: i64) -> Vec<Session> {
+    let st = crate::grok::state();
+    st.bots
+        .iter()
+        .filter(|b| !b.is_group)
+        .map(|b| Session {
+            harness: Harness::Grok,
+            id: b.id.clone(),
+            short_id: short_id(&b.id),
+            name: Some(b.name.clone()),
+            cwd: None,
+            title: Some(b.description.clone()).filter(|d| !d.is_empty()),
+            last_active: now,
+            running: true,
+            desktop: true,
+            host_session_id: None,
+            status: Some("cloud".into()),
+            transcript: None,
+        })
+        .collect()
+}
+
 /// All recently active sessions on this machine, running ones first, newest first.
 /// Answered from a 3-second cache when one exists; `sessions_now` always looks again.
 pub fn sessions() -> Vec<Session> {
@@ -203,7 +227,7 @@ pub fn sessions_now() -> Vec<Session> {
     let codex_running = Regex::new(r"\bcodex\b").map(|re| re.is_match(&procs)).unwrap_or(false);
 
     let mut by_id: HashMap<String, Session> = HashMap::new();
-    for s in discover_claude(&running_ids, now).into_iter().chain(discover_codex(codex_running, now)) {
+    for s in discover_claude(&running_ids, now).into_iter().chain(discover_codex(codex_running, now)).chain(discover_grok(now)) {
         match by_id.get_mut(&s.id) {
             Some(prev) => {
                 // a session can appear under several project slugs after a cwd change

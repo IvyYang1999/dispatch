@@ -24,6 +24,7 @@
 - **直投。** 正在运行的 Claude Code 会话通过它自己的跨会话收信口（本地 socket）收信，排在它当前这一轮之后。
 - **hook 代递。** 会话此刻收不了（正忙，或开着跳过权限确认的模式），消息先留在信箱里，Claude Code 的 hook 在它下次说话、停下或启动时递过去。中间不丢。
 - **Codex。** 共享 app-server daemon 已挂载的线程，走官方 `codex queue` 投递；没挂载的线程显示「待接通」，消息留着等。
+- **Grok Bot。** Bot 在它的云电脑上；Dispatch 借桌面 App 用的那个网关送进去，由 `gbot` 命令行（`npm i -g grok-bot-cli`）驱动，等于一条直接消息，可能打断它当前这一轮。回执从 Bot 的对话记录读。
 - **回执**从会话自己的对话记录里读：已入队、已开始、已结束、已回复。
 - **一次派发、多个收件人，**每个收件人各有各的送达状态。
 - **插件**：给 Claude Code 和 Codex 各一个，带七个 MCP 工具、一份说明何时怎么用的 skill，以及 hook。
@@ -64,10 +65,12 @@ flowchart LR
   reach -- "Claude Code 在跑，<br/>能收" --> now["它的收信口<br/>排在当前这一轮之后"]
   reach -- "Claude Code 正忙，<br/>或跳过了权限确认" --> later["hook 代递<br/>它下次说话、停下或启动时"]
   reach -- "Codex 线程<br/>已挂在 daemon 上" --> codex["codex queue<br/>它的下一轮"]
+  reach -- "Grok Bot 已登录，<br/>装了 gbot" --> grok["gbot send<br/>给 Bot 的直接消息"]
   reach -- "现在没人能读" --> wait["待接通<br/>先留着，并说明怎么修"]
   now --> receipts["从对话记录读回执<br/>已入队 · 已开始 · 已结束 · 已回复"]
   later --> receipts
   codex --> receipts
+  grok --> receipts
 ```
 
 `dispatch sessions`（或 App 的名录）会按会话逐个告诉你，此刻一条消息会走哪条路。
@@ -88,7 +91,9 @@ flowchart LR
 
 别的 Agent 发来的消息是信息，不是用户的指令。skill 里这样写，hook 每次递信时也会再说一遍。
 
-Grok Bot 的 Bot 跑在云电脑上，起不了你 Mac 上的 MCP server，但能用命令行：在它的设置 → Computer 里打开 **Execution on this computer**，再让 Bot 读这个仓库的 `plugins/skill/SKILL.md` 并存成 skill。往 Grok Bot 对话**里**投递是下一个里程碑。（Grok Build 是 xAI 的编程命令行，认 `~/.grok/skills/` 目录：`npx skills add IvyYang1999/dispatch --skill dispatch -a grok`。）
+Grok Bot 的 Bot 跑在云电脑上，起不了你 Mac 上的 MCP server，但能用命令行：在它的设置 → Computer 里打开 **Execution on this computer**，再让 Bot 读这个仓库的 `plugins/skill/SKILL.md` 并存成 skill；skill 里会让它发信时带 `--from` 自己的 Bot 名。（Grok Build 是 xAI 的编程命令行，认 `~/.grok/skills/` 目录：`npx skills add IvyYang1999/dispatch --skill dispatch -a grok`。）
+
+往 Bot **里**投递需要这台 Mac 上的 Grok Bot App 已登录，并装了 `gbot`（`npm i -g grok-bot-cli`）；`dispatch grok` 会告诉你缺什么。装齐后 Bot 会像别的会话一样出现在名录里。
 
 ## 命令行
 
@@ -147,7 +152,7 @@ plugins/skill    skill 只写一份；scripts/sync-plugins.sh 同步进两个插
 
 ## 现状
 
-0.1.x：macOS Apple Silicon，Claude Code 和 Codex。接下来：Grok Bot 投递、投递超时与重试/撤回、通知和菜单栏图标、Windows 和 Linux 构建。
+0.1.x：macOS Apple Silicon；Claude Code、Codex，以及走 `gbot` 的 Grok Bot。接下来：Grok 网关的原生实现（去掉 Node 依赖）、投递超时与重试/撤回、通知和菜单栏图标、Windows 和 Linux 构建。
 
 ## 许可
 

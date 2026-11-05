@@ -60,6 +60,11 @@ export interface SetupStatus {
   codex: string | null
   codex_daemon: boolean
   codex_loaded: number
+  grok_app: boolean
+  grok_signed_in: boolean
+  gbot: string | null
+  grok_bots: number
+  grok_error: string | null
   store_root: string
   claude_plugin: boolean
   version: string
@@ -72,8 +77,9 @@ export interface UpdateCheck {
   date?: string | null
 }
 export interface OpenResult {
-  kind: 'url' | 'command'
+  kind: 'url' | 'command' | 'app'
   url?: string
+  app?: string
   command?: string
   cwd?: string | null
   exact: boolean

@@ -103,19 +103,21 @@ pub fn inbox(store: &Store, session: Option<&str>, all: bool) -> Result<Value> {
         None => claude::caller_session().map(|i| i.session_id).ok_or_else(|| anyhow!("no session given and the caller is not a Claude Code session"))?,
     };
     let letters = store.list(Some(&sid), !all)?;
+    let known: Vec<String> = discover::sessions().into_iter().filter(|s| s.harness == crate::model::Harness::Grok).map(|s| s.id).collect();
     let rows: Vec<Value> = letters
         .iter()
-        .map(|l| json!({ "id": l.id, "short_id": short_id(&l.id), "dispatch_id": l.dispatch_id, "from": l.from, "from_name": l.from_name, "status": l.status, "created": l.created, "urgency": l.urgency, "body": l.body, "path": l.path, "can_reply": is_uuid(&l.from) }))
+        .map(|l| json!({ "id": l.id, "short_id": short_id(&l.id), "dispatch_id": l.dispatch_id, "from": l.from, "from_name": l.from_name, "status": l.status, "created": l.created, "urgency": l.urgency, "body": l.body, "path": l.path, "can_reply": is_uuid(&l.from) || known.iter().any(|k| k.eq_ignore_ascii_case(&l.from)) }))
         .collect();
     Ok(json!({ "session_id": sid, "unread_only": !all, "count": rows.len(), "messages": rows }))
 }
 
 pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
     let mut orig = store.find(id)?.ok_or_else(|| anyhow!("no message whose id starts with \"{id}\""))?;
-    if !is_uuid(&orig.from) {
-        return Err(anyhow!("the sender \"{}\" is not a session, so it cannot be replied to", orig.from));
-    }
-    let target = send::resolve(&orig.from)?;
+    // A session id (Claude, Codex) or a bot id (Grok) can be answered; "cli", "app" and names cannot.
+    let target = match send::resolve(&orig.from) {
+        Ok(s) if is_uuid(&orig.from) || s.harness == crate::model::Harness::Grok => s,
+        _ => return Err(anyhow!("the sender \"{}\" is not a session, so it cannot be replied to", orig.from)),
+    };
     let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false })?;
     store.set_status(&mut orig, store::REPLIED)?;
     store.append_run(&orig.id, "reply", "sent", &rep.letter_id)?;
@@ -128,6 +130,7 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
     let runs = store.runs(&c.id);
     let delivered_inbox = runs.iter().any(|r| r.action == "inbox" && r.result == "written");
     let queued_codex = runs.iter().any(|r| r.action == "codex" && r.result == "queued");
+    let sent_grok = runs.iter().find(|r| r.action == "grok" && r.result == "sent");
     let receipt = if delivered_inbox {
         claude::receipt(&c.to, None, &c.id).ok()
     } else if queued_codex {
@@ -136,6 +139,13 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
             crate::codex::Receipt::Started => claude::Receipt::Started,
             crate::codex::Receipt::Queued => claude::Receipt::Queued,
             crate::codex::Receipt::NotFound => claude::Receipt::NotFound,
+        })
+    } else if let Some(run) = sent_grok {
+        let message_id = Some(run.detail.as_str()).filter(|d| !d.is_empty() && !d.starts_with('{'));
+        // A direct message to a bot is not queued behind a turn: delivered, then answered or not.
+        Some(match crate::grok::receipt(&c.to, message_id, &short_id(&c.id)) {
+            crate::grok::Receipt::Answered => claude::Receipt::Completed { turn_id: String::new() },
+            crate::grok::Receipt::Delivered | crate::grok::Receipt::NotFound => claude::Receipt::NotFound,
         })
     } else {
         None
@@ -148,6 +158,7 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
         (_, store::READ_BY_HOOK) => (t("stage.delivered_hook"), "delivered"),
         (_, store::DELIVERED_INBOX) => (t("stage.delivered"), "delivered"),
         (_, store::DELIVERED_CODEX) => (t("stage.queued_codex"), "delivered"),
+        (_, store::DELIVERED_GROK) => (t("stage.delivered"), "delivered"),
         _ => (t("stage.queued"), "queued"),
     };
     let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "to": c.to, "to_name": c.to_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "path": c.path, "body": c.body });
@@ -216,6 +227,7 @@ pub fn open_session(session_id: &str) -> Result<Value> {
             Ok(json!({ "kind": "command", "command": format!("claude --resume {}", s.id), "cwd": s.cwd, "exact": false, "note": t("open.terminal_note") }))
         }
         crate::model::Harness::Codex => Ok(json!({ "kind": "url", "url": format!("codex://threads/{}", s.id), "exact": true })),
+        crate::model::Harness::Grok => Ok(json!({ "kind": "app", "app": "Grok Bot", "exact": false, "note": t("open.grok_note").replace("{name}", &s.display_name()) })),
         _ => Err(anyhow!("{}", t("open.unknown"))),
     }
 }

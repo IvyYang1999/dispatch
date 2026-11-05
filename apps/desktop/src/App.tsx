@@ -55,6 +55,7 @@ function useOpen() {
     try {
       const r: OpenResult = await api.openSession(id)
       if (r.kind === 'command') setNotice(`${r.note ?? ''}: ${r.command}`)
+      else if (r.kind === 'app' && r.note) setNotice(r.note)
       else setNotice(null)
     } catch (e) {
       setNotice(String(e))
@@ -379,6 +380,7 @@ function Settings() {
   const check = () => run('check', async () => { setUpd(await api.updateCheck()) })
   const cliText = st?.binary ? t('settings.cliInstalled', { p: st.binary }) : st?.bundled_cli ? t('settings.cliBundled') : t('settings.cliNone')
   const codexText = st?.codex ? (st.codex_daemon ? t('settings.codexDaemon', { p: st.codex, n: st.codex_loaded }) : t('settings.codexNoDaemon', { p: st.codex })) : t('settings.codexMissing')
+  const grokState = !st ? '' : !st.grok_app ? t('settings.grokMissing') : !st.grok_signed_in ? t('settings.grokSignIn') : !st.gbot ? t('settings.grokNoGbot') : st.grok_error ? t('settings.grokOffline', { e: st.grok_error }) : t('settings.grokReady', { n: st.grok_bots })
   return (
     <>
       <header className="bar" data-tauri-drag-region>
@@ -421,7 +423,7 @@ function Settings() {
           <div className="host">
             <div className="host__who">
               <span className="host__name">{t('settings.grok')}</span>
-              <span className="host__found">{t('settings.grokSub')}</span>
+              <span className="host__found">{grokState} {t('settings.grokSub')}</span>
             </div>
             <code className="cmd">{t('settings.grokCmd')}</code>
           </div>
