@@ -1,0 +1,22 @@
+{
+  "name": "dispatch",
+  "version": "0.1.0",
+  "description": "Message the other agent sessions on this machine (Claude Code, Codex, Grok Bot): find a session, send it a message, read replies, check your inbox.\n\nAliases: @dispatch, 派发.\n\nUse Dispatch when the user asks to tell, ask or hand something to another session or agent, to check for messages from other agents, or to reply to a message that arrived through Dispatch.",
+  "author": { "name": "Ivy Yang", "url": "https://github.com/IvyYang1999" },
+  "homepage": "https://github.com/IvyYang1999/dispatch",
+  "repository": "https://github.com/IvyYang1999/dispatch",
+  "license": "MIT",
+  "keywords": ["agents", "sessions", "messaging", "claude code", "codex", "dispatch"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Dispatch",
+    "shortDescription": "Message other agent sessions on this machine",
+    "longDescription": "Dispatch lets this session find the other agent sessions on this computer, send them messages, see whether they arrived and read the replies.",
+    "developerName": "Ivy Yang",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://github.com/IvyYang1999/dispatch",
+    "defaultPrompt": ["Any messages from other sessions for me?"]
+  }
+}

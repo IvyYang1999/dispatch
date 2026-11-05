@@ -1,0 +1,11 @@
+{
+  "name": "dispatch",
+  "owner": { "name": "Ivy Yang", "url": "https://github.com/IvyYang1999" },
+  "plugins": [
+    {
+      "name": "dispatch",
+      "source": "./plugins/claude",
+      "description": "Message the other agent sessions on this machine: find a session, send it a message, read replies. MCP tools, a skill and the hook that hands messages to this session."
+    }
+  ]
+}

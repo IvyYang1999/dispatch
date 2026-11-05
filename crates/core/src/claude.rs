@@ -117,6 +117,32 @@ pub fn find_live(session_id: &str) -> Option<LiveInbox> {
     live_records().into_iter().find(|r| r.session_id == want)
 }
 
+/// The live record for a process id, if that process is a Claude Code session.
+pub fn session_for_pid(pid: i32) -> Option<LiveInbox> {
+    live_records().into_iter().find(|r| r.pid == pid)
+}
+
+fn parent_of(pid: i32) -> Option<i32> {
+    let out = std::process::Command::new("ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// The Claude Code session this process was started by (an MCP server or a hook is its
+/// child, sometimes through a shell): walk up the parents until one has a live record.
+pub fn caller_session() -> Option<LiveInbox> {
+    let mut pid = std::os::unix::process::parent_id() as i32;
+    for _ in 0..6 {
+        if pid <= 1 {
+            return None;
+        }
+        if let Some(r) = session_for_pid(pid) {
+            return Some(r);
+        }
+        pid = parent_of(pid)?;
+    }
+    None
+}
+
 /// Is the session's process alive at all (with or without an inbox)?
 pub fn is_running(session_id: &str) -> bool {
     let want = session_id.to_lowercase();

@@ -63,6 +63,12 @@ enum Cmd {
         #[command(subcommand)]
         cmd: HookCmd,
     },
+    /// Serve MCP over stdio (what the plugins start)
+    Mcp,
+    /// Who am I, as the session that started this process sees it
+    Whoami,
+    /// Put the binary at ~/.dispatch/bin/dispatch, install the hook from there, register with Codex
+    Install,
     /// Print the store folder
     Where,
 }
@@ -113,6 +119,37 @@ fn run() -> Result<i32> {
     match cli.cmd {
         Cmd::Where => {
             println!("{}", st.root().display());
+        }
+        Cmd::Mcp => {
+            dispatch_core::mcp::serve(&st);
+        }
+        Cmd::Whoami => {
+            println!("{}", serde_json::to_string_pretty(&dispatch_core::ops::whoami())?);
+        }
+        Cmd::Install => {
+            let home = model::home_dir();
+            let bin_dir = home.join(".dispatch").join("bin");
+            std::fs::create_dir_all(&bin_dir)?;
+            let target = bin_dir.join("dispatch");
+            let me = std::env::current_exe()?;
+            if me != target {
+                let tmp = bin_dir.join(".dispatch.tmp");
+                std::fs::copy(&me, &tmp)?;
+                std::fs::rename(&tmp, &target)?;
+            }
+            println!("二进制：{}", target.display());
+            hook::install(&target.to_string_lossy())?;
+            println!("Claude Code hook：已装（指向上面的二进制）");
+            if let Ok(out) = std::process::Command::new("codex").args(["mcp", "add", "dispatch", "--", &target.to_string_lossy(), "mcp"]).output() {
+                if out.status.success() {
+                    println!("Codex MCP：已注册 `dispatch`（codex mcp list 可见）");
+                } else {
+                    println!("Codex MCP：注册失败：{}", String::from_utf8_lossy(&out.stderr).trim());
+                }
+            } else {
+                println!("Codex：本机没找到 codex 命令，跳过");
+            }
+            println!("Claude Code 插件（MCP + skill + hook）：claude plugin marketplace add IvyYang1999/dispatch && claude plugin install dispatch@dispatch");
         }
         Cmd::Sessions { json, all } => {
             let hook_on = hook::installed();
@@ -194,32 +231,17 @@ fn run() -> Result<i32> {
             }
         }
         Cmd::Status { id, json } => {
-            let l = st.find(&id)?.ok_or_else(|| anyhow!("没有 id 以「{id}」开头的消息"))?;
-            let copies = st.copies(&l.dispatch_id)?;
-            let mut rows = vec![];
-            for c in &copies {
-                let runs = st.runs(&c.id);
-                let delivered_inbox = runs.iter().any(|r| r.action == "inbox" && r.result == "written");
-                let receipt = if delivered_inbox { claude::receipt(&c.to, None, &c.id).ok() } else { None };
-                let stage = match (&receipt, c.status.as_str()) {
-                    (_, store::REPLIED) => "已回复".to_string(),
-                    (Some(claude::Receipt::Completed { .. }), _) => "本轮结束".into(),
-                    (Some(claude::Receipt::Started), _) => "处理中".into(),
-                    (Some(claude::Receipt::Queued), _) => "已送达（排在本轮之后）".into(),
-                    (_, store::READ_BY_HOOK) => "已送达（hook 递的）".into(),
-                    (_, store::DELIVERED_INBOX) => "已送达".into(),
-                    _ => "排队中".into(),
-                };
-                if !json {
-                    println!("{} → {} ({}): {}\n    文件 {}", c.from_name, c.to_name, model::short_id(&c.to), stage, c.path);
-                    for r in &runs {
-                        println!("    {} {} {} {}", &r.at[11..19.min(r.at.len())], r.action, r.result, r.detail);
+            let v = dispatch_core::ops::status(&st, &id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                for c in v["copies"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                    println!("{} → {} ({}): {}\n    文件 {}", c["from_name"].as_str().unwrap_or(""), c["to_name"].as_str().unwrap_or(""), model::short_id(c["to"].as_str().unwrap_or("")), c["stage"].as_str().unwrap_or(""), c["path"].as_str().unwrap_or(""));
+                    for r in c["runs"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                        let at = r["at"].as_str().unwrap_or("");
+                        println!("    {} {} {} {}", at.get(11..19).unwrap_or(at), r["action"].as_str().unwrap_or(""), r["result"].as_str().unwrap_or(""), r["detail"].as_str().unwrap_or(""));
                     }
                 }
-                rows.push(serde_json::json!({ "letter": c, "stage": stage, "runs": runs }));
-            }
-            if json {
-                println!("{}", serde_json::to_string_pretty(&rows)?);
             }
         }
         Cmd::Hook { cmd } => match cmd {

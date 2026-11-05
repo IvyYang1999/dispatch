@@ -1,0 +1,10 @@
+{
+  "name": "dispatch",
+  "version": "0.1.0",
+  "description": "Message the other agent sessions on this machine (Claude Code, Codex, Grok Bot): find a session, send it a message, read replies, check your inbox. Adds the dispatch_* MCP tools, a skill that says when and how to use them, and the hook that hands waiting messages to this session.",
+  "author": { "name": "Ivy Yang", "url": "https://github.com/IvyYang1999" },
+  "homepage": "https://github.com/IvyYang1999/dispatch",
+  "repository": "https://github.com/IvyYang1999/dispatch",
+  "license": "MIT",
+  "keywords": ["agents", "sessions", "messaging", "codex", "dispatch"]
+}

@@ -10,7 +10,9 @@
 pub mod claude;
 pub mod discover;
 pub mod hook;
+pub mod mcp;
 pub mod model;
+pub mod ops;
 pub mod reach;
 pub mod send;
 pub mod store;

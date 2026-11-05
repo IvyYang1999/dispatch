@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "dispatch": {
+      "command": "./bin/dispatch",
+      "args": ["mcp"],
+      "cwd": ".",
+      "env_vars": ["HOME", "DISPATCH_BIN", "DISPATCH_HOME"]
+    }
+  }
+}

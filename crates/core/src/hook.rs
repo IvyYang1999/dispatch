@@ -32,7 +32,8 @@ pub fn installed() -> bool {
     EVENTS.iter().all(|ev| v.pointer(&format!("/hooks/{ev}")).and_then(|a| a.as_array()).map(|a| a.iter().any(is_ours)).unwrap_or(false))
 }
 
-/// Add the three entries (idempotent). Backs the settings file up first.
+/// Add the three entries, replacing any earlier ones of ours (so the hook follows the
+/// binary when it moves). Backs the settings file up first.
 pub fn install(bin: &str) -> Result<()> {
     let path = claude_home().join("settings.json");
     let mut v: Value = match fs::read_to_string(&path) {
@@ -48,9 +49,7 @@ pub fn install(bin: &str) -> Result<()> {
     for ev in EVENTS {
         let arr = hooks.entry(ev).or_insert(json!([]));
         let arr = arr.as_array_mut().context("hook list is not an array")?;
-        if arr.iter().any(is_ours) {
-            continue;
-        }
+        arr.retain(|e| !is_ours(e));
         arr.push(json!({ "hooks": [{ "type": "command", "command": command_for(bin), "timeout": 20 }] }));
     }
     fs::create_dir_all(claude_home())?;

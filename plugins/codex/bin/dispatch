@@ -1,0 +1,9 @@
+#!/bin/sh
+# Launcher the plugins use: find the dispatch binary wherever it was installed and exec it.
+# Order: $DISPATCH_BIN, ~/.dispatch/bin, ~/.cargo/bin, Homebrew, /usr/local, PATH, a dev checkout.
+for c in "$DISPATCH_BIN" "$HOME/.dispatch/bin/dispatch" "$HOME/.cargo/bin/dispatch" /opt/homebrew/bin/dispatch /usr/local/bin/dispatch "$HOME/developer/dispatch/target/release/dispatch"; do
+  if [ -n "$c" ] && [ -x "$c" ]; then exec "$c" "$@"; fi
+done
+if command -v dispatch >/dev/null 2>&1; then exec dispatch "$@"; fi
+echo "dispatch: binary not found. Install it (see https://github.com/IvyYang1999/dispatch) or set DISPATCH_BIN." >&2
+exit 127
