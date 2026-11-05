@@ -116,25 +116,87 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
     Ok(json!({ "replied_to": orig.id, "to": { "id": target.id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail }))
 }
 
+/// One recipient copy with its stage: the store's status plus, after a direct delivery, the transcript's receipt.
+/// `kind` is the coarse state the UI colors by: queued, delivered, working, replied, failed.
+fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
+    let runs = store.runs(&c.id);
+    let delivered_inbox = runs.iter().any(|r| r.action == "inbox" && r.result == "written");
+    let receipt = if delivered_inbox { claude::receipt(&c.to, None, &c.id).ok() } else { None };
+    let (stage, kind) = match (&receipt, c.status.as_str()) {
+        (_, store::REPLIED) => ("已回复", "replied"),
+        (Some(claude::Receipt::Completed { .. }), _) => ("本轮结束", "replied"),
+        (Some(claude::Receipt::Started), _) => ("处理中", "working"),
+        (Some(claude::Receipt::Queued), _) => ("已送达（排在本轮之后）", "delivered"),
+        (_, store::READ_BY_HOOK) => ("已送达（hook 递的）", "delivered"),
+        (_, store::DELIVERED_INBOX) => ("已送达", "delivered"),
+        _ => ("排队中", "queued"),
+    };
+    let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "to": c.to, "to_name": c.to_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "path": c.path, "body": c.body });
+    if with_runs {
+        v["runs"] = json!(runs);
+    }
+    v
+}
+
 /// Where a message stands: its copies, each with a stage read from the store and the transcript.
 pub fn status(store: &Store, id: &str) -> Result<Value> {
     let l = store.find(id)?.ok_or_else(|| anyhow!("no message whose id starts with \"{id}\""))?;
     let copies = store.copies(&l.dispatch_id)?;
-    let mut rows = vec![];
-    for c in &copies {
-        let runs = store.runs(&c.id);
-        let delivered_inbox = runs.iter().any(|r| r.action == "inbox" && r.result == "written");
-        let receipt = if delivered_inbox { claude::receipt(&c.to, None, &c.id).ok() } else { None };
-        let stage = match (&receipt, c.status.as_str()) {
-            (_, store::REPLIED) => "已回复",
-            (Some(claude::Receipt::Completed { .. }), _) => "本轮结束",
-            (Some(claude::Receipt::Started), _) => "处理中",
-            (Some(claude::Receipt::Queued), _) => "已送达（排在本轮之后）",
-            (_, store::READ_BY_HOOK) => "已送达（hook 递的）",
-            (_, store::DELIVERED_INBOX) => "已送达",
-            _ => "排队中",
-        };
-        rows.push(json!({ "letter_id": c.id, "from_name": c.from_name, "to": c.to, "to_name": c.to_name, "status": c.status, "stage": stage, "created": c.created, "path": c.path, "runs": runs }));
-    }
+    let rows: Vec<Value> = copies.iter().map(|c| copy_json(store, c, true)).collect();
     Ok(json!({ "dispatch_id": l.dispatch_id, "copies": rows }))
+}
+
+/// The feed: every dispatch (one message, its recipients), newest first.
+pub fn feed(store: &Store, limit: usize) -> Result<Value> {
+    let letters = store.list(None, false)?;
+    let mut order: Vec<String> = vec![];
+    let mut groups: std::collections::HashMap<String, Vec<&store::Letter>> = std::collections::HashMap::new();
+    for l in &letters {
+        let g = groups.entry(l.dispatch_id.clone()).or_default();
+        if g.is_empty() {
+            order.push(l.dispatch_id.clone());
+        }
+        g.push(l);
+    }
+    let mut out = vec![];
+    for did in order.into_iter().take(limit) {
+        let mut copies: Vec<&store::Letter> = groups[&did].clone();
+        copies.sort_by(|a, b| a.created.cmp(&b.created).then(a.path.cmp(&b.path)));
+        // The oldest copy is the sender's; the copies it sent are the recipients, the rest are replies
+        // (a reply shares the dispatch id and goes back to the sender).
+        let first = copies[0];
+        let sender = first.from.clone();
+        let (sent, replies): (Vec<&store::Letter>, Vec<&store::Letter>) = copies.iter().partition(|c| c.from == sender);
+        let recipients: Vec<Value> = sent
+            .iter()
+            .map(|c| {
+                let mut v = copy_json(store, c, false);
+                if let Some(r) = replies.iter().find(|r| r.from == c.to) {
+                    v["reply"] = json!({ "letter_id": r.id, "body": r.body, "created": r.created, "status": r.status });
+                    if v["kind"] != "replied" {
+                        v["kind"] = json!("replied");
+                        v["stage"] = json!("已回复");
+                    }
+                }
+                v
+            })
+            .collect();
+        out.push(json!({ "dispatch_id": did, "from": sender, "from_name": first.from_name, "created": first.created, "urgency": first.urgency, "text": first.body, "recipients": recipients }));
+    }
+    Ok(json!({ "count": out.len(), "dispatches": out }))
+}
+
+/// How to open a session on this machine: a URL the system opens, or a command to copy.
+pub fn open_session(session_id: &str) -> Result<Value> {
+    let s = send::resolve(session_id)?;
+    match s.harness {
+        crate::model::Harness::Claude => {
+            if let Some(host) = s.host_session_id.as_deref().filter(|_| s.desktop) {
+                return Ok(json!({ "kind": "url", "url": format!("claude://code/continue?session={host}"), "exact": true }));
+            }
+            Ok(json!({ "kind": "command", "command": format!("claude --resume {}", s.id), "cwd": s.cwd, "exact": false, "note": "终端会话：在它的目录里运行这条命令就回到它" }))
+        }
+        crate::model::Harness::Codex => Ok(json!({ "kind": "url", "url": format!("codex://threads/{}", s.id), "exact": true })),
+        _ => Err(anyhow!("这种会话还不知道怎么打开")),
+    }
 }

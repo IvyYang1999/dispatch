@@ -50,11 +50,27 @@ Messages live under `~/Library/Application Support/Dispatch/messages`
 (`DISPATCH_HOME` overrides it), one Markdown file per recipient, plus a
 delivery log per message under `runs/`.
 
+## Desktop app
+
+A Tauri 2 shell over the same core: the feed of dispatches (one row per
+dispatch, a status dot per recipient, the thread and delivery log on the
+right), the directory of sessions with how a message would reach each, a
+composer whose recipient box is the finder, and settings with the one-click
+installs. Every recipient has an "open session" button.
+
+```
+cd apps/desktop
+npm install
+npm run tauri dev      # develop
+npm run tauri build    # a .app / installer under target/release/bundle
+```
+
 ## Layout
 
 ```
-crates/core      dispatch-core: discovery, delivery, store, receipts, hook, MCP server
+crates/core      dispatch-core: discovery, delivery, store, receipts, hook, MCP server, ops
 crates/cli       dispatch: the command line and the MCP entry point
+apps/desktop     the Tauri 2 + React desktop app (src-tauri = Rust commands over core, src = the screens)
 plugins/claude   Claude Code plugin (.mcp.json, hooks/hooks.json, skills/dispatch)
 plugins/codex    Codex plugin (.codex-plugin/plugin.json, .mcp.json, skills/dispatch)
 plugins/skill    the skill, written once; scripts/sync-plugins.sh copies it into both
