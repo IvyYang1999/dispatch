@@ -1,0 +1,20 @@
+[package]
+name = "dispatch-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Find a local agent session and deliver a message into it"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+chrono = "0.4"
+anyhow = "1"
+dirs = "6"
+sha2 = "0.10"
+hex = "0.4"
+libc = "0.2"
+walkdir = "2"
+regex = "1"
