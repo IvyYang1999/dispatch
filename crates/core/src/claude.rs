@@ -303,12 +303,27 @@ pub fn queued(session_id: &str, cwd: Option<&str>, msg_id: &str, text: &str, tim
     }
 }
 
+/// Modes already read, keyed by transcript path, valid while the file's mtime and size hold.
+static MODES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (i64, u64, Option<String>)>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// The permission mode of the session's latest turn, as its transcript records it.
+/// Every turn writes it, so the last half megabyte is enough.
 pub fn mode(session_id: &str, cwd: Option<&str>) -> Option<String> {
     let file = transcript_path(session_id, cwd)?;
-    let tail = read_tail(&file, 4 * 1024 * 1024).ok()?;
+    let md = fs::metadata(&file).ok()?;
+    let mtime = md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
+    let size = md.len();
+    if let Some((m, s, mode)) = MODES.lock().unwrap().get(&file) {
+        if *m == mtime && *s == size {
+            return mode.clone();
+        }
+    }
+    let tail = read_tail(&file, 512 * 1024).ok()?;
     let re = regex::Regex::new(r#""permissionMode":"([A-Za-z]+)""#).ok()?;
-    re.captures_iter(&tail).last().map(|c| c[1].to_string())
+    let mode = re.captures_iter(&tail).last().map(|c| c[1].to_string());
+    MODES.lock().unwrap().insert(file, (mtime, size, mode.clone()));
+    mode
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

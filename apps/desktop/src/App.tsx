@@ -75,7 +75,7 @@ function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
   }, [])
   useEffect(() => {
     load()
-    const t = setInterval(load, 4000)
+    const t = setInterval(load, 5000)
     return () => clearInterval(t)
   }, [load])
 
@@ -94,8 +94,8 @@ function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
 
   return (
     <>
-      <header className="bar">
-        <span className="bar__title">派发</span>
+      <header className="bar" data-tauri-drag-region>
+        <span className="bar__title" data-tauri-drag-region>派发</span>
         <span className="tabs">
           <button className="tab" data-active={filter === 'all' || undefined} onClick={() => setFilter('all')}>全部</button>
           <button className="tab" data-active={filter === 'queued' || undefined} onClick={() => setFilter('queued')}>排队中 <i>{counts.queued}</i></button>
@@ -189,15 +189,15 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
   }, [showAll])
   useEffect(() => {
     load()
-    const t = setInterval(load, 8000)
+    const t = setInterval(load, 10000)
     return () => clearInterval(t)
   }, [load])
   const tools = useMemo(() => Array.from(new Set(sessions.map((s) => s.harness))), [sessions])
   const shown = sessions.filter((s) => tool === 'all' || s.harness === tool)
   return (
     <>
-      <header className="bar">
-        <span className="bar__title">名录</span>
+      <header className="bar" data-tauri-drag-region>
+        <span className="bar__title" data-tauri-drag-region>名录</span>
         <span className="tabs">
           <button className="tab" data-active={tool === 'all' || undefined} onClick={() => setTool('all')}>全部 <i>{sessions.length}</i></button>
           {tools.map((t) => (
@@ -276,8 +276,8 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
 
   return (
     <>
-      <header className="bar">
-        <span className="bar__title">发送</span>
+      <header className="bar" data-tauri-drag-region>
+        <span className="bar__title" data-tauri-drag-region>发送</span>
       </header>
       <div className="form">
         <label className="label">收件人</label>
@@ -346,8 +346,8 @@ function Settings() {
   }
   return (
     <>
-      <header className="bar">
-        <span className="bar__title">设置</span>
+      <header className="bar" data-tauri-drag-region>
+        <span className="bar__title" data-tauri-drag-region>设置</span>
       </header>
       <div className="settings">
         <div className="section-head">
@@ -426,7 +426,7 @@ export function App() {
       }
     }
     tick()
-    const t = setInterval(tick, 8000)
+    const t = setInterval(tick, 12000)
     return () => clearInterval(t)
   }, [])
 
@@ -439,7 +439,7 @@ export function App() {
     <div className="shell">
       <nav className="side" data-tauri-drag-region>
         <div className="brand" data-tauri-drag-region>Dispatch</div>
-        <div className="group">
+        <div className="group" data-tauri-drag-region>
           {NAV.map((n) => (
             <button key={n.key} className="nav" data-active={screen === n.key || undefined} onClick={() => (n.key === 'compose' ? compose() : setScreen(n.key))}>
               <span className="nav__icon">{n.icon}</span>

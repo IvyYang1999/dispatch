@@ -40,7 +40,11 @@ input, textarea { font: inherit; }
 
 /* ---- Shell: sidebar on canvas, content in an inset white panel ---- */
 .shell { display: flex; height: 100%; }
-.side { flex: none; width: 196px; padding: 44px 10px 0; display: flex; flex-direction: column; gap: 18px; }
+/* The sidebar is the window's drag handle (its top strip and the gaps between items). */
+.side { flex: none; width: 196px; padding: 44px 10px 0; display: flex; flex-direction: column; gap: 18px; -webkit-app-region: drag; }
+.side button, .side .agent { -webkit-app-region: no-drag; }
+.bar { -webkit-app-region: drag; }
+.bar button, .bar label { -webkit-app-region: no-drag; }
 .brand { height: 28px; padding: 0 6px; display: flex; align-items: center; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
 .group { display: flex; flex-direction: column; gap: 2px; }
 .section { height: 22px; padding: 0 8px; display: flex; align-items: center; font-size: 11px; color: var(--text-faint); }

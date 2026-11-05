@@ -50,6 +50,22 @@ Messages live under `~/Library/Application Support/Dispatch/messages`
 (`DISPATCH_HOME` overrides it), one Markdown file per recipient, plus a
 delivery log per message under `runs/`.
 
+## Install on another Mac
+
+`scripts/release.sh` builds the CLI and the app in release mode and zips them
+as `dist/Dispatch-<version>-macos-<arch>.zip`; the zips are attached to the
+GitHub releases of this repository. On the other Mac:
+
+```
+unzip Dispatch-*.zip && cd Dispatch-*
+xattr -dr com.apple.quarantine Dispatch.app dispatch     # the app is ad-hoc signed, not notarized
+mv Dispatch.app /Applications/
+./dispatch install                                       # CLI to ~/.dispatch/bin, Claude hook, Codex MCP
+```
+
+Then the plugins (see above), and open Dispatch.app. The `安装.txt` inside the
+zip says the same in Chinese.
+
 ## Desktop app
 
 A Tauri 2 shell over the same core: the feed of dispatches (one row per

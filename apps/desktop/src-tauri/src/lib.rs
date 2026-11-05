@@ -1,63 +1,78 @@
 //! The desktop shell: thin Tauri commands over dispatch-core.
+//!
+//! Every command is async and does its work on the blocking pool: the core reads
+//! files and runs `ps`, and a sync command would do that on the main thread,
+//! where it freezes clicks, drags and even the Dock's activate.
 
 use dispatch_core::{hook, model, ops, store::Store};
 use serde_json::{json, Value};
+use tauri::Manager;
 
 fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
-#[tauri::command]
-fn sessions(running_only: bool) -> Value {
-    ops::sessions(running_only)
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn find(query: String) -> Value {
-    ops::find(&query)
+async fn sessions(running_only: bool) -> Result<Value, String> {
+    blocking(move || Ok(ops::sessions(running_only))).await
 }
 
 #[tauri::command]
-fn feed(limit: Option<usize>) -> Result<Value, String> {
-    ops::feed(&Store::open(), limit.unwrap_or(200)).map_err(err)
+async fn find(query: String) -> Result<Value, String> {
+    blocking(move || Ok(ops::find(&query))).await
 }
 
 #[tauri::command]
-fn dispatch_status(id: String) -> Result<Value, String> {
-    ops::status(&Store::open(), &id).map_err(err)
+async fn feed(limit: Option<usize>) -> Result<Value, String> {
+    blocking(move || ops::feed(&Store::open(), limit.unwrap_or(200)).map_err(err)).await
 }
 
 #[tauri::command]
-fn send(to: Vec<String>, text: String, urgency: Option<String>) -> Result<Value, String> {
+async fn dispatch_status(id: String) -> Result<Value, String> {
+    blocking(move || ops::status(&Store::open(), &id).map_err(err)).await
+}
+
+#[tauri::command]
+async fn send(to: Vec<String>, text: String, urgency: Option<String>) -> Result<Value, String> {
     let urgency = urgency.unwrap_or_else(|| "普通".into());
-    ops::send_many(&Store::open(), &to, &text, &urgency, Some(("app".into(), "我".into()))).map_err(err)
+    blocking(move || ops::send_many(&Store::open(), &to, &text, &urgency, Some(("app".into(), "我".into()))).map_err(err)).await
 }
 
 #[tauri::command]
-fn reply(id: String, text: String) -> Result<Value, String> {
-    ops::reply(&Store::open(), &id, &text).map_err(err)
+async fn reply(id: String, text: String) -> Result<Value, String> {
+    blocking(move || ops::reply(&Store::open(), &id, &text).map_err(err)).await
+}
+
+fn open_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(url).status();
+    #[cfg(target_os = "linux")]
+    let status = std::process::Command::new("xdg-open").arg(url).status();
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("cmd").args(["/C", "start", "", url]).status();
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("打不开 {url}（退出码 {s}）")),
+        Err(e) => Err(format!("打不开 {url}：{e}")),
+    }
 }
 
 /// Open the session: a claude:// or codex:// link goes to the system; a terminal session
 /// comes back as a command for the user to run.
 #[tauri::command]
-fn open_session(id: String) -> Result<Value, String> {
-    let v = ops::open_session(&id).map_err(err)?;
-    if v["kind"] == "url" {
-        let url = v["url"].as_str().unwrap_or("").to_string();
-        #[cfg(target_os = "macos")]
-        let status = std::process::Command::new("open").arg(&url).status();
-        #[cfg(target_os = "linux")]
-        let status = std::process::Command::new("xdg-open").arg(&url).status();
-        #[cfg(target_os = "windows")]
-        let status = std::process::Command::new("cmd").args(["/C", "start", "", &url]).status();
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => return Err(format!("打不开 {url}（退出码 {s}）")),
-            Err(e) => return Err(format!("打不开 {url}：{e}")),
+async fn open_session(id: String) -> Result<Value, String> {
+    blocking(move || {
+        let v = ops::open_session(&id).map_err(err)?;
+        if v["kind"] == "url" {
+            open_url(v["url"].as_str().unwrap_or(""))?;
         }
-    }
-    Ok(v)
+        Ok(v)
+    })
+    .await
 }
 
 fn which(cmd: &str) -> Option<String> {
@@ -67,39 +82,56 @@ fn which(cmd: &str) -> Option<String> {
 }
 
 #[tauri::command]
-fn setup_status() -> Value {
-    let home = model::home_dir();
-    let bin = home.join(".dispatch").join("bin").join("dispatch");
-    let claude_plugin = home.join(".claude").join("plugins");
-    let plugin_installed = std::fs::read_dir(&claude_plugin)
-        .map(|rd| rd.flatten().any(|e| e.path().join("dispatch").exists() || e.file_name().to_string_lossy().contains("dispatch")))
-        .unwrap_or(false)
-        || std::fs::read_to_string(home.join(".claude").join("plugins").join("installed_plugins.json")).map(|t| t.contains("dispatch@")).unwrap_or(false);
-    json!({
-        "hook_installed": hook::installed(),
-        "binary": bin.is_file().then(|| bin.to_string_lossy().to_string()),
-        "codex": which("codex"),
-        "store_root": Store::open().root().to_string_lossy(),
-        "claude_plugin": plugin_installed,
+async fn setup_status() -> Result<Value, String> {
+    blocking(|| {
+        let home = model::home_dir();
+        let bin = home.join(".dispatch").join("bin").join("dispatch");
+        let plugins = home.join(".claude").join("plugins");
+        let plugin_installed = std::fs::read_to_string(plugins.join("installed_plugins.json")).map(|t| t.contains("dispatch@")).unwrap_or(false)
+            || std::fs::read_dir(&plugins).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().contains("dispatch"))).unwrap_or(false);
+        Ok(json!({
+            "hook_installed": hook::installed(),
+            "binary": bin.is_file().then(|| bin.to_string_lossy().to_string()),
+            "codex": which("codex"),
+            "store_root": Store::open().root().to_string_lossy(),
+            "claude_plugin": plugin_installed,
+        }))
     })
+    .await
 }
 
-/// Install the Claude Code hook, pointing at the command-line binary when it is installed,
-/// else at this app's own executable (which also answers `hook run` through the CLI crate? no:
-/// the app is not the CLI, so we insist on the CLI being there).
+/// Install the Claude Code hook, pointing at the command-line binary (the app is not the CLI).
 #[tauri::command]
-fn install_hook() -> Result<String, String> {
-    let bin = model::home_dir().join(".dispatch").join("bin").join("dispatch");
-    if !bin.is_file() {
-        return Err("先在终端运行一次 `dispatch install`，把命令行装到 ~/.dispatch/bin，hook 要靠它。".into());
-    }
-    hook::install(&bin.to_string_lossy()).map_err(err)?;
-    Ok(format!("已装：UserPromptSubmit / Stop / SessionStart → {} hook run", bin.display()))
+async fn install_hook() -> Result<String, String> {
+    blocking(|| {
+        let bin = model::home_dir().join(".dispatch").join("bin").join("dispatch");
+        if !bin.is_file() {
+            return Err("先在终端运行一次 `dispatch install`，把命令行装到 ~/.dispatch/bin，hook 要靠它。".into());
+        }
+        hook::install(&bin.to_string_lossy()).map_err(err)?;
+        Ok(format!("已装：UserPromptSubmit / Stop / SessionStart → {} hook run", bin.display()))
+    })
+    .await
 }
 
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_hook])
-        .run(tauri::generate_context!())
-        .expect("error while running Dispatch");
+        .build(tauri::generate_context!())
+        .expect("error while building Dispatch");
+    app.run(|app, event| {
+        // The Dock icon: bring the window back, whether it was hidden, minimized or just behind.
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen { .. } = event {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (app, event);
+        }
+    });
 }

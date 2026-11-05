@@ -13,14 +13,36 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
 const MAX_AGE_MS: i64 = 48 * 60 * 60 * 1000;
 const CODEX_RUNNING_WINDOW_MS: i64 = 15 * 60 * 1000;
+/// A list younger than this is answered from memory: the app polls, and `ps` plus a few dozen
+/// file heads are not free.
+const LIST_TTL: Duration = Duration::from_secs(3);
+
+static LIST: Mutex<Option<(Instant, Vec<Session>)>> = Mutex::new(None);
+/// Parsed transcript heads, keyed by path, valid while the file's mtime and size hold.
+static HEADS: LazyLock<Mutex<HashMap<PathBuf, (i64, u64, Option<String>, Option<String>)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn mtime_ms(p: &Path) -> Option<i64> {
     fs::metadata(p).ok()?.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_millis() as i64)
+}
+
+/// cwd and title from a transcript's first megabyte, remembered until the file changes.
+fn head_of(path: &Path, mtime: i64) -> (Option<String>, Option<String>) {
+    let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if let Some((m, s, cwd, title)) = HEADS.lock().unwrap().get(path) {
+        if *m == mtime && *s == size {
+            return (cwd.clone(), title.clone());
+        }
+    }
+    let (cwd, title) = parse_head(&read_head(path, 1024 * 1024));
+    HEADS.lock().unwrap().insert(path.to_path_buf(), (mtime, size, cwd.clone(), title.clone()));
+    (cwd, title)
 }
 
 fn read_head(p: &Path, bytes: usize) -> String {
@@ -94,7 +116,7 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64) ->
             if !running && now - mtime > MAX_AGE_MS {
                 continue;
             }
-            let (cwd, title) = parse_head(&read_head(&path, 1024 * 1024));
+            let (cwd, title) = head_of(&path, mtime);
             out.push(Session {
                 harness: Harness::Claude,
                 id: id.to_lowercase(),
@@ -129,7 +151,7 @@ fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
         if now - mtime > MAX_AGE_MS {
             continue;
         }
-        let (cwd, title) = parse_head(&read_head(e.path(), 1024 * 1024));
+        let (cwd, title) = head_of(e.path(), mtime);
         out.push(Session {
             harness: Harness::Codex,
             short_id: short_id(&id),
@@ -149,7 +171,19 @@ fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
 }
 
 /// All recently active sessions on this machine, running ones first, newest first.
+/// Answered from a 3-second cache when one exists; `sessions_now` always looks again.
 pub fn sessions() -> Vec<Session> {
+    if let Some((at, list)) = LIST.lock().unwrap().as_ref() {
+        if at.elapsed() < LIST_TTL {
+            return list.clone();
+        }
+    }
+    let list = sessions_now();
+    *LIST.lock().unwrap() = Some((Instant::now(), list.clone()));
+    list
+}
+
+pub fn sessions_now() -> Vec<Session> {
     let now = now_ms();
     let procs = ps_commands();
     let mut running_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
