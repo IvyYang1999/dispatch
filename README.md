@@ -50,6 +50,37 @@ Messages live under `~/Library/Application Support/Dispatch/messages`
 (`DISPATCH_HOME` overrides it), one Markdown file per recipient, plus a
 delivery log per message under `runs/`.
 
+## Releases and updates
+
+`scripts/release.sh <tag> "<notes>"` builds everything for this Mac: the CLI, the
+app with the CLI bundled inside it (`Contents/MacOS/dispatch`), the first-install
+zip, the updater package (`Dispatch-<version>-<platform>.app.tar.gz` plus its
+signature) and `latest.json`. `PUBLISH=1` also creates the GitHub prerelease with
+those files attached. The updater key lives outside the repo
+(`~/.tauri/dispatch.key`, or `TAURI_SIGNING_PRIVATE_KEY`); its public half is in
+`tauri.conf.json`.
+
+Installed apps check `https://github.com/IvyYang1999/dispatch/releases/latest/download/latest.json`
+when you press 检查更新 in Settings, verify the package against the public key,
+replace themselves and restart. The CLI travels inside the app, so Settings →
+一键安装 (which runs the bundled `dispatch install`) brings the command line, the
+Claude Code hook and the Codex MCP registration up to date too. Until the
+repository is public, the updater endpoint is not reachable from an installed
+app; `DISPATCH_UPDATE_URL` points a build at any other `latest.json`.
+
+## Codex
+
+A Codex thread can take a message only through the app-server that is running
+it. Dispatch asks the shared daemon (`codex app-server proxy`, `thread/loaded/list`)
+which threads it has loaded: those get `codex queue --thread <id> --message …`
+and show as 立刻送到; a thread the daemon has not loaded (for example one open
+in the Codex desktop app) shows as 待接通 and the message waits in the store.
+`dispatch send --allow-resume` adds `--resume`, which lets the daemon load the
+thread from history first, at the risk of a second instance of a thread that is
+open elsewhere. Receipts come from the thread's rollout file: the queued message,
+then `task_started` and `task_complete`. `dispatch codex` prints what this
+machine's Codex can do right now.
+
 ## Install on another Mac
 
 `scripts/release.sh` builds the CLI and the app in release mode and zips them

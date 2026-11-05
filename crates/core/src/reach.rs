@@ -57,7 +57,18 @@ pub fn decide(s: &Session, hook_installed: bool) -> Reach {
                 }
             }
         }
-        Harness::Codex => Reach { level: Level::None, text: "Codex 投递还没接上（M1 后半）".into(), fix: None },
+        Harness::Codex => {
+            let st = crate::codex::state();
+            if !st.cli {
+                Reach { level: Level::None, text: "收不到：本机没找到 codex 命令".into(), fix: Some("login".into()) }
+            } else if !st.daemon {
+                Reach { level: Level::None, text: "待接通：Codex 的 app-server daemon 没开".into(), fix: Some("daemon".into()) }
+            } else if st.loaded.contains(&s.id) {
+                Reach { level: Level::Now, text: "立刻送到：排在它当前这一轮之后".into(), fix: None }
+            } else {
+                Reach { level: Level::None, text: "待接通：会话没挂在 daemon 上（桌面里开着的会话不在 daemon 里）".into(), fix: Some("resume".into()) }
+            }
+        }
         Harness::Grok => Reach { level: Level::None, text: "Grok Bot 投递还没接上（M2）".into(), fix: None },
         Harness::Human => Reach { level: Level::None, text: "人不收消息".into(), fix: None },
     }

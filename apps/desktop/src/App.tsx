@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, type Copy, type Dispatch, type Kind, type OpenResult, type Session, type SetupStatus } from './api'
+import { api, type Copy, type Dispatch, type Kind, type OpenResult, type Session, type SetupStatus, type UpdateCheck } from './api'
 
 type Screen = 'feed' | 'agents' | 'compose' | 'settings'
 
@@ -332,18 +332,25 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
 function Settings() {
   const [st, setSt] = useState<SetupStatus | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
+  const [upd, setUpd] = useState<UpdateCheck | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
   const load = useCallback(() => api.setupStatus().then(setSt).catch((e) => setMsg(String(e))), [])
   useEffect(() => {
     load()
   }, [load])
-  const install = async () => {
+  const run = async (what: string, f: () => Promise<string | void>) => {
+    setBusy(what)
     try {
-      setMsg(await api.installHook())
+      const r = await f()
+      if (typeof r === 'string') setMsg(r)
       load()
     } catch (e) {
       setMsg(String(e))
+    } finally {
+      setBusy(null)
     }
   }
+  const check = () => run('check', async () => { setUpd(await api.updateCheck()) })
   return (
     <>
       <header className="bar" data-tauri-drag-region>
@@ -352,20 +359,27 @@ function Settings() {
       <div className="settings">
         <div className="section-head">
           <div className="section-head__title">这台 Mac 上的 Agent</div>
-          <div className="section-head__sub">装上插件，它们就能互相派发消息，也知道怎么用。</div>
+          <div className="section-head__sub">一键安装：把命令行放到 ~/.dispatch/bin，装 Claude Code 的 hook，把 MCP 注册给 Codex。</div>
         </div>
         <div className="card">
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">命令行、hook、Codex 注册</span>
+              <span className="host__found">{st?.binary ? `已装：${st.binary}` : st?.bundled_cli ? '还没装，App 包里带着' : 'App 包里没有命令行（开发模式）'}</span>
+            </div>
+            <button className="btn btn--primary btn--small" disabled={busy !== null || !st?.bundled_cli} onClick={() => run('install', api.installCli)}>{st?.binary ? '重新安装' : '一键安装'}</button>
+          </div>
           <div className="host">
             <div className="host__who">
               <span className="host__name">Claude Code</span>
               <span className="host__found">{st?.hook_installed ? 'hook 已装' : 'hook 没装：没开着或跳过权限确认的会话收不到消息'}</span>
             </div>
-            {st?.hook_installed ? <Badge kind="replied" text={st.claude_plugin ? '插件和 hook 已装' : 'hook 已装'} /> : <button className="btn btn--primary btn--small" onClick={install}>安装 hook</button>}
+            {st?.hook_installed ? <Badge kind="replied" text={st.claude_plugin ? '插件和 hook 已装' : 'hook 已装'} /> : <button className="btn btn--small" disabled={busy !== null} onClick={() => run('hook', api.installHook)}>只装 hook</button>}
           </div>
           <div className="host">
             <div className="host__who">
               <span className="host__name">Codex</span>
-              <span className="host__found">{st?.codex ? `找到 ${st.codex}` : '本机没找到 codex 命令'}</span>
+              <span className="host__found">{st?.codex ? (st.codex_daemon ? `找到 ${st.codex}；daemon 在跑，挂着 ${st.codex_loaded} 个会话` : `找到 ${st.codex}；app-server daemon 没开，消息会等到它开了再送`) : '本机没找到 codex 命令'}</span>
             </div>
             <code className="cmd">codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch</code>
           </div>
@@ -387,11 +401,23 @@ function Settings() {
               <span className="host__found">{st?.store_root}</span>
             </div>
           </div>
+        </div>
+        <div className="section-head">
+          <div className="section-head__title">更新</div>
+        </div>
+        <div className="card">
           <div className="host">
             <div className="host__who">
-              <span className="host__name">命令行</span>
-              <span className="host__found">{st?.binary ?? '还没运行 dispatch install'}</span>
+              <span className="host__name">Dispatch {st?.version ?? ''}</span>
+              <span className="host__found">
+                {upd === null ? '启动时不自动更新；点右边检查' : upd.available ? `有新版本 ${upd.version}${upd.notes ? `：${upd.notes}` : ''}` : '已是最新'}
+              </span>
             </div>
+            {upd?.available ? (
+              <button className="btn btn--primary btn--small" disabled={busy !== null} onClick={() => run('update', api.updateInstall)}>更新并重启</button>
+            ) : (
+              <button className="btn btn--small" disabled={busy !== null} onClick={check}>{busy === 'check' ? '检查中…' : '检查更新'}</button>
+            )}
           </div>
         </div>
         {msg && <div className="notice" onClick={() => setMsg(null)}>{msg}</div>}

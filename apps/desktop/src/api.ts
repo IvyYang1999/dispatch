@@ -56,9 +56,20 @@ export interface Dispatch {
 export interface SetupStatus {
   hook_installed: boolean
   binary: string | null
+  bundled_cli: string | null
   codex: string | null
+  codex_daemon: boolean
+  codex_loaded: number
   store_root: string
   claude_plugin: boolean
+  version: string
+}
+export interface UpdateCheck {
+  available: boolean
+  current: string
+  version?: string
+  notes?: string | null
+  date?: string | null
 }
 export interface OpenResult {
   kind: 'url' | 'command'
@@ -79,4 +90,7 @@ export const api = {
   openSession: (id: string) => invoke<OpenResult>('open_session', { id }),
   setupStatus: () => invoke<SetupStatus>('setup_status'),
   installHook: () => invoke<string>('install_hook'),
+  installCli: () => invoke<string>('install_cli'),
+  updateCheck: () => invoke<UpdateCheck>('update_check'),
+  updateInstall: () => invoke<void>('update_install'),
 }

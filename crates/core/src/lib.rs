@@ -8,6 +8,7 @@
 //! - `send`: the delivery ladder, tying the above together.
 
 pub mod claude;
+pub mod codex;
 pub mod discover;
 pub mod hook;
 pub mod mcp;

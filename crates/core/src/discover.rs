@@ -139,6 +139,8 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64) ->
 fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
     let root = home_dir().join(".codex").join("sessions");
     let uuid_re = Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
+    // Threads the shared daemon has loaded are running whatever the file times say.
+    let loaded = crate::codex::state().loaded;
     let mut out = vec![];
     for e in WalkDir::new(&root).max_depth(5).into_iter().flatten() {
         if !e.file_type().is_file() || !e.file_name().to_string_lossy().ends_with(".jsonl") {
@@ -152,6 +154,8 @@ fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
             continue;
         }
         let (cwd, title) = head_of(e.path(), mtime);
+        let is_loaded = loaded.contains(&id);
+        let running = is_loaded || (codex_running && now - mtime < CODEX_RUNNING_WINDOW_MS);
         out.push(Session {
             harness: Harness::Codex,
             short_id: short_id(&id),
@@ -160,10 +164,10 @@ fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
             cwd,
             title,
             last_active: mtime,
-            running: codex_running && now - mtime < CODEX_RUNNING_WINDOW_MS,
+            running,
+            status: if is_loaded { Some("loaded".into()) } else { None },
             desktop: false,
             host_session_id: None,
-            status: None,
             transcript: Some(e.path().to_string_lossy().to_string()),
         });
     }

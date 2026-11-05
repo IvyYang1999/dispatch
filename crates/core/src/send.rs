@@ -23,6 +23,9 @@ pub struct Request {
     pub dispatch_id: Option<String>,
     /// Wait for the transcript to confirm the queue (up to 10 s).
     pub wait: bool,
+    /// Codex only: let `codex queue --resume` load a thread the daemon has not loaded. Off by
+    /// default, because it may start a second instance of a thread that is open elsewhere.
+    pub allow_resume: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,6 +96,37 @@ pub fn envelope(l: &Letter) -> String {
     )
 }
 
+/// The Codex branch: only a thread the shared daemon has loaded gets `codex queue`; anything
+/// else waits as 待接通 unless the caller allowed `--resume`.
+fn send_codex(store: &Store, req: &Request, letter: &mut Letter, report: impl Fn(&str, String) -> Report) -> Result<Report> {
+    let st = crate::codex::state();
+    if !st.cli {
+        store.append_run(&letter.id, "codex", "skipped", "codex not installed")?;
+        return Ok(report("stored", "本机没有 codex 命令；留在信箱".into()));
+    }
+    if !st.daemon {
+        store.append_run(&letter.id, "codex", "skipped", "no app-server daemon")?;
+        return Ok(report("stored", "待接通：Codex 的 app-server daemon 没开；留在信箱".into()));
+    }
+    let loaded = st.loaded.contains(&req.to.id);
+    if !loaded && !req.allow_resume {
+        store.append_run(&letter.id, "codex", "skipped", "thread not loaded on the daemon; resume not allowed")?;
+        return Ok(report("stored", "待接通：会话没挂在 daemon 上（可能在桌面 App 里开着）；留在信箱。要让 daemon 恢复它再送，用 --allow-resume".into()));
+    }
+    let text = envelope(letter);
+    match crate::codex::queue(&req.to.id, &text, !loaded) {
+        Ok(out) => {
+            store.set_status(letter, store::DELIVERED_CODEX)?;
+            store.append_run(&letter.id, "codex", "queued", &format!("{}{}", if loaded { "" } else { "resumed; " }, out))?;
+            Ok(report("inbox", if loaded { "已入队：排在它当前这一轮之后".into() } else { "已恢复并入队：daemon 把会话从历史恢复了，注意它可能不是桌面里那个实例".into() }))
+        }
+        Err(e) => {
+            store.append_run(&letter.id, "codex", "failed", &format!("{e:#}"))?;
+            Ok(report("stored", format!("codex queue 失败：{e:#}；留在信箱")))
+        }
+    }
+}
+
 pub fn send(store: &Store, req: Request) -> Result<Report> {
     let mut letter = Letter {
         id: uuid::Uuid::new_v4().to_string(),
@@ -112,6 +146,10 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
     store.append_run(&letter.id, "store", "written", &path.to_string_lossy())?;
     let (letter_id, dispatch_id, path_s) = (letter.id.clone(), letter.dispatch_id.clone(), path.to_string_lossy().to_string());
     let report = move |route: &str, detail: String| Report { letter_id: letter_id.clone(), dispatch_id: dispatch_id.clone(), path: path_s.clone(), route: route.into(), detail };
+
+    if req.to.harness == crate::model::Harness::Codex {
+        return send_codex(store, &req, &mut letter, report);
+    }
 
     let Some(inbox) = claude::find_live(&req.to.id) else {
         let why = if req.to.running { "开着但没有收信口" } else { "没开着" };

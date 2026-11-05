@@ -77,6 +77,10 @@ pub fn find(query: &str) -> Value {
 }
 
 pub fn send_many(store: &Store, to: &[String], text: &str, urgency: &str, from: Option<(String, String)>) -> Result<Value> {
+    send_many_opts(store, to, text, urgency, from, false)
+}
+
+pub fn send_many_opts(store: &Store, to: &[String], text: &str, urgency: &str, from: Option<(String, String)>, allow_resume: bool) -> Result<Value> {
     if to.is_empty() {
         return Err(anyhow!("`to` must name at least one session"));
     }
@@ -85,7 +89,7 @@ pub fn send_many(store: &Store, to: &[String], text: &str, urgency: &str, from: 
     let mut reports = vec![];
     for t in to {
         let target = send::resolve(t)?;
-        let rep = send::send(store, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: text.to_string(), urgency: urgency.to_string(), dispatch_id: Some(dispatch_id.clone()), wait: true })?;
+        let rep = send::send(store, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: text.to_string(), urgency: urgency.to_string(), dispatch_id: Some(dispatch_id.clone()), wait: true, allow_resume })?;
         reports.push(json!({ "to": { "id": target.id, "short_id": target.short_id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail, "path": rep.path }));
     }
     Ok(json!({ "dispatch_id": dispatch_id, "from": { "id": from_id, "name": from_name }, "recipients": reports }))
@@ -110,7 +114,7 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
         return Err(anyhow!("the sender \"{}\" is not a session, so it cannot be replied to", orig.from));
     }
     let target = send::resolve(&orig.from)?;
-    let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true })?;
+    let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false })?;
     store.set_status(&mut orig, store::REPLIED)?;
     store.append_run(&orig.id, "reply", "sent", &rep.letter_id)?;
     Ok(json!({ "replied_to": orig.id, "to": { "id": target.id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail }))
@@ -121,7 +125,19 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
 fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
     let runs = store.runs(&c.id);
     let delivered_inbox = runs.iter().any(|r| r.action == "inbox" && r.result == "written");
-    let receipt = if delivered_inbox { claude::receipt(&c.to, None, &c.id).ok() } else { None };
+    let queued_codex = runs.iter().any(|r| r.action == "codex" && r.result == "queued");
+    let receipt = if delivered_inbox {
+        claude::receipt(&c.to, None, &c.id).ok()
+    } else if queued_codex {
+        Some(match crate::codex::receipt(&c.to, &short_id(&c.id)) {
+            crate::codex::Receipt::Completed => claude::Receipt::Completed { turn_id: String::new() },
+            crate::codex::Receipt::Started => claude::Receipt::Started,
+            crate::codex::Receipt::Queued => claude::Receipt::Queued,
+            crate::codex::Receipt::NotFound => claude::Receipt::NotFound,
+        })
+    } else {
+        None
+    };
     let (stage, kind) = match (&receipt, c.status.as_str()) {
         (_, store::REPLIED) => ("已回复", "replied"),
         (Some(claude::Receipt::Completed { .. }), _) => ("本轮结束", "replied"),
@@ -129,6 +145,7 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
         (Some(claude::Receipt::Queued), _) => ("已送达（排在本轮之后）", "delivered"),
         (_, store::READ_BY_HOOK) => ("已送达（hook 递的）", "delivered"),
         (_, store::DELIVERED_INBOX) => ("已送达", "delivered"),
+        (_, store::DELIVERED_CODEX) => ("已入队", "delivered"),
         _ => ("排队中", "queued"),
     };
     let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "to": c.to, "to_name": c.to_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "path": c.path, "body": c.body });

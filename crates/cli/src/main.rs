@@ -32,6 +32,9 @@ enum Cmd {
         /// Do not wait for the transcript to confirm the queue
         #[arg(long)]
         no_wait: bool,
+        /// Codex only: let `codex queue --resume` load a thread the daemon has not loaded
+        #[arg(long)]
+        allow_resume: bool,
         #[arg(long)]
         json: bool,
         text: Vec<String>,
@@ -67,6 +70,8 @@ enum Cmd {
     Mcp,
     /// Who am I, as the session that started this process sees it
     Whoami,
+    /// What this machine's Codex can do right now: CLI, daemon, loaded threads
+    Codex,
     /// Put the binary at ~/.dispatch/bin/dispatch, install the hook from there, register with Codex
     Install,
     /// Print the store folder
@@ -126,6 +131,29 @@ fn run() -> Result<i32> {
         Cmd::Whoami => {
             println!("{}", serde_json::to_string_pretty(&dispatch_core::ops::whoami())?);
         }
+        Cmd::Codex => {
+            let s = dispatch_core::codex::state_now();
+            println!("codex 命令：{}", if s.cli { "有" } else { "没有" });
+            println!("daemon：{}（{}）", if s.daemon { "在" } else { "没开" }, dispatch_core::codex::daemon_socket().display());
+            println!("daemon 上挂着的会话：{}", if s.loaded.is_empty() { "无".to_string() } else { s.loaded.iter().map(|x| model::short_id(x)).collect::<Vec<_>>().join(" ") });
+            if s.cli {
+                match dispatch_core::codex::Server::connect() {
+                    Ok(mut srv) => {
+                        println!("app-server：{}", if srv.shared { "共享 daemon" } else { "私有（只读，没有加载任何会话）" });
+                        match srv.list_threads(5) {
+                            Ok(list) => {
+                                println!("thread/list 前 {} 条：", list.len());
+                                for t in list {
+                                    println!("  {} {} {}", t.get("id").and_then(|v| v.as_str()).map(model::short_id).unwrap_or_default(), t.pointer("/status/type").and_then(|v| v.as_str()).unwrap_or("?"), t.get("name").or(t.get("title")).and_then(|v| v.as_str()).unwrap_or(""));
+                                }
+                            }
+                            Err(e) => println!("thread/list 失败：{e:#}"),
+                        }
+                    }
+                    Err(e) => println!("app-server 连不上：{e:#}"),
+                }
+            }
+        }
         Cmd::Install => {
             let home = model::home_dir();
             let bin_dir = home.join(".dispatch").join("bin");
@@ -181,7 +209,7 @@ fn run() -> Result<i32> {
                 }
             }
         }
-        Cmd::Send { to, from, urgency, no_wait, json, text } => {
+        Cmd::Send { to, from, urgency, no_wait, allow_resume, json, text } => {
             if to.is_empty() {
                 return Err(anyhow!("--to 至少一个"));
             }
@@ -191,7 +219,7 @@ fn run() -> Result<i32> {
             let mut reports = vec![];
             for t in &to {
                 let target = send::resolve(t)?;
-                let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait })?;
+                let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume })?;
                 if !json {
                     println!("→ {} ({}): {} [{}]", target.display_name(), target.short_id, rep.detail, model::short_id(&rep.letter_id));
                 }
@@ -208,7 +236,7 @@ fn run() -> Result<i32> {
                 return Err(anyhow!("这条消息的发件方「{}」不是一个会话，没法回它", orig.from));
             }
             let target = send::resolve(&orig.from)?;
-            let rep = send::send(&st, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: body, urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true })?;
+            let rep = send::send(&st, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: body, urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false })?;
             st.set_status(&mut orig, store::REPLIED)?;
             st.append_run(&orig.id, "reply", "sent", &rep.letter_id)?;
             if json {
