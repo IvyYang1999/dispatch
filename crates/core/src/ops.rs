@@ -3,6 +3,7 @@
 use crate::claude;
 use crate::discover;
 use crate::hook;
+use crate::i18n::t;
 use crate::model::{is_uuid, short_cwd, short_id, Session};
 use crate::reach;
 use crate::send;
@@ -86,9 +87,10 @@ pub fn send_many_opts(store: &Store, to: &[String], text: &str, urgency: &str, f
     }
     let (from_id, from_name) = from.unwrap_or_else(caller_identity);
     let dispatch_id = send::new_id();
+    let urgency = store::urgency_stored(urgency);
     let mut reports = vec![];
-    for t in to {
-        let target = send::resolve(t)?;
+    for who in to {
+        let target = send::resolve(who)?;
         let rep = send::send(store, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: text.to_string(), urgency: urgency.to_string(), dispatch_id: Some(dispatch_id.clone()), wait: true, allow_resume })?;
         reports.push(json!({ "to": { "id": target.id, "short_id": target.short_id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail, "path": rep.path }));
     }
@@ -139,14 +141,14 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
         None
     };
     let (stage, kind) = match (&receipt, c.status.as_str()) {
-        (_, store::REPLIED) => ("已回复", "replied"),
-        (Some(claude::Receipt::Completed { .. }), _) => ("本轮结束", "replied"),
-        (Some(claude::Receipt::Started), _) => ("处理中", "working"),
-        (Some(claude::Receipt::Queued), _) => ("已送达（排在本轮之后）", "delivered"),
-        (_, store::READ_BY_HOOK) => ("已送达（hook 递的）", "delivered"),
-        (_, store::DELIVERED_INBOX) => ("已送达", "delivered"),
-        (_, store::DELIVERED_CODEX) => ("已入队", "delivered"),
-        _ => ("排队中", "queued"),
+        (_, store::REPLIED) => (t("stage.replied"), "replied"),
+        (Some(claude::Receipt::Completed { .. }), _) => (t("stage.finished"), "replied"),
+        (Some(claude::Receipt::Started), _) => (t("stage.working"), "working"),
+        (Some(claude::Receipt::Queued), _) => (t("stage.queued_after_turn"), "delivered"),
+        (_, store::READ_BY_HOOK) => (t("stage.delivered_hook"), "delivered"),
+        (_, store::DELIVERED_INBOX) => (t("stage.delivered"), "delivered"),
+        (_, store::DELIVERED_CODEX) => (t("stage.queued_codex"), "delivered"),
+        _ => (t("stage.queued"), "queued"),
     };
     let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "to": c.to, "to_name": c.to_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "path": c.path, "body": c.body });
     if with_runs {
@@ -192,7 +194,7 @@ pub fn feed(store: &Store, limit: usize) -> Result<Value> {
                     v["reply"] = json!({ "letter_id": r.id, "body": r.body, "created": r.created, "status": r.status });
                     if v["kind"] != "replied" {
                         v["kind"] = json!("replied");
-                        v["stage"] = json!("已回复");
+                        v["stage"] = json!(t("stage.replied"));
                     }
                 }
                 v
@@ -211,9 +213,9 @@ pub fn open_session(session_id: &str) -> Result<Value> {
             if let Some(host) = s.host_session_id.as_deref().filter(|_| s.desktop) {
                 return Ok(json!({ "kind": "url", "url": format!("claude://code/continue?session={host}"), "exact": true }));
             }
-            Ok(json!({ "kind": "command", "command": format!("claude --resume {}", s.id), "cwd": s.cwd, "exact": false, "note": "终端会话：在它的目录里运行这条命令就回到它" }))
+            Ok(json!({ "kind": "command", "command": format!("claude --resume {}", s.id), "cwd": s.cwd, "exact": false, "note": t("open.terminal_note") }))
         }
         crate::model::Harness::Codex => Ok(json!({ "kind": "url", "url": format!("codex://threads/{}", s.id), "exact": true })),
-        _ => Err(anyhow!("这种会话还不知道怎么打开")),
+        _ => Err(anyhow!("{}", t("open.unknown"))),
     }
 }

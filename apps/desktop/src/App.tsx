@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, type Copy, type Dispatch, type Kind, type OpenResult, type Session, type SetupStatus, type UpdateCheck } from './api'
+import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
 type Screen = 'feed' | 'agents' | 'compose' | 'settings'
 
-const KIND_TEXT: Record<Kind, string> = { queued: '排队中', delivered: '已送达', working: '处理中', replied: '已回复', failed: '没送到' }
+const kindText = (k: Kind) => t(`kind.${k}` as const)
 
 function initial(name: string): string {
-  const t = name.replace(/^[^\p{L}\p{N}]+/u, '').trim()
-  return (t[0] ?? '?').toUpperCase()
+  const s = name.replace(/^[^\p{L}\p{N}]+/u, '').trim()
+  return (s[0] ?? '?').toUpperCase()
 }
 
 // A muted color of its own per name, so a list reads as different people
@@ -29,7 +30,7 @@ function Badge({ kind, text }: { kind: Kind; text?: string }) {
   return (
     <span className="badge" data-kind={kind}>
       <span className="badge__dot" />
-      {text ?? KIND_TEXT[kind]}
+      {text ?? kindText(kind)}
     </span>
   )
 }
@@ -37,8 +38,15 @@ function Badge({ kind, text }: { kind: Kind; text?: string }) {
 function summary(rs: Copy[]): string {
   const replied = rs.filter((r) => r.kind === 'replied').length
   if (rs.length === 1) return rs[0].stage
-  if (replied === rs.length) return '全部已回复'
-  return `${replied}/${rs.length} 已回复`
+  if (replied === rs.length) return t('summary.all')
+  return t('summary.some', { n: replied, m: rs.length })
+}
+
+function presence(s: Session): string {
+  if (!s.running) return t('presence.offline')
+  const st = s.status ?? 'idle'
+  if (st === 'idle' || st === 'busy' || st === 'running' || st === 'waiting') return t(`presence.${st}` as const)
+  return st
 }
 
 function useOpen() {
@@ -46,7 +54,7 @@ function useOpen() {
   const open = useCallback(async (id: string) => {
     try {
       const r: OpenResult = await api.openSession(id)
-      if (r.kind === 'command') setNotice(`${r.note ?? ''}：${r.command}`)
+      if (r.kind === 'command') setNotice(`${r.note ?? ''}: ${r.command}`)
       else setNotice(null)
     } catch (e) {
       setNotice(String(e))
@@ -58,6 +66,7 @@ function useOpen() {
 // ---- Feed ----
 
 function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
+  const lang = useLang()
   const [items, setItems] = useState<Dispatch[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'queued' | 'failed'>('all')
@@ -72,11 +81,11 @@ function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
     } catch (e) {
       setErr(String(e))
     }
-  }, [])
+  }, [lang])
   useEffect(() => {
     load()
-    const t = setInterval(load, 5000)
-    return () => clearInterval(t)
+    const h = setInterval(load, 5000)
+    return () => clearInterval(h)
   }, [load])
 
   const shown = useMemo(() => {
@@ -95,19 +104,19 @@ function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
   return (
     <>
       <header className="bar" data-tauri-drag-region>
-        <span className="bar__title" data-tauri-drag-region>派发</span>
+        <span className="bar__title" data-tauri-drag-region>{t('nav.feed')}</span>
         <span className="tabs">
-          <button className="tab" data-active={filter === 'all' || undefined} onClick={() => setFilter('all')}>全部</button>
-          <button className="tab" data-active={filter === 'queued' || undefined} onClick={() => setFilter('queued')}>排队中 <i>{counts.queued}</i></button>
-          <button className="tab" data-active={filter === 'failed' || undefined} onClick={() => setFilter('failed')}>没送到 <i>{counts.failed}</i></button>
+          <button className="tab" data-active={filter === 'all' || undefined} onClick={() => setFilter('all')}>{t('tabs.all')}</button>
+          <button className="tab" data-active={filter === 'queued' || undefined} onClick={() => setFilter('queued')}>{t('tabs.queued')} <i>{counts.queued}</i></button>
+          <button className="tab" data-active={filter === 'failed' || undefined} onClick={() => setFilter('failed')}>{t('tabs.failed')} <i>{counts.failed}</i></button>
         </span>
         <span className="bar__spacer" />
-        <button className="btn btn--primary" onClick={() => onCompose()}>发送</button>
+        <button className="btn btn--primary" onClick={() => onCompose()}>{t('feed.send')}</button>
       </header>
       <div className="split">
         <div className="list">
           {err && <div className="empty">{err}</div>}
-          {!err && shown.length === 0 && <div className="empty">还没有派发。点右上角「发送」，或让任何一个 Agent 用 Dispatch 发一条。</div>}
+          {!err && shown.length === 0 && <div className="empty">{t('feed.empty')}</div>}
           {shown.map((d) => (
             <div key={d.dispatch_id} className="row" data-selected={current?.dispatch_id === d.dispatch_id || undefined} onClick={() => setSelected(d.dispatch_id)}>
               <Avatar name={d.from_name} />
@@ -137,12 +146,14 @@ function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
                 <Avatar name={current.from_name} size={28} />
                 <div className="detail__who">
                   <span className="detail__name">{current.from_name}</span>
-                  <span className="detail__meta">{current.created} · 发给 {current.recipients.length} 个</span>
+                  <span className="detail__meta">
+                    {current.created} · {current.recipients.length === 1 ? t('feed.sentOne') : t('feed.sentMany', { n: current.recipients.length })}
+                  </span>
                 </div>
               </div>
               <p className="detail__body">{current.text}</p>
               <div className="rule" />
-              <div className="section-title">收件人</div>
+              <div className="section-title">{t('feed.recipients')}</div>
               {current.recipients.map((r) => (
                 <div key={r.letter_id} className="rcpt">
                   <div className="rcpt__head">
@@ -150,7 +161,7 @@ function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
                     <span className="rcpt__name">{r.to_name}</span>
                     <Badge kind={r.kind} />
                     <span className="rcpt__time">{(r.reply?.created ?? r.created).slice(11)}</span>
-                    <button className="btn btn--ghost btn--icon" title="打开会话" onClick={() => open(r.to)}>↗</button>
+                    <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(r.to)}>↗</button>
                   </div>
                   {r.reply ? <p className="rcpt__reply">{r.reply.body}</p> : <p className="rcpt__note">{r.stage}</p>}
                 </div>
@@ -162,7 +173,7 @@ function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
               )}
             </>
           ) : (
-            <div className="empty">选一条派发看详情</div>
+            <div className="empty">{t('feed.pick')}</div>
           )}
         </aside>
       </div>
@@ -172,9 +183,8 @@ function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
 
 // ---- Agents ----
 
-const PRESENCE: Record<string, string> = { idle: '空闲', busy: '工作中', running: '工作中', waiting: '等待输入' }
-
 function Agents({ onCompose }: { onCompose: (to: string) => void }) {
+  const lang = useLang()
   const [sessions, setSessions] = useState<Session[]>([])
   const [tool, setTool] = useState<string>('all')
   const [showAll, setShowAll] = useState(false)
@@ -186,26 +196,26 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
     } catch {
       /* keep the last list */
     }
-  }, [showAll])
+  }, [showAll, lang])
   useEffect(() => {
     load()
-    const t = setInterval(load, 10000)
-    return () => clearInterval(t)
+    const h = setInterval(load, 10000)
+    return () => clearInterval(h)
   }, [load])
   const tools = useMemo(() => Array.from(new Set(sessions.map((s) => s.harness))), [sessions])
   const shown = sessions.filter((s) => tool === 'all' || s.harness === tool)
   return (
     <>
       <header className="bar" data-tauri-drag-region>
-        <span className="bar__title" data-tauri-drag-region>名录</span>
+        <span className="bar__title" data-tauri-drag-region>{t('nav.agents')}</span>
         <span className="tabs">
-          <button className="tab" data-active={tool === 'all' || undefined} onClick={() => setTool('all')}>全部 <i>{sessions.length}</i></button>
-          {tools.map((t) => (
-            <button key={t} className="tab" data-active={tool === t || undefined} onClick={() => setTool(t)}>{t} <i>{sessions.filter((s) => s.harness === t).length}</i></button>
+          <button className="tab" data-active={tool === 'all' || undefined} onClick={() => setTool('all')}>{t('tabs.all')} <i>{sessions.length}</i></button>
+          {tools.map((h) => (
+            <button key={h} className="tab" data-active={tool === h || undefined} onClick={() => setTool(h)}>{h} <i>{sessions.filter((s) => s.harness === h).length}</i></button>
           ))}
         </span>
         <span className="bar__spacer" />
-        <label className="check"><input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> 含最近 48 小时没开着的</label>
+        <label className="check"><input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> {t('agents.showAll')}</label>
       </header>
       <div className="lines">
         {shown.map((s) => (
@@ -216,16 +226,16 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
             <span className="line__where" title={s.cwd ?? ''}>{s.cwd_short ?? ''}</span>
             <span className="line__presence" data-presence={s.running ? (s.status ?? 'idle') : 'offline'}>
               <span className="line__dot" />
-              {s.running ? (PRESENCE[s.status ?? 'idle'] ?? s.status) : '离线'}
+              {presence(s)}
             </span>
-            <span className="line__how" data-reach={s.reach.level}>{s.reach.text}</span>
+            <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
             <span className="line__actions">
-              <button className="btn btn--ghost btn--icon" title="发消息" onClick={() => onCompose(s.id)}>✎</button>
-              <button className="btn btn--ghost btn--icon" title="打开会话" onClick={() => open(s.id)}>↗</button>
+              <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(s.id)}>✎</button>
+              <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(s.id)}>↗</button>
             </span>
           </div>
         ))}
-        {shown.length === 0 && <div className="empty">没有找到会话。开着的 Claude Code 会话会自动出现在这里。</div>}
+        {shown.length === 0 && <div className="empty">{t('agents.empty')}</div>}
         {notice && <div className="notice" onClick={clear}>{notice}</div>}
       </div>
     </>
@@ -234,12 +244,22 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
 
 // ---- Compose ----
 
+const URGENCIES = ['normal', 'urgent'] as const
+
+function reasonText(c: Session): string {
+  if (c.reason === 'name') return t('reason.name')
+  if (c.reason === 'cwd') return t('reason.cwd', { cwd: c.cwd_short ?? '' })
+  if (c.reason === 'id') return t('reason.id')
+  return t('reason.title')
+}
+
 function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }) {
+  useLang()
   const [query, setQuery] = useState('')
   const [cands, setCands] = useState<Session[]>([])
   const [to, setTo] = useState<Session[]>([])
   const [text, setText] = useState('')
-  const [urgency, setUrgency] = useState('普通')
+  const [urgency, setUrgency] = useState<(typeof URGENCIES)[number]>('normal')
   const [result, setResult] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -255,7 +275,7 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
       setCands([])
       return
     }
-    const h = setTimeout(() => api.find(query).then((r) => setCands(r.candidates.filter((c) => !to.some((t) => t.id === c.id)))), 150)
+    const h = setTimeout(() => api.find(query).then((r) => setCands(r.candidates.filter((c) => !to.some((x) => x.id === c.id)))), 150)
     return () => clearTimeout(h)
   }, [query, to])
 
@@ -263,8 +283,8 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
     if (to.length === 0 || !text.trim()) return
     setBusy(true)
     try {
-      const r = await api.send(to.map((t) => t.id), text, urgency)
-      setResult(r.recipients.map((x) => `${x.to.name}：${x.detail}`).join('\n'))
+      const r = await api.send(to.map((x) => x.id), text, urgency)
+      setResult(r.recipients.map((x) => `${x.to.name}: ${x.detail}`).join('\n'))
       setText('')
       setTimeout(onSent, 1200)
     } catch (e) {
@@ -277,18 +297,18 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
   return (
     <>
       <header className="bar" data-tauri-drag-region>
-        <span className="bar__title" data-tauri-drag-region>发送</span>
+        <span className="bar__title" data-tauri-drag-region>{t('nav.compose')}</span>
       </header>
       <div className="form">
-        <label className="label">收件人</label>
+        <label className="label">{t('compose.to')}</label>
         <div className="to">
-          {to.map((t) => (
-            <span key={t.id} className="to__chip">
-              {t.name}
-              <button onClick={() => setTo(to.filter((x) => x.id !== t.id))}>×</button>
+          {to.map((x) => (
+            <span key={x.id} className="to__chip">
+              {x.name}
+              <button onClick={() => setTo(to.filter((y) => y.id !== x.id))}>×</button>
             </span>
           ))}
-          <input className="to__input" placeholder={to.length ? '再加一个…' : '名字、目录，或它正在做的事'} value={query} onChange={(e) => setQuery(e.target.value)} />
+          <input className="to__input" placeholder={to.length ? t('compose.addMore') : t('compose.toPlaceholder')} value={query} onChange={(e) => setQuery(e.target.value)} />
         </div>
         {cands.length > 0 && (
           <div className="picker">
@@ -299,27 +319,27 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
                   <div className="cand__line">
                     <span className="cand__name">{c.name}</span>
                     <span className="tag">{c.harness}</span>
-                    <span className="cand__presence">{c.running ? (PRESENCE[c.status ?? 'idle'] ?? c.status) : '离线'}</span>
+                    <span className="cand__presence">{presence(c)}</span>
                   </div>
-                  <span className="cand__reason">{c.reason === 'name' ? '名字匹配' : c.reason === 'cwd' ? `目录 ${c.cwd_short}` : c.reason === 'id' ? 'id 匹配' : '正文提到'} · {c.reach.text}</span>
+                  <span className="cand__reason">{reasonText(c)} · {c.reach.text}</span>
                 </div>
               </div>
             ))}
-            <div className="picker__hint">只有唯一命中才会发出；多个时由你选</div>
+            <div className="picker__hint">{t('picker.hint')}</div>
           </div>
         )}
-        <label className="label">内容</label>
-        <textarea className="body" rows={6} placeholder="像给同事写一段话：要什么、相关的 id 或路径、什么时候要。对方可以用 dispatch_reply 回你。" value={text} onChange={(e) => setText(e.target.value)} />
+        <label className="label">{t('compose.body')}</label>
+        <textarea className="body" rows={6} placeholder={t('compose.bodyPlaceholder')} value={text} onChange={(e) => setText(e.target.value)} />
         <div className="form__row">
-          <span className="label">紧急度</span>
+          <span className="label">{t('compose.urgency')}</span>
           <span className="seg">
-            {['普通', '紧急'].map((u) => (
-              <button key={u} data-active={urgency === u || undefined} onClick={() => setUrgency(u)}>{u}</button>
+            {URGENCIES.map((u) => (
+              <button key={u} data-active={urgency === u || undefined} onClick={() => setUrgency(u)}>{t(`urgency.${u}` as const)}</button>
             ))}
           </span>
         </div>
         <div className="form__actions">
-          <button className="btn btn--primary" disabled={busy || to.length === 0 || !text.trim()} onClick={submit}>发送</button>
+          <button className="btn btn--primary" disabled={busy || to.length === 0 || !text.trim()} onClick={submit}>{t('compose.send')}</button>
         </div>
         {result && <pre className="result">{result}</pre>}
       </div>
@@ -329,7 +349,13 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
 
 // ---- Settings ----
 
+const LANGS: { key: Lang; label: string }[] = [
+  { key: 'zh', label: '中文' },
+  { key: 'en', label: 'English' },
+]
+
 function Settings() {
+  const lang = useLang()
   const [st, setSt] = useState<SetupStatus | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [upd, setUpd] = useState<UpdateCheck | null>(null)
@@ -351,72 +377,97 @@ function Settings() {
     }
   }
   const check = () => run('check', async () => { setUpd(await api.updateCheck()) })
+  const cliText = st?.binary ? t('settings.cliInstalled', { p: st.binary }) : st?.bundled_cli ? t('settings.cliBundled') : t('settings.cliNone')
+  const codexText = st?.codex ? (st.codex_daemon ? t('settings.codexDaemon', { p: st.codex, n: st.codex_loaded }) : t('settings.codexNoDaemon', { p: st.codex })) : t('settings.codexMissing')
   return (
     <>
       <header className="bar" data-tauri-drag-region>
-        <span className="bar__title" data-tauri-drag-region>设置</span>
+        <span className="bar__title" data-tauri-drag-region>{t('nav.settings')}</span>
       </header>
       <div className="settings">
         <div className="section-head">
-          <div className="section-head__title">这台 Mac 上的 Agent</div>
-          <div className="section-head__sub">一键安装：把命令行放到 ~/.dispatch/bin，装 Claude Code 的 hook，把 MCP 注册给 Codex。</div>
+          <div className="section-head__title">{t('settings.agents')}</div>
+          <div className="section-head__sub">{t('settings.agentsSub')}</div>
         </div>
         <div className="card">
           <div className="host">
             <div className="host__who">
-              <span className="host__name">命令行、hook、Codex 注册</span>
-              <span className="host__found">{st?.binary ? `已装：${st.binary}` : st?.bundled_cli ? '还没装，App 包里带着' : 'App 包里没有命令行（开发模式）'}</span>
+              <span className="host__name">{t('settings.cli')}</span>
+              <span className="host__found">{cliText}</span>
             </div>
-            <button className="btn btn--primary btn--small" disabled={busy !== null || !st?.bundled_cli} onClick={() => run('install', api.installCli)}>{st?.binary ? '重新安装' : '一键安装'}</button>
+            <button className="btn btn--primary btn--small" disabled={busy !== null || !st?.bundled_cli} onClick={() => run('install', api.installCli)}>{st?.binary ? t('settings.reinstall') : t('settings.install')}</button>
           </div>
           <div className="host">
             <div className="host__who">
               <span className="host__name">Claude Code</span>
-              <span className="host__found">{st?.hook_installed ? 'hook 已装' : 'hook 没装：没开着或跳过权限确认的会话收不到消息'}</span>
+              <span className="host__found">{st?.hook_installed ? t('settings.hookOn') : t('settings.hookOff')}</span>
             </div>
-            {st?.hook_installed ? <Badge kind="replied" text={st.claude_plugin ? '插件和 hook 已装' : 'hook 已装'} /> : <button className="btn btn--small" disabled={busy !== null} onClick={() => run('hook', api.installHook)}>只装 hook</button>}
+            {st?.hook_installed ? <Badge kind="replied" text={st.claude_plugin ? t('settings.pluginAndHook') : t('settings.hookOn')} /> : <button className="btn btn--small" disabled={busy !== null} onClick={() => run('hook', api.installHook)}>{t('settings.hookOnly')}</button>}
           </div>
           <div className="host">
             <div className="host__who">
               <span className="host__name">Codex</span>
-              <span className="host__found">{st?.codex ? (st.codex_daemon ? `找到 ${st.codex}；daemon 在跑，挂着 ${st.codex_loaded} 个会话` : `找到 ${st.codex}；app-server daemon 没开，消息会等到它开了再送`) : '本机没找到 codex 命令'}</span>
+              <span className="host__found">{codexText}</span>
             </div>
             <code className="cmd">codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch</code>
           </div>
           <div className="host">
             <div className="host__who">
-              <span className="host__name">Claude Code 插件</span>
-              <span className="host__found">MCP 工具 + skill + hook，一步装进每个会话</span>
+              <span className="host__name">{t('settings.claudePlugin')}</span>
+              <span className="host__found">{t('settings.claudePluginSub')}</span>
             </div>
             <code className="cmd">/plugin install dispatch --marketplace IvyYang1999/dispatch</code>
           </div>
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">{t('settings.grok')}</span>
+              <span className="host__found">{t('settings.grokSub')}</span>
+            </div>
+            <code className="cmd">npx skills add IvyYang1999/dispatch --skill dispatch</code>
+          </div>
         </div>
         <div className="section-head">
-          <div className="section-head__title">消息</div>
+          <div className="section-head__title">{t('settings.language')}</div>
         </div>
         <div className="card">
           <div className="host">
             <div className="host__who">
-              <span className="host__name">消息存在哪</span>
+              <span className="host__name">{LANGS.find((l) => l.key === lang)?.label}</span>
+              <span className="host__found">{t('settings.languageSub')}</span>
+            </div>
+            <span className="seg">
+              {LANGS.map((l) => (
+                <button key={l.key} data-active={lang === l.key || undefined} onClick={() => setLang(l.key)}>{l.label}</button>
+              ))}
+            </span>
+          </div>
+        </div>
+        <div className="section-head">
+          <div className="section-head__title">{t('settings.messages')}</div>
+        </div>
+        <div className="card">
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">{t('settings.storeWhere')}</span>
               <span className="host__found">{st?.store_root}</span>
             </div>
           </div>
         </div>
         <div className="section-head">
-          <div className="section-head__title">更新</div>
+          <div className="section-head__title">{t('settings.updates')}</div>
         </div>
         <div className="card">
           <div className="host">
             <div className="host__who">
               <span className="host__name">Dispatch {st?.version ?? ''}</span>
               <span className="host__found">
-                {upd === null ? '启动时不自动更新；点右边检查' : upd.available ? `有新版本 ${upd.version}${upd.notes ? `：${upd.notes}` : ''}` : '已是最新'}
+                {upd === null ? t('settings.updateIdle') : upd.available ? `${t('settings.updateAvailable', { v: upd.version ?? '' })}${upd.notes ? `: ${upd.notes}` : ''}` : t('settings.upToDate')}
               </span>
             </div>
             {upd?.available ? (
-              <button className="btn btn--primary btn--small" disabled={busy !== null} onClick={() => run('update', api.updateInstall)}>更新并重启</button>
+              <button className="btn btn--primary btn--small" disabled={busy !== null} onClick={() => run('update', api.updateInstall)}>{t('settings.updateRestart')}</button>
             ) : (
-              <button className="btn btn--small" disabled={busy !== null} onClick={check}>{busy === 'check' ? '检查中…' : '检查更新'}</button>
+              <button className="btn btn--small" disabled={busy !== null} onClick={check}>{busy === 'check' ? t('settings.checking') : t('settings.check')}</button>
             )}
           </div>
         </div>
@@ -428,19 +479,23 @@ function Settings() {
 
 // ---- Shell ----
 
-const NAV: { key: Screen; label: string; icon: string }[] = [
-  { key: 'feed', label: '派发', icon: '▤' },
-  { key: 'agents', label: '名录', icon: '◉' },
-  { key: 'compose', label: '发送', icon: '✎' },
-  { key: 'settings', label: '设置', icon: '⚙' },
+const NAV: { key: Screen; label: 'nav.feed' | 'nav.agents' | 'nav.compose' | 'nav.settings'; icon: string }[] = [
+  { key: 'feed', label: 'nav.feed', icon: '▤' },
+  { key: 'agents', label: 'nav.agents', icon: '◉' },
+  { key: 'compose', label: 'nav.compose', icon: '✎' },
+  { key: 'settings', label: 'nav.settings', icon: '⚙' },
 ]
 
 export function App() {
+  const lang = useLang()
   const [screen, setScreen] = useState<Screen>('feed')
   const [composeTo, setComposeTo] = useState<string | undefined>(undefined)
   const [live, setLive] = useState<Session[]>([])
   const [queued, setQueued] = useState(0)
 
+  useEffect(() => {
+    loadLang()
+  }, [])
   useEffect(() => {
     const tick = async () => {
       try {
@@ -452,9 +507,9 @@ export function App() {
       }
     }
     tick()
-    const t = setInterval(tick, 12000)
-    return () => clearInterval(t)
-  }, [])
+    const h = setInterval(tick, 12000)
+    return () => clearInterval(h)
+  }, [lang])
 
   const compose = (to?: string) => {
     setComposeTo(to)
@@ -469,13 +524,13 @@ export function App() {
           {NAV.map((n) => (
             <button key={n.key} className="nav" data-active={screen === n.key || undefined} onClick={() => (n.key === 'compose' ? compose() : setScreen(n.key))}>
               <span className="nav__icon">{n.icon}</span>
-              <span className="nav__label">{n.label}</span>
+              <span className="nav__label">{t(n.label)}</span>
               {n.key === 'feed' && queued > 0 && <span className="count">{queued}</span>}
             </button>
           ))}
         </div>
         <div className="group">
-          <div className="section">本机</div>
+          <div className="section">{t('side.local')}</div>
           {live.slice(0, 8).map((s) => (
             <div key={s.id} className="agent" title={s.cwd ?? ''}>
               <Avatar name={s.name} size={16} />

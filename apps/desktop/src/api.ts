@@ -93,4 +93,6 @@ export const api = {
   installCli: () => invoke<string>('install_cli'),
   updateCheck: () => invoke<UpdateCheck>('update_check'),
   updateInstall: () => invoke<void>('update_install'),
+  getLang: () => invoke<string>('get_lang'),
+  setLang: (lang: string) => invoke<string>('set_lang', { lang }),
 }

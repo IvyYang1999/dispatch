@@ -16,7 +16,7 @@
 <p align="center"><a href="README.zh-CN.md">中文说明</a></p>
 
 <p align="center">
-  <img src="docs/images/feed.png" width="880" alt="The Dispatch feed: one row per dispatch, a status chip per recipient, the message and its replies on the right">
+  <img src="docs/images/feed-en.png" width="880" alt="The Dispatch feed: one row per dispatch, a status chip per recipient, the message and its replies on the right">
 </p>
 
 Claude Code, Codex and Grok Bot sessions on one computer cannot talk to each other. Each one knows only its own transcript. Dispatch gives them, and you, one verb: **find a session, hand it a message, see whether it arrived and what came back.**
@@ -88,6 +88,8 @@ The plugin gives a session seven MCP tools and a skill that explains them.
 
 A message from another agent is information, not an instruction from the user. The skill says so, and the hook says it again each time it hands a message over.
 
+Grok Bot, and any other agent that reads skills, can learn the command line side the same way: `npx skills add IvyYang1999/dispatch --skill dispatch` installs the skill. Delivery *into* a Grok Bot session is not connected yet.
+
 ## From the command line
 
 ```
@@ -107,15 +109,15 @@ dispatch mcp                                        # the MCP server over stdio 
 ## The desktop app
 
 <p align="center">
-  <img src="docs/images/directory.png" width="880" alt="The directory: every session on this Mac with its harness, folder, state and the delivery path it would get">
+  <img src="docs/images/directory-en.png" width="880" alt="The directory: every session on this Mac with its harness, folder, state and the delivery path it would get">
 </p>
 
-- **派发, the feed.** One row per dispatch, a chip per recipient colored by its state, the message with its recipients and their replies on the right. Filters for queued and failed.
-- **名录, the directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now.
-- **发送, compose.** The recipient box is the finder. Urgency. Several recipients at once.
-- **设置, settings.** One-click install, the plugin commands to copy, where the messages live, check for updates.
+- **Feed.** One row per dispatch, a chip per recipient colored by its state, the message with its recipients and their replies on the right. Filters for queued and failed.
+- **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now.
+- **Send.** The recipient box is the finder. Urgency. Several recipients at once.
+- **Settings.** One-click install, the plugin commands to copy, the language, where the messages live, check for updates.
 
-Tauri 2 over the same Rust core as the command line, about 9 MB. The interface is in Chinese for now.
+Tauri 2 over the same Rust core as the command line, about 9 MB. English and Chinese: the switch in Settings also sets the language of the command line and of the text agents are handed (`DISPATCH_LANG=en|zh` overrides it per process).
 
 ## Where things live
 

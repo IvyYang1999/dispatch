@@ -16,7 +16,7 @@ impl Harness {
             Harness::Claude => "Claude",
             Harness::Codex => "Codex",
             Harness::Grok => "Grok Bot",
-            Harness::Human => "人",
+            Harness::Human => crate::i18n::t("harness.human"),
         }
     }
 }

@@ -6,11 +6,13 @@
 //! - `reach`: how a message reaches a session right now (at once, later, not at all).
 //! - `hook`: the Claude Code hook that hands waiting messages over.
 //! - `send`: the delivery ladder, tying the above together.
+//! - `i18n`: the language of everything a person reads (English, Chinese).
 
 pub mod claude;
 pub mod codex;
 pub mod discover;
 pub mod hook;
+pub mod i18n;
 pub mod mcp;
 pub mod model;
 pub mod ops;

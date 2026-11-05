@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
+use dispatch_core::i18n::{status_label, t};
 use dispatch_core::{claude, discover, hook, model, reach, send, store};
 use std::io::{Read, Write};
 
@@ -27,7 +28,8 @@ enum Cmd {
         /// Who it is from: a session id or a name (defaults to $CLAUDE_SESSION_ID or "cli")
         #[arg(long)]
         from: Option<String>,
-        #[arg(long, default_value = "普通")]
+        /// normal or urgent
+        #[arg(long, default_value = "normal")]
         urgency: String,
         /// Do not wait for the transcript to confirm the queue
         #[arg(long)]
@@ -133,24 +135,24 @@ fn run() -> Result<i32> {
         }
         Cmd::Codex => {
             let s = dispatch_core::codex::state_now();
-            println!("codex 命令：{}", if s.cli { "有" } else { "没有" });
-            println!("daemon：{}（{}）", if s.daemon { "在" } else { "没开" }, dispatch_core::codex::daemon_socket().display());
-            println!("daemon 上挂着的会话：{}", if s.loaded.is_empty() { "无".to_string() } else { s.loaded.iter().map(|x| model::short_id(x)).collect::<Vec<_>>().join(" ") });
+            println!("{}", t("cli.codex_cmd").replace("{v}", if s.cli { t("cli.yes") } else { t("cli.no") }));
+            println!("{}", t("cli.daemon").replace("{v}", if s.daemon { t("cli.on") } else { t("cli.off") }).replace("{p}", &dispatch_core::codex::daemon_socket().display().to_string()));
+            println!("{}", t("cli.loaded").replace("{v}", &if s.loaded.is_empty() { t("cli.none").to_string() } else { s.loaded.iter().map(|x| model::short_id(x)).collect::<Vec<_>>().join(" ") }));
             if s.cli {
                 match dispatch_core::codex::Server::connect() {
                     Ok(mut srv) => {
-                        println!("app-server：{}", if srv.shared { "共享 daemon" } else { "私有（只读，没有加载任何会话）" });
+                        println!("{}", t("cli.appserver").replace("{v}", if srv.shared { t("cli.shared") } else { t("cli.private") }));
                         match srv.list_threads(5) {
                             Ok(list) => {
-                                println!("thread/list 前 {} 条：", list.len());
-                                for t in list {
-                                    println!("  {} {} {}", t.get("id").and_then(|v| v.as_str()).map(model::short_id).unwrap_or_default(), t.pointer("/status/type").and_then(|v| v.as_str()).unwrap_or("?"), t.get("name").or(t.get("title")).and_then(|v| v.as_str()).unwrap_or(""));
+                                println!("{}", t("cli.thread_list").replace("{n}", &list.len().to_string()));
+                                for th in list {
+                                    println!("  {} {} {}", th.get("id").and_then(|v| v.as_str()).map(model::short_id).unwrap_or_default(), th.pointer("/status/type").and_then(|v| v.as_str()).unwrap_or("?"), th.get("name").or(th.get("title")).and_then(|v| v.as_str()).unwrap_or(""));
                                 }
                             }
-                            Err(e) => println!("thread/list 失败：{e:#}"),
+                            Err(e) => println!("{}", t("cli.thread_list_failed").replace("{e}", &format!("{e:#}"))),
                         }
                     }
-                    Err(e) => println!("app-server 连不上：{e:#}"),
+                    Err(e) => println!("{}", t("cli.appserver_failed").replace("{e}", &format!("{e:#}"))),
                 }
             }
         }
@@ -165,19 +167,19 @@ fn run() -> Result<i32> {
                 std::fs::copy(&me, &tmp)?;
                 std::fs::rename(&tmp, &target)?;
             }
-            println!("二进制：{}", target.display());
+            println!("{}", t("cli.binary").replace("{p}", &target.display().to_string()));
             hook::install(&target.to_string_lossy())?;
-            println!("Claude Code hook：已装（指向上面的二进制）");
+            println!("{}", t("cli.hook_installed"));
             if let Ok(out) = dispatch_core::codex::command().args(["mcp", "add", "dispatch", "--", &target.to_string_lossy(), "mcp"]).output() {
                 if out.status.success() {
-                    println!("Codex MCP：已注册 `dispatch`（codex mcp list 可见）");
+                    println!("{}", t("cli.codex_registered"));
                 } else {
-                    println!("Codex MCP：注册失败：{}", String::from_utf8_lossy(&out.stderr).trim());
+                    println!("{}", t("cli.codex_register_failed").replace("{e}", String::from_utf8_lossy(&out.stderr).trim()));
                 }
             } else {
-                println!("Codex：本机没找到 codex 命令，跳过");
+                println!("{}", t("cli.codex_missing"));
             }
-            println!("Claude Code 插件（MCP + skill + hook）：claude plugin marketplace add IvyYang1999/dispatch && claude plugin install dispatch@dispatch");
+            println!("{}", t("cli.claude_plugin").replace("{cmd}", "claude plugin marketplace add IvyYang1999/dispatch && claude plugin install dispatch@dispatch"));
         }
         Cmd::Sessions { json, all } => {
             let hook_on = hook::installed();
@@ -193,7 +195,7 @@ fn run() -> Result<i32> {
                 println!("{}", serde_json::to_string_pretty(&rows)?);
             } else {
                 if list.is_empty() {
-                    println!("没有正在运行的会话（加 --all 看最近 48 小时的）。");
+                    println!("{}", t("cli.no_running"));
                 }
                 for s in &list {
                     let r = reach::decide(s, hook_on);
@@ -201,7 +203,7 @@ fn run() -> Result<i32> {
                         "{:<8} {:<7} {:<4} {:<26} {:<32} {}",
                         s.short_id,
                         s.harness.label(),
-                        if s.running { "在" } else { "  " },
+                        if s.running { t("cli.running_mark") } else { "  " },
                         truncate(&s.display_name(), 26),
                         truncate(&s.cwd.as_deref().map(model::short_cwd).unwrap_or_default(), 32),
                         r.text
@@ -211,14 +213,15 @@ fn run() -> Result<i32> {
         }
         Cmd::Send { to, from, urgency, no_wait, allow_resume, json, text } => {
             if to.is_empty() {
-                return Err(anyhow!("--to 至少一个"));
+                return Err(anyhow!("{}", t("cli.to_required")));
             }
             let body = read_text(text)?;
             let (from_id, from_name) = sender_identity(from);
             let dispatch_id = uuid_v4();
+            let urgency = store::urgency_stored(&urgency).to_string();
             let mut reports = vec![];
-            for t in &to {
-                let target = send::resolve(t)?;
+            for who in &to {
+                let target = send::resolve(who)?;
                 let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume })?;
                 if !json {
                     println!("→ {} ({}): {} [{}]", target.display_name(), target.short_id, rep.detail, model::short_id(&rep.letter_id));
@@ -231,9 +234,9 @@ fn run() -> Result<i32> {
         }
         Cmd::Reply { id, text, json } => {
             let body = read_text(text)?;
-            let mut orig = st.find(&id)?.ok_or_else(|| anyhow!("没有 id 以「{id}」开头的消息"))?;
+            let mut orig = st.find(&id)?.ok_or_else(|| anyhow!("{}", t("cli.no_message").replace("{id}", &id)))?;
             if !model::is_uuid(&orig.from) {
-                return Err(anyhow!("这条消息的发件方「{}」不是一个会话，没法回它", orig.from));
+                return Err(anyhow!("{}", t("cli.not_a_session").replace("{from}", &orig.from)));
             }
             let target = send::resolve(&orig.from)?;
             let rep = send::send(&st, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: body, urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false })?;
@@ -251,10 +254,10 @@ fn run() -> Result<i32> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&letters)?);
             } else if letters.is_empty() {
-                println!("{} 没有{}消息。", target.display_name(), if all { "" } else { "未读" });
+                println!("{}", t("cli.inbox_empty").replace("{who}", &target.display_name()).replace("{unread}", if all { "" } else { t("cli.unread") }));
             } else {
                 for l in &letters {
-                    println!("[{}] {} 来自 {} · {}\n    {}", model::short_id(&l.id), l.status, l.from_name, l.created, first_line(&l.body));
+                    println!("{}\n    {}", t("cli.inbox_line").replace("{id}", &model::short_id(&l.id)).replace("{status}", status_label(&l.status)).replace("{from}", &l.from_name).replace("{created}", &l.created), first_line(&l.body));
                 }
             }
         }
@@ -264,7 +267,7 @@ fn run() -> Result<i32> {
                 println!("{}", serde_json::to_string_pretty(&v)?);
             } else {
                 for c in v["copies"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
-                    println!("{} → {} ({}): {}\n    文件 {}", c["from_name"].as_str().unwrap_or(""), c["to_name"].as_str().unwrap_or(""), model::short_id(c["to"].as_str().unwrap_or("")), c["stage"].as_str().unwrap_or(""), c["path"].as_str().unwrap_or(""));
+                    println!("{} → {} ({}): {}\n    {}", c["from_name"].as_str().unwrap_or(""), c["to_name"].as_str().unwrap_or(""), model::short_id(c["to"].as_str().unwrap_or("")), c["stage"].as_str().unwrap_or(""), t("cli.file").replace("{p}", c["path"].as_str().unwrap_or("")));
                     for r in c["runs"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
                         let at = r["at"].as_str().unwrap_or("");
                         println!("    {} {} {} {}", at.get(11..19).unwrap_or(at), r["action"].as_str().unwrap_or(""), r["result"].as_str().unwrap_or(""), r["detail"].as_str().unwrap_or(""));
@@ -276,14 +279,14 @@ fn run() -> Result<i32> {
             HookCmd::Install => {
                 let bin = std::env::current_exe()?.to_string_lossy().to_string();
                 hook::install(&bin)?;
-                println!("已装：UserPromptSubmit / Stop / SessionStart → {bin} hook run");
+                println!("{}", t("cli.hook_done").replace("{bin}", &bin));
             }
             HookCmd::Uninstall => {
                 hook::uninstall()?;
-                println!("已卸。");
+                println!("{}", t("cli.hook_removed"));
             }
             HookCmd::Status => {
-                println!("{}", if hook::installed() { "已装" } else { "没装" });
+                println!("{}", if hook::installed() { t("cli.installed") } else { t("cli.not_installed") });
             }
             HookCmd::Run => {
                 let mut input = String::new();
@@ -310,7 +313,7 @@ fn read_text(words: Vec<String>) -> Result<String> {
     let mut s = String::new();
     std::io::stdin().read_to_string(&mut s)?;
     if s.trim().is_empty() {
-        return Err(anyhow!("消息内容是空的（写在参数里，或从 stdin 传）"));
+        return Err(anyhow!("{}", t("cli.empty_text")));
     }
     Ok(s)
 }

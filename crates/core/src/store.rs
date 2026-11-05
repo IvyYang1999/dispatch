@@ -21,6 +21,16 @@ pub const DELIVERED_INBOX: &str = "已送达（直投）";
 pub const DELIVERED_CODEX: &str = "已送达（Codex 已入队）";
 pub const READ_BY_HOOK: &str = "已读（hook代标）";
 pub const REPLIED: &str = "已回复";
+pub const URGENCY_NORMAL: &str = "普通";
+pub const URGENCY_URGENT: &str = "紧急";
+
+/// The urgency as the file stores it: `urgent` / `紧急` → `紧急`, anything else → `普通`.
+pub fn urgency_stored(s: &str) -> &'static str {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "urgent" | "紧急" | "high" => URGENCY_URGENT,
+        _ => URGENCY_NORMAL,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Letter {

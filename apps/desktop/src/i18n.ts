@@ -1,0 +1,209 @@
+// The app's two languages. The backend holds the choice (settings.json in the store
+// folder), so the command line and the hook follow the same switch.
+import { useSyncExternalStore } from 'react'
+import { api } from './api'
+
+export type Lang = 'zh' | 'en'
+
+const zh = {
+  'nav.feed': '派发',
+  'nav.agents': '名录',
+  'nav.compose': '发送',
+  'nav.settings': '设置',
+  'side.local': '本机',
+  'tabs.all': '全部',
+  'tabs.queued': '排队中',
+  'tabs.failed': '没送到',
+  'kind.queued': '排队中',
+  'kind.delivered': '已送达',
+  'kind.working': '处理中',
+  'kind.replied': '已回复',
+  'kind.failed': '没送到',
+  'feed.send': '发送',
+  'feed.empty': '还没有派发。点右上角「发送」，或让任何一个 Agent 用 Dispatch 发一条。',
+  'feed.pick': '选一条派发看详情',
+  'feed.sentOne': '发给 1 个',
+  'feed.sentMany': '发给 {n} 个',
+  'feed.recipients': '收件人',
+  'summary.all': '全部已回复',
+  'summary.some': '{n}/{m} 已回复',
+  'action.open': '打开会话',
+  'action.message': '发消息',
+  'agents.showAll': '含最近 48 小时没开着的',
+  'agents.empty': '没有找到会话。开着的 Claude Code 会话会自动出现在这里。',
+  'presence.idle': '空闲',
+  'presence.busy': '工作中',
+  'presence.running': '工作中',
+  'presence.waiting': '等待输入',
+  'presence.offline': '离线',
+  'compose.to': '收件人',
+  'compose.addMore': '再加一个…',
+  'compose.toPlaceholder': '名字、目录，或它正在做的事',
+  'reason.name': '名字匹配',
+  'reason.cwd': '目录 {cwd}',
+  'reason.id': 'id 匹配',
+  'reason.title': '正文提到',
+  'picker.hint': '只有唯一命中才会发出；多个时由你选',
+  'compose.body': '内容',
+  'compose.bodyPlaceholder': '像给同事写一段话：要什么、相关的 id 或路径、什么时候要。对方可以用 dispatch_reply 回你。',
+  'compose.urgency': '紧急度',
+  'urgency.normal': '普通',
+  'urgency.urgent': '紧急',
+  'compose.send': '发送',
+  'settings.agents': '这台 Mac 上的 Agent',
+  'settings.agentsSub': '一键安装：把命令行放到 ~/.dispatch/bin，装 Claude Code 的 hook，把 MCP 注册给 Codex。',
+  'settings.cli': '命令行、hook、Codex 注册',
+  'settings.cliInstalled': '已装：{p}',
+  'settings.cliBundled': '还没装，App 包里带着',
+  'settings.cliNone': 'App 包里没有命令行（开发模式）',
+  'settings.reinstall': '重新安装',
+  'settings.install': '一键安装',
+  'settings.hookOn': 'hook 已装',
+  'settings.hookOff': 'hook 没装：没开着或跳过权限确认的会话收不到消息',
+  'settings.pluginAndHook': '插件和 hook 已装',
+  'settings.hookOnly': '只装 hook',
+  'settings.codexDaemon': '找到 {p}；daemon 在跑，挂着 {n} 个会话',
+  'settings.codexNoDaemon': '找到 {p}；app-server daemon 没开，消息会等到它开了再送',
+  'settings.codexMissing': '本机没找到 codex 命令',
+  'settings.claudePlugin': 'Claude Code 插件',
+  'settings.claudePluginSub': 'MCP 工具 + skill + hook，一步装进每个会话',
+  'settings.grok': 'Grok Bot',
+  'settings.grokSub': '投递还没接上；先给它装 skill，它就会用 Dispatch 发信和查信',
+  'settings.messages': '消息',
+  'settings.storeWhere': '消息存在哪',
+  'settings.updates': '更新',
+  'settings.updateIdle': '启动时不自动更新；点右边检查',
+  'settings.updateAvailable': '有新版本 {v}',
+  'settings.upToDate': '已是最新',
+  'settings.updateRestart': '更新并重启',
+  'settings.checking': '检查中…',
+  'settings.check': '检查更新',
+  'settings.language': '语言',
+  'settings.languageSub': 'App、命令行和递给 Agent 的提示语都跟着它',
+}
+
+const en: Record<Key, string> = {
+  'nav.feed': 'Feed',
+  'nav.agents': 'Directory',
+  'nav.compose': 'Send',
+  'nav.settings': 'Settings',
+  'side.local': 'This Mac',
+  'tabs.all': 'All',
+  'tabs.queued': 'Queued',
+  'tabs.failed': 'Failed',
+  'kind.queued': 'Queued',
+  'kind.delivered': 'Delivered',
+  'kind.working': 'Working',
+  'kind.replied': 'Replied',
+  'kind.failed': 'Failed',
+  'feed.send': 'Send',
+  'feed.empty': 'No dispatches yet. Press Send in the top right, or have any agent send one through Dispatch.',
+  'feed.pick': 'Pick a dispatch to see its details',
+  'feed.sentOne': 'to 1 recipient',
+  'feed.sentMany': 'to {n} recipients',
+  'feed.recipients': 'Recipients',
+  'summary.all': 'All replied',
+  'summary.some': '{n}/{m} replied',
+  'action.open': 'Open session',
+  'action.message': 'Message',
+  'agents.showAll': 'Include the last 48 hours',
+  'agents.empty': 'No sessions found. Running Claude Code sessions appear here on their own.',
+  'presence.idle': 'Idle',
+  'presence.busy': 'Working',
+  'presence.running': 'Working',
+  'presence.waiting': 'Waiting for input',
+  'presence.offline': 'Offline',
+  'compose.to': 'To',
+  'compose.addMore': 'Add another…',
+  'compose.toPlaceholder': 'A name, a folder, or what it is working on',
+  'reason.name': 'name matches',
+  'reason.cwd': 'folder {cwd}',
+  'reason.id': 'id matches',
+  'reason.title': 'mentioned in its first message',
+  'picker.hint': 'Sent only to the one you pick',
+  'compose.body': 'Message',
+  'compose.bodyPlaceholder': 'Write it as you would brief a colleague: what you need, any ids or paths, by when. They can answer with dispatch_reply.',
+  'compose.urgency': 'Urgency',
+  'urgency.normal': 'Normal',
+  'urgency.urgent': 'Urgent',
+  'compose.send': 'Send',
+  'settings.agents': 'Agents on this Mac',
+  'settings.agentsSub': 'One click: puts the command line at ~/.dispatch/bin, installs the Claude Code hook and registers the MCP server with Codex.',
+  'settings.cli': 'Command line, hook, Codex registration',
+  'settings.cliInstalled': 'Installed: {p}',
+  'settings.cliBundled': 'Not installed yet; the app carries it',
+  'settings.cliNone': 'No command line in this bundle (dev mode)',
+  'settings.reinstall': 'Reinstall',
+  'settings.install': 'Install',
+  'settings.hookOn': 'Hook installed',
+  'settings.hookOff': 'Hook not installed: sessions that are closed or bypass permission checks cannot receive messages',
+  'settings.pluginAndHook': 'Plugin and hook installed',
+  'settings.hookOnly': 'Install the hook only',
+  'settings.codexDaemon': 'Found {p}; the daemon is running with {n} thread(s) loaded',
+  'settings.codexNoDaemon': 'Found {p}; the app-server daemon is not running, so messages wait until it is',
+  'settings.codexMissing': 'No codex command on this Mac',
+  'settings.claudePlugin': 'Claude Code plugin',
+  'settings.claudePluginSub': 'MCP tools + skill + hook, into every session in one step',
+  'settings.grok': 'Grok Bot',
+  'settings.grokSub': 'Delivery is not connected yet; give it the skill and it can send and read through Dispatch',
+  'settings.messages': 'Messages',
+  'settings.storeWhere': 'Where messages live',
+  'settings.updates': 'Updates',
+  'settings.updateIdle': 'No automatic updates at launch; check on the right',
+  'settings.updateAvailable': 'Version {v} is available',
+  'settings.upToDate': 'Up to date',
+  'settings.updateRestart': 'Update and restart',
+  'settings.checking': 'Checking…',
+  'settings.check': 'Check for updates',
+  'settings.language': 'Language',
+  'settings.languageSub': 'The app, the command line and what agents are handed all follow it',
+}
+
+export type Key = keyof typeof zh
+const dict: Record<Lang, Record<Key, string>> = { zh, en }
+
+let current: Lang = (typeof navigator !== 'undefined' && (navigator.language || '').toLowerCase().startsWith('zh')) ? 'zh' : 'en'
+const listeners = new Set<() => void>()
+const emit = () => listeners.forEach((l) => l())
+
+export function t(key: Key, vars?: Record<string, string | number>): string {
+  let s = dict[current][key] ?? dict.en[key] ?? key
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v))
+  return s
+}
+
+export function useLang(): Lang {
+  return useSyncExternalStore(
+    (cb) => {
+      listeners.add(cb)
+      return () => listeners.delete(cb)
+    },
+    () => current,
+    () => current,
+  )
+}
+
+/** Ask the backend which language is set (its settings file, else the system language). */
+export async function loadLang(): Promise<void> {
+  try {
+    const l = await api.getLang()
+    if ((l === 'zh' || l === 'en') && l !== current) {
+      current = l
+      emit()
+    }
+  } catch {
+    /* the backend may not be up yet; the navigator guess stays */
+  }
+}
+
+export async function setLang(l: Lang): Promise<void> {
+  if (l !== current) {
+    current = l
+    emit()
+  }
+  try {
+    await api.setLang(l)
+  } catch {
+    /* the switch still applies to this window */
+  }
+}

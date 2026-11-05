@@ -19,3 +19,4 @@ libc = "0.2"
 walkdir = "2"
 regex = "1"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+sys-locale = "0.3"

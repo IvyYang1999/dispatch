@@ -36,7 +36,7 @@ fn tools() -> Value {
         {
             "name": "dispatch_send",
             "description": "Send one message to one or more sessions (by id, id prefix, or desktop name). Each recipient gets its own copy and delivery state: delivered straight into a running session when it will take it, otherwise stored and handed over by its hook the next time it speaks. Returns per-recipient route and detail plus the dispatch_id for dispatch_status. Write the message as you would brief a colleague: what you need, by when, and that they can reply with dispatch_reply.",
-            "inputSchema": { "type": "object", "properties": { "to": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "text": { "type": "string" }, "urgency": { "type": "string", "enum": ["普通", "紧急"], "default": "普通" } }, "required": ["to", "text"], "additionalProperties": false }
+            "inputSchema": { "type": "object", "properties": { "to": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "text": { "type": "string" }, "urgency": { "type": "string", "enum": ["normal", "urgent", "普通", "紧急"], "default": "normal" } }, "required": ["to", "text"], "additionalProperties": false }
         },
         {
             "name": "dispatch_inbox",
@@ -50,7 +50,7 @@ fn tools() -> Value {
         },
         {
             "name": "dispatch_status",
-            "description": "Where a message stands: every recipient copy of its dispatch with a stage (排队中 queued, 已送达 delivered, 处理中 the session started on it, 本轮结束 it finished the turn, 已回复 replied) and the delivery log.",
+            "description": "Where a message stands: every recipient copy of its dispatch with a kind (queued, delivered, working = the session started on it, replied = it answered or finished the turn), a stage text in the user's language, and the delivery log.",
             "inputSchema": { "type": "object", "properties": { "id": { "type": "string", "description": "A letter id, its prefix, or a dispatch_id" } }, "required": ["id"], "additionalProperties": false }
         }
     ])
@@ -66,7 +66,7 @@ fn call(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
         "dispatch_send" => {
             let to: Vec<String> = args.get("to").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
             let text = s("text").ok_or("text is required")?;
-            ops::send_many(store, &to, &text, &s("urgency").unwrap_or_else(|| "普通".into()), None).map_err(|e| format!("{e:#}"))
+            ops::send_many(store, &to, &text, &s("urgency").unwrap_or_else(|| "normal".into()), None).map_err(|e| format!("{e:#}"))
         }
         "dispatch_inbox" => ops::inbox(store, s("session").as_deref(), b("all").unwrap_or(false)).map_err(|e| format!("{e:#}")),
         "dispatch_reply" => ops::reply(store, &s("id").ok_or("id is required")?, &s("text").ok_or("text is required")?).map_err(|e| format!("{e:#}")),
