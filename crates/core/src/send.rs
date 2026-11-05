@@ -117,8 +117,8 @@ fn send_codex(store: &Store, req: &Request, letter: &mut Letter, report: impl Fn
     match crate::codex::queue(&req.to.id, &text, !loaded) {
         Ok(out) => {
             store.set_status(letter, store::DELIVERED_CODEX)?;
-            store.append_run(&letter.id, "codex", "queued", &format!("{}{}", if loaded { "" } else { "resumed; " }, out))?;
-            Ok(report("inbox", if loaded { "已入队：排在它当前这一轮之后".into() } else { "已恢复并入队：daemon 把会话从历史恢复了，注意它可能不是桌面里那个实例".into() }))
+            store.append_run(&letter.id, "codex", "queued", &format!("{}{}", if out.resumed { "resumed; " } else { "" }, out.detail))?;
+            Ok(report("inbox", if loaded { "已入队：等待会话处理；是否开始以回执为准".into() } else if out.resumed { "已入队，daemon 已加载会话；是否开始以回执为准".into() } else { format!("已入队，但未确认恢复或唤醒；请检查 Codex：{}", out.detail) }))
         }
         Err(e) => {
             store.append_run(&letter.id, "codex", "failed", &format!("{e:#}"))?;

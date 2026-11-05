@@ -168,7 +168,7 @@ fn run() -> Result<i32> {
             println!("二进制：{}", target.display());
             hook::install(&target.to_string_lossy())?;
             println!("Claude Code hook：已装（指向上面的二进制）");
-            if let Ok(out) = std::process::Command::new("codex").args(["mcp", "add", "dispatch", "--", &target.to_string_lossy(), "mcp"]).output() {
+            if let Ok(out) = dispatch_core::codex::command().args(["mcp", "add", "dispatch", "--", &target.to_string_lossy(), "mcp"]).output() {
                 if out.status.success() {
                     println!("Codex MCP：已注册 `dispatch`（codex mcp list 可见）");
                 } else {

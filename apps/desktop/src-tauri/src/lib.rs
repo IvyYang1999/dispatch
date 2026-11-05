@@ -77,12 +77,6 @@ async fn open_session(id: String) -> Result<Value, String> {
     .await
 }
 
-fn which(cmd: &str) -> Option<String> {
-    let out = std::process::Command::new("sh").args(["-lc", &format!("command -v {cmd}")]).output().ok()?;
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!s.is_empty()).then_some(s)
-}
-
 /// The `dispatch` command line: the sidecar inside this app bundle, else an installed copy.
 fn cli_path() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
@@ -112,7 +106,7 @@ async fn setup_status() -> Result<Value, String> {
             "hook_installed": hook::installed(),
             "binary": bin.is_file().then(|| bin.to_string_lossy().to_string()),
             "bundled_cli": cli_path().map(|p| p.to_string_lossy().to_string()),
-            "codex": which("codex"),
+            "codex": dispatch_core::codex::executable().map(|p| p.to_string_lossy().to_string()),
             "codex_daemon": codex.daemon,
             "codex_loaded": codex.loaded.len(),
             "store_root": Store::open().root().to_string_lossy(),

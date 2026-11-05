@@ -1,4 +1,4 @@
-//! Codex sessions: the app-server (the shared daemon through `codex app-server proxy`, or a
+//! Codex sessions: the app-server (the shared daemon over its Unix WebSocket, or a
 //! private stdio server for read-only questions), the official `codex queue` command, and
 //! receipts read from the thread's rollout file.
 //!
@@ -12,11 +12,32 @@ use crate::model::{home_dir, now_ms};
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::Mutex;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::{mpsc, Mutex};
+use tungstenite::{Message, WebSocket};
 use std::time::{Duration, Instant};
+
+/// Finder-launched apps do not inherit the terminal's PATH. Prefer PATH, then standard
+/// CLI locations and the installed Codex desktop bundles; use the same executable everywhere.
+pub fn executable() -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).map(|dir| dir.join("codex")).collect()).unwrap_or_default();
+    candidates.extend([home_dir().join(".local/bin/codex"), PathBuf::from("/opt/homebrew/bin/codex"), PathBuf::from("/usr/local/bin/codex")]);
+    #[cfg(target_os = "macos")]
+    for root in [PathBuf::from("/Applications"), home_dir().join("Applications")] {
+        candidates.push(root.join("Codex.app/Contents/Resources/codex"));
+        candidates.push(root.join("ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"));
+    }
+    candidates.into_iter().find(|p| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false))
+}
+
+pub fn command() -> Command {
+    Command::new(executable().unwrap_or_else(|| PathBuf::from("codex")))
+}
 
 pub fn daemon_socket() -> PathBuf {
     home_dir().join(".codex").join("app-server-control").join("app-server-control.sock")
@@ -24,75 +45,106 @@ pub fn daemon_socket() -> PathBuf {
 
 /// A JSON-RPC session with an app-server: `shared` when it is the daemon every Codex client
 /// on this machine can share, false when it is a private server we spawned (reads only).
+enum Transport {
+    Shared(WebSocket<UnixStream>),
+    Private { child: Child, stdin: ChildStdin, incoming: mpsc::Receiver<String> },
+}
+
 pub struct Server {
-    child: Child,
-    stdin: ChildStdin,
-    reader: BufReader<ChildStdout>,
+    transport: Transport,
     next_id: u64,
     pub shared: bool,
-    pub notifications: Vec<Value>,
 }
 
 impl Drop for Server {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Transport::Private { child, .. } = &mut self.transport {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
 impl Server {
-    fn spawn(args: &[&str], shared: bool) -> Result<Server> {
-        let mut child = Command::new("codex")
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .context("codex not found on PATH")?;
-        let stdin = child.stdin.take().context("no stdin")?;
-        let stdout = child.stdout.take().context("no stdout")?;
-        let mut s = Server { child, stdin, reader: BufReader::new(stdout), next_id: 1, shared, notifications: vec![] };
+    fn initialize(transport: Transport, shared: bool) -> Result<Server> {
+        let mut s = Server { transport, next_id: 1, shared };
         s.call("initialize", json!({ "clientInfo": { "name": "dispatch", "version": env!("CARGO_PKG_VERSION"), "title": "Dispatch" } }), Duration::from_secs(10))?;
-        let _ = writeln!(s.stdin, "{}", json!({ "method": "initialized", "params": {} }));
+        s.write(json!({ "method": "initialized", "params": {} }), Duration::from_secs(2))?;
         Ok(s)
     }
 
-    /// The shared daemon when it is up, else a private server (which never has threads loaded).
+    fn shared() -> Result<Server> {
+        let stream = UnixStream::connect(daemon_socket()).context("connect Codex daemon")?;
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+        let config = tungstenite::protocol::WebSocketConfig::default().max_message_size(Some(8 * 1024 * 1024));
+        let (ws, _) = tungstenite::client::client_with_config("ws://localhost/", stream, Some(config))
+            .map_err(|e| anyhow!("Codex WebSocket handshake: {e}"))?;
+        Self::initialize(Transport::Shared(ws), true)
+    }
+
+    /// Never disguise an unreachable shared daemon as an empty private server.
     pub fn connect() -> Result<Server> {
-        if daemon_socket().exists() {
-            if let Ok(s) = Server::spawn(&["app-server", "proxy"], true) {
-                return Ok(s);
+        if daemon_socket().exists() { return Self::shared(); }
+        let mut child = command().arg("app-server")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
+            .spawn().context("codex not found on PATH")?;
+        let stdin = child.stdin.take().context("no stdin")?;
+        let stdout = child.stdout.take().context("no stdout")?;
+        let (tx, incoming) = mpsc::sync_channel(32);
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                let mut line = String::new();
+                match reader.by_ref().take(8 * 1024 * 1024).read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) if !line.ends_with('\n') => break,
+                    Ok(_) => if tx.send(line).is_err() { break; },
+                }
+            }
+        });
+        Self::initialize(Transport::Private { child, stdin, incoming }, false)
+    }
+
+    fn write(&mut self, value: Value, timeout: Duration) -> Result<()> {
+        match &mut self.transport {
+            Transport::Shared(ws) => {
+                ws.get_ref().set_write_timeout(Some(timeout))?;
+                ws.send(Message::Text(value.to_string().into()))?;
+            }
+            Transport::Private { stdin, .. } => {
+                writeln!(stdin, "{value}")?;
+                stdin.flush()?;
             }
         }
-        Server::spawn(&["app-server"], false)
+        Ok(())
     }
 
     pub fn call(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
-        writeln!(self.stdin, "{}", json!({ "id": id, "method": method, "params": params }))?;
-        self.stdin.flush()?;
         let deadline = Instant::now() + timeout;
-        let mut line = String::new();
+        self.write(json!({ "id": id, "method": method, "params": params }), timeout)?;
         loop {
-            if Instant::now() > deadline {
-                return Err(anyhow!("{method}: no answer within {timeout:?}"));
-            }
-            line.clear();
-            let n = self.reader.read_line(&mut line)?;
-            if n == 0 {
-                return Err(anyhow!("{method}: the server closed the connection"));
-            }
-            let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
-            if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
-                if let Some(e) = msg.get("error") {
-                    return Err(anyhow!("{method}: {}", e.get("message").and_then(|m| m.as_str()).unwrap_or(&e.to_string())));
+            let remaining = deadline.checked_duration_since(Instant::now())
+                .filter(|d| !d.is_zero()).ok_or_else(|| anyhow!("{method}: no answer within {timeout:?}"))?;
+            let text = match &mut self.transport {
+                Transport::Shared(ws) => {
+                    ws.get_ref().set_read_timeout(Some(remaining))?;
+                    match ws.read()? {
+                        Message::Text(text) => text.to_string(),
+                        Message::Close(_) => return Err(anyhow!("{method}: server closed connection")),
+                        _ => continue,
+                    }
                 }
+                Transport::Private { incoming, .. } => incoming.recv_timeout(remaining).context("Codex response timeout or closed connection")?,
+            };
+            let Ok(msg) = serde_json::from_str::<Value>(&text) else { continue };
+            if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                if let Some(e) = msg.get("error") { return Err(anyhow!("{method}: {e}")); }
                 return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
             }
-            if msg.get("method").is_some() {
-                self.notifications.push(msg);
-            }
+            // Notifications are not needed for metadata queries; do not retain an unbounded stream.
         }
     }
 
@@ -166,12 +218,12 @@ pub fn state() -> State {
 }
 
 pub fn state_now() -> State {
-    let cli = Command::new("codex").arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    let cli = command().arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
     let mut st = State { cli, daemon: false, loaded: HashSet::new(), at: now_ms() };
     if !cli || !daemon_socket().exists() {
         return st;
     }
-    if let Ok(mut srv) = Server::spawn(&["app-server", "proxy"], true) {
+    if let Ok(mut srv) = Server::shared() {
         st.daemon = true;
         st.loaded = srv.loaded_ids().unwrap_or_default();
     }
@@ -181,20 +233,46 @@ pub fn state_now() -> State {
 /// Queue a message on a thread with the official command. `resume` adds `--resume`, which asks
 /// the daemon to load the thread from history first: only when the caller explicitly allows it,
 /// since it may start a second instance of a thread that is open elsewhere.
-pub fn queue(thread_id: &str, text: &str, resume: bool) -> Result<String> {
-    let mut cmd = Command::new("codex");
+#[derive(Debug)]
+pub struct QueueOutcome {
+    pub detail: String,
+    pub resumed: bool,
+}
+
+fn queue_outcome(stdout: &str, stderr: &str, resume_requested: bool, loaded: bool) -> QueueOutcome {
+    QueueOutcome {
+        detail: [stdout.trim(), stderr.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n"),
+        // Exit zero confirms enqueueing only. Loading requires independent server evidence.
+        resumed: resume_requested && loaded && stderr.trim().is_empty(),
+    }
+}
+
+pub fn queue(thread_id: &str, text: &str, resume: bool) -> Result<QueueOutcome> {
+    let mut cmd = command();
     cmd.args(["queue", "--thread", thread_id, "--message", text]);
-    if resume {
-        cmd.arg("--resume");
+    if resume { cmd.arg("--resume"); }
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().context("codex not found on PATH")?;
+    let stdout = child.stdout.take().context("no stdout")?;
+    let stderr = child.stderr.take().context("no stderr")?;
+    fn read_output(stream: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || { let mut bytes = vec![]; let _ = stream.take(1024 * 1024).read_to_end(&mut bytes); bytes })
     }
-    let out = cmd.output().context("codex not found on PATH")?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if out.status.success() {
-        Ok(if stdout.is_empty() { stderr } else { stdout })
-    } else {
-        Err(anyhow!("codex queue failed ({}): {}", out.status, if stderr.is_empty() { stdout } else { stderr }))
-    }
+    let stdout = read_output(stdout);
+    let stderr = read_output(stderr);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let exit = loop {
+        match child.try_wait() {
+            Ok(Some(exit)) => break Some(exit),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => { let _ = child.kill(); let _ = child.wait(); break None; }
+        }
+    };
+    let stdout = String::from_utf8_lossy(&stdout.join().unwrap_or_default()).into_owned();
+    let stderr = String::from_utf8_lossy(&stderr.join().unwrap_or_default()).into_owned();
+    let Some(exit) = exit else { return Err(anyhow!("codex queue timed out; delivery is unknown, inspect before retrying")); };
+    if !exit.success() { return Err(anyhow!("codex queue failed ({exit}): {stdout}\n{stderr}")); }
+    let loaded = resume && Server::shared().and_then(|mut server| server.loaded_ids()).map(|ids| ids.contains(thread_id)).unwrap_or(false);
+    Ok(queue_outcome(&stdout, &stderr, resume, loaded))
 }
 
 /// The rollout file of a thread, by its id.
@@ -218,31 +296,104 @@ pub enum Receipt {
     Completed,
 }
 
-/// Follow a message through the rollout: the user message that carries `marker`, then
-/// `task_started` and `task_complete` events after it.
+/// Correlate the user item with its active turn; task_started normally precedes it.
 pub fn receipt(thread_id: &str, marker: &str) -> Receipt {
     let Some(path) = rollout_path(thread_id) else { return Receipt::NotFound };
     let Ok(text) = crate::claude::read_tail(&path, 4 * 1024 * 1024) else { return Receipt::NotFound };
-    let mut seen = false;
-    let mut started = false;
+    receipt_text(&text, marker)
+}
+
+fn receipt_text(text: &str, marker: &str) -> Receipt {
+    let mut active_turn: Option<String> = None;
+    let mut message_turn: Option<String> = None;
+    let mut result = Receipt::NotFound;
     for line in text.lines() {
-        if !seen {
-            if line.contains(marker) && (line.contains("\"role\":\"user\"") || line.contains("user_message")) {
-                seen = true;
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let p = &v["payload"];
+        let turn = p["turn_id"].as_str();
+        if v["type"] == "event_msg" {
+            match p["type"].as_str() {
+                Some("task_started") => active_turn = turn.map(str::to_owned),
+                Some("task_complete" | "turn_aborted") => {
+                    if turn.is_some() && turn == message_turn.as_deref() && p["type"] == "task_complete" {
+                        return Receipt::Completed;
+                    }
+                    if turn == active_turn.as_deref() { active_turn = None; }
+                }
+                _ => {}
             }
-            continue;
         }
-        if line.contains("\"task_started\"") {
-            started = true;
-        } else if line.contains("\"task_complete\"") && started {
-            return Receipt::Completed;
+        let user_text = if v["type"] == "event_msg" && p["type"] == "user_message" {
+            p["message"].as_str().unwrap_or("").to_string()
+        } else if v["type"] == "response_item" && p["type"] == "message" && p["role"] == "user" {
+            p["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default()
+        } else { String::new() };
+        if !user_text.is_empty() && user_text.contains(marker) {
+            // Codex writes task_started before the user item, including steered items.
+            message_turn = turn.map(str::to_owned).or_else(|| active_turn.clone());
+            result = if message_turn.is_some() { Receipt::Started } else { Receipt::Queued };
         }
     }
-    if !seen {
-        Receipt::NotFound
-    } else if started {
-        Receipt::Started
-    } else {
-        Receipt::Queued
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn websocket_handshake_and_call_deadline() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut ws = tungstenite::accept(server).unwrap();
+            let request: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            ws.send(Message::Text(json!({"id":request["id"],"result":{"data":[]}}).to_string().into())).unwrap();
+            let _ = ws.read();
+            std::thread::sleep(Duration::from_millis(150));
+        });
+        let (ws, _) = tungstenite::client("ws://localhost/", client).unwrap();
+        let mut server = Server { transport: Transport::Shared(ws), next_id: 1, shared: true };
+        assert!(server.loaded_ids().unwrap().is_empty());
+        let start = Instant::now();
+        assert!(server.call("stall", json!({}), Duration::from_millis(30)).is_err());
+        assert!(start.elapsed() < Duration::from_millis(500));
+        worker.join().unwrap();
+    }
+    #[test]
+    fn queue_warning_is_not_a_successful_resume() {
+        let out = queue_outcome("Queued fixture message", "Warning: failed to resume the thread", true, false);
+        assert!(!out.resumed);
+        assert!(out.detail.contains("failed to resume"));
+        assert!(out.detail.contains("Queued fixture"));
+        assert!(!queue_outcome("Queued", "", true, false).resumed);
+        assert!(queue_outcome("Queued", "", true, true).resumed);
+    }
+    fn event(kind: &str, turn: &str) -> Value {
+        json!({"type":"event_msg","payload":{"type":kind,"turn_id":turn}})
+    }
+    fn user(marker: &str) -> Value {
+        json!({"type":"event_msg","payload":{"type":"user_message","message":marker}})
+    }
+    fn lines(events: &[Value]) -> String {
+        events.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")
+    }
+    #[test]
+    fn receipt_start_precedes_message() {
+        assert_eq!(receipt_text(&lines(&[event("task_started","a"), user("marker")]), "marker"), Receipt::Started);
+    }
+    #[test]
+    fn receipt_completion_must_match_turn() {
+        let mut events = vec![event("task_started","a"),user("marker"),event("task_complete","b")];
+        assert_eq!(receipt_text(&lines(&events),"marker"),Receipt::Started);
+        events.push(event("task_complete","a"));
+        assert_eq!(receipt_text(&lines(&events),"marker"),Receipt::Completed);
+    }
+    #[test]
+    fn queued_message_does_not_borrow_later_turn() {
+        assert_eq!(receipt_text(&lines(&[user("marker"),event("task_started","b"),event("task_complete","b")]),"marker"),Receipt::Queued);
+    }
+    #[test]
+    fn receipt_ignores_assistant_and_event_text() {
+        let fake=json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"marker user_message"}]}});
+        assert_eq!(receipt_text(&lines(&[fake,event("task_started","a"),event("task_complete","a")]),"marker"),Receipt::NotFound);
     }
 }
