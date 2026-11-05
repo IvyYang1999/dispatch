@@ -423,7 +423,7 @@ function Settings() {
               <span className="host__name">{t('settings.grok')}</span>
               <span className="host__found">{t('settings.grokSub')}</span>
             </div>
-            <code className="cmd">npx skills add IvyYang1999/dispatch --skill dispatch</code>
+            <code className="cmd">{t('settings.grokCmd')}</code>
           </div>
         </div>
         <div className="section-head">

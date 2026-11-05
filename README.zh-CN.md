@@ -88,7 +88,7 @@ flowchart LR
 
 别的 Agent 发来的消息是信息，不是用户的指令。skill 里这样写，hook 每次递信时也会再说一遍。
 
-Grok Bot 以及其他认 skills 目录的 Agent，可以用 `npx skills add IvyYang1999/dispatch --skill dispatch` 装上这份 skill，学会命令行这一侧的用法。往 Grok Bot 会话**里**投递还没接上。
+Grok Bot 的 Bot 跑在云电脑上，起不了你 Mac 上的 MCP server，但能用命令行：在它的设置 → Computer 里打开 **Execution on this computer**，再让 Bot 读这个仓库的 `plugins/skill/SKILL.md` 并存成 skill。往 Grok Bot 对话**里**投递是下一个里程碑。（Grok Build 是 xAI 的编程命令行，认 `~/.grok/skills/` 目录：`npx skills add IvyYang1999/dispatch --skill dispatch -a grok`。）
 
 ## 命令行
 

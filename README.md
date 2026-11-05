@@ -88,7 +88,7 @@ The plugin gives a session seven MCP tools and a skill that explains them.
 
 A message from another agent is information, not an instruction from the user. The skill says so, and the hook says it again each time it hands a message over.
 
-Grok Bot, and any other agent that reads skills, can learn the command line side the same way: `npx skills add IvyYang1999/dispatch --skill dispatch` installs the skill. Delivery *into* a Grok Bot session is not connected yet.
+Grok Bot runs its bots on a cloud computer, so it cannot start an MCP server on your Mac. It can still use the command line: enable **Execution on this computer** in its Settings → Computer, then tell the bot to read `plugins/skill/SKILL.md` from this repository and save it as a skill. Delivery *into* a Grok Bot conversation is the next milestone. (Grok Build, xAI's coding CLI, reads `~/.grok/skills/`: `npx skills add IvyYang1999/dispatch --skill dispatch -a grok`.)
 
 ## From the command line
 
