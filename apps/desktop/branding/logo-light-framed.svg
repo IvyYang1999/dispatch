@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The Codex sketch, rebuilt: a heavy D whose bowl becomes two S-curves that cross at its rightmost
+       point and sweep out to solid heads whose tips sit on the D's top and bottom lines, inside a
+       rounded frame with three gaps. Mirror-symmetric about y=512. -->
+  <rect width="1024" height="1024" fill="#ffffff"/>
+  <g fill="none" stroke="#111111" stroke-width="54" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 400 120 H 714 A 190 190 0 0 1 904 310 V 462"/>
+    <path d="M 904 562 V 714 A 190 190 0 0 1 714 904 H 400"/>
+    <path d="M 300 120 H 310 A 190 190 0 0 0 120 310 V 714 A 190 190 0 0 0 310 904 H 300"/>
+  </g>
+  <g transform="translate(-45 0)">
+    <g fill="none" stroke="#111111" stroke-width="100" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 270 734 V 290 H 380 C 530 290, 575 420, 610 512 C 625 549, 728 634, 780 664"/>
+      <path d="M 270 734 H 380 C 530 734, 575 604, 610 512 C 625 475, 728 390, 780 360"/>
+    </g>
+    <g fill="#111111">
+      <path d="M 840 560 L 901 734 L 720 768 Z"/>
+      <path d="M 840 464 L 901 290 L 720 256 Z"/>
+    </g>
+  </g>
+</svg>

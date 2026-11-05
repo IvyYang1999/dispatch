@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The app icon: the tile is the frame, so only the D and its arrows, in white on black. -->
+  <rect width="1024" height="1024" rx="230" fill="#111111"/>
+  <g transform="translate(-50 0)">
+    <g fill="none" stroke="#ffffff" stroke-width="100" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M 270 734 V 290 H 380 C 530 290, 575 420, 610 512 C 625 549, 728 634, 780 664"/>
+      <path d="M 270 734 H 380 C 530 734, 575 604, 610 512 C 625 475, 728 390, 780 360"/>
+    </g>
+    <g fill="#ffffff">
+      <path d="M 840 560 L 901 734 L 720 768 Z"/>
+      <path d="M 840 464 L 901 290 L 720 256 Z"/>
+    </g>
+  </g>
+</svg>
