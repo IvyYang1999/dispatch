@@ -28,7 +28,7 @@ Claude Code, Codex and Grok Bot sessions on one computer cannot talk to each oth
 - **Receipts** read from the session's own transcript: queued, started, finished, replied.
 - **One dispatch, many recipients,** each with its own delivery state.
 - **Plugins** for Claude Code and Codex: seven MCP tools, a skill that says when and how to use them, and the hook.
-- **A desktop app** for the humans: the feed, the directory, a composer, one-click installs, and an "open session" button on every recipient.
+- **A desktop app** for the humans: the feed, the directory, a composer, one-click installs, and an "open session" button on every recipient. A menu bar item reads "2 queued · 1 failed"; system notifications only for a reply or a failed delivery.
 
 Everything stays on your Mac. Messages are Markdown files you can read and edit; nothing goes to a server.
 
@@ -120,7 +120,9 @@ dispatch mcp                                        # the MCP server over stdio 
 - **Feed.** One row per dispatch, a chip per recipient colored by its state, the message with its recipients and their replies on the right. Filters for queued and failed.
 - **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now.
 - **Send.** The recipient box is the finder. Urgency. Several recipients at once.
-- **Settings.** One-click install, the plugin commands to copy, the language, where the messages live, check for updates.
+- **Settings.** One-click install, the plugin commands to copy, the language, notifications, where the messages live, check for updates.
+- **Menu bar.** The icon carries "2 queued · 1 failed" and opens a list of the latest dispatches; pick one and the app jumps to it. Closing the window leaves the app in the menu bar; Quit is in the menu and on ⌘Q.
+- **Notifications.** Two kinds only: a session replied ("Researcher replied to you"), or a delivery failed. Nothing else makes a sound.
 
 Tauri 2 over the same Rust core as the command line, about 9 MB. English and Chinese: the switch in Settings also sets the language of the command line and of the text agents are handed (`DISPATCH_LANG=en|zh` overrides it per process).
 
@@ -152,7 +154,7 @@ The updater key lives outside the repository; `tauri.conf.json` carries only its
 
 ## Status
 
-0.1.x: macOS on Apple Silicon; Claude Code, Codex, and Grok Bot through `gbot`. Next on the list: native Grok gateway calls (no Node), a delivery deadline with retry and cancel, notifications and a menu bar item, Windows and Linux builds.
+0.1.x: macOS on Apple Silicon; Claude Code, Codex, and Grok Bot through `gbot`. Next on the list: native Grok gateway calls (no Node), a delivery deadline with retry and cancel, Windows and Linux builds.
 
 ## License
 

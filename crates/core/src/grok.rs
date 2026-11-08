@@ -216,11 +216,26 @@ pub fn send(target: &str, text: &str) -> Result<SendOutcome> {
     Ok(parse_send(&out))
 }
 
-/// The bot's recent transcript entries, oldest first.
+static THREADS: Mutex<Vec<(String, i64, Vec<Value>)>> = Mutex::new(Vec::new());
+const THREAD_TTL_MS: i64 = 20_000;
+
+/// The bot's recent transcript entries, oldest first. Cached for 20 seconds per bot: the app's
+/// watcher and the feed ask often, and each read is a gateway call.
 pub fn thread(target: &str) -> Result<Vec<Value>> {
+    let now = crate::model::now_ms();
+    if let Ok(c) = THREADS.lock() {
+        if let Some((_, _, entries)) = c.iter().find(|(t, at, _)| t == target && now - at < THREAD_TTL_MS) {
+            return Ok(entries.clone());
+        }
+    }
     let (out, _) = run(&["thread", target, "--json"], Duration::from_secs(25))?;
     let v = json_of(&out)?;
-    Ok(array_of(&v, &["entries", "items", "data", "transcript", "messages"]))
+    let entries = array_of(&v, &["entries", "items", "data", "transcript", "messages"]);
+    if let Ok(mut c) = THREADS.lock() {
+        c.retain(|(t, _, _)| t != target);
+        c.push((target.to_string(), now, entries.clone()));
+    }
+    Ok(entries)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

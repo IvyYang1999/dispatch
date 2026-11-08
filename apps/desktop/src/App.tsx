@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { listen } from '@tauri-apps/api/event'
 import { api, type Copy, type Dispatch, type Kind, type OpenResult, type Session, type SetupStatus, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
@@ -66,13 +67,20 @@ function useOpen() {
 
 // ---- Feed ----
 
-function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
+function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: string | null }) {
   const lang = useLang()
   const [items, setItems] = useState<Dispatch[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [filter, setFilter] = useState<'all' | 'queued' | 'failed'>('all')
   const [err, setErr] = useState<string | null>(null)
   const { open, notice, clear } = useOpen()
+  // picked in the menu bar: show it whatever the filter
+  useEffect(() => {
+    if (pick) {
+      setSelected(pick)
+      setFilter('all')
+    }
+  }, [pick])
 
   const load = useCallback(async () => {
     try {
@@ -86,7 +94,11 @@ function Feed({ onCompose }: { onCompose: (to?: string) => void }) {
   useEffect(() => {
     load()
     const h = setInterval(load, 5000)
-    return () => clearInterval(h)
+    const un = listen('dispatch:changed', () => load())
+    return () => {
+      clearInterval(h)
+      un.then((f) => f())
+    }
   }, [load])
 
   const shown = useMemo(() => {
@@ -445,6 +457,21 @@ function Settings() {
           </div>
         </div>
         <div className="section-head">
+          <div className="section-head__title">{t('settings.notify')}</div>
+        </div>
+        <div className="card">
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">{st?.notify === false ? t('settings.notifyOff') : t('settings.notifyOn')}</span>
+              <span className="host__found host__found--wrap">{t('settings.notifySub')}</span>
+            </div>
+            <span className="seg">
+              <button data-active={st?.notify !== false || undefined} onClick={() => run('notify', async () => { await api.setNotify(true) })}>{t('settings.notifyOn')}</button>
+              <button data-active={st?.notify === false || undefined} onClick={() => run('notify', async () => { await api.setNotify(false) })}>{t('settings.notifyOff')}</button>
+            </span>
+          </div>
+        </div>
+        <div className="section-head">
           <div className="section-head__title">{t('settings.messages')}</div>
         </div>
         <div className="card">
@@ -494,9 +521,25 @@ export function App() {
   const [composeTo, setComposeTo] = useState<string | undefined>(undefined)
   const [live, setLive] = useState<Session[]>([])
   const [queued, setQueued] = useState(0)
+  const [pick, setPick] = useState<string | null>(null)
 
   useEffect(() => {
     loadLang()
+  }, [])
+  // the menu bar item: a dispatch picked from its list, or Send
+  useEffect(() => {
+    const un1 = listen<string>('tray:select', (e) => {
+      setPick(e.payload)
+      setScreen('feed')
+    })
+    const un2 = listen('tray:compose', () => {
+      setComposeTo(undefined)
+      setScreen('compose')
+    })
+    return () => {
+      un1.then((f) => f())
+      un2.then((f) => f())
+    }
   }, [])
   useEffect(() => {
     const tick = async () => {
@@ -543,7 +586,7 @@ export function App() {
         </div>
       </nav>
       <main className="panel">
-        {screen === 'feed' && <Feed onCompose={compose} />}
+        {screen === 'feed' && <Feed onCompose={compose} pick={pick} />}
         {screen === 'agents' && <Agents onCompose={compose} />}
         {screen === 'compose' && <Compose presetTo={composeTo} onSent={() => setScreen('feed')} />}
         {screen === 'settings' && <Settings />}

@@ -7,6 +7,8 @@
 //! - `hook`: the Claude Code hook that hands waiting messages over.
 //! - `send`: the delivery ladder, tying the above together.
 //! - `i18n`: the language of everything a person reads (English, Chinese).
+//! - `settings`: the settings file the app writes and the CLI and hook read.
+//! - `watch`: what changed in the feed, for the menu bar item and notifications.
 
 pub mod claude;
 pub mod codex;
@@ -19,6 +21,8 @@ pub mod model;
 pub mod ops;
 pub mod reach;
 pub mod send;
+pub mod settings;
 pub mod store;
+pub mod watch;
 
 pub use model::*;

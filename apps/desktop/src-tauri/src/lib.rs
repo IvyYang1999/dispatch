@@ -1,15 +1,34 @@
-//! The desktop shell: thin Tauri commands over dispatch-core.
+//! The desktop shell: thin Tauri commands over dispatch-core, a menu bar item and
+//! system notifications.
 //!
 //! Every command is async and does its work on the blocking pool: the core reads
 //! files and runs `ps`, and a sync command would do that on the main thread,
 //! where it freezes clicks, drags and even the Dock's activate.
+//!
+//! A watcher thread reads the feed every few seconds. It keeps the menu bar item
+//! current (how many dispatches are queued or failed, the most recent few), posts a
+//! notification when a reply comes in or a delivery fails, and tells the window to
+//! refresh. Closing the window hides it; the app stays in the menu bar until Quit.
 
 use dispatch_core::i18n::{self, t};
-use dispatch_core::{hook, model, ops, store::Store};
+use dispatch_core::{hook, model, ops, settings, store::Store, watch};
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use tauri::Manager;
-use tauri_plugin_updater::UpdaterExt;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_notification::NotificationExt;
+
+const TRAY_ID: &str = "main";
+const RECENT_IN_TRAY: usize = 6;
+
+/// The watcher's latest feed, so the window's polls do not read everything again.
+#[derive(Default)]
+struct Cache {
+    feed: Mutex<Option<(Instant, Value)>>,
+}
 
 fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
@@ -29,9 +48,21 @@ async fn find(query: String) -> Result<Value, String> {
     blocking(move || Ok(ops::find(&query))).await
 }
 
+/// The feed: the watcher's copy when it is fresh, else read now.
 #[tauri::command]
-async fn feed(limit: Option<usize>) -> Result<Value, String> {
-    blocking(move || ops::feed(&Store::open(), limit.unwrap_or(200)).map_err(err)).await
+async fn feed(app: AppHandle, limit: Option<usize>) -> Result<Value, String> {
+    let limit = limit.unwrap_or(200);
+    if let Some((at, v)) = app.state::<Cache>().feed.lock().ok().and_then(|c| c.clone()) {
+        if at.elapsed() < Duration::from_secs(6) {
+            if let Some(list) = v["dispatches"].as_array() {
+                if list.len() <= limit {
+                    return Ok(v);
+                }
+                return Ok(json!({ "count": limit, "dispatches": list[..limit] }));
+            }
+        }
+    }
+    blocking(move || ops::feed(&Store::open(), limit).map_err(err)).await
 }
 
 #[tauri::command]
@@ -40,9 +71,11 @@ async fn dispatch_status(id: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn send(to: Vec<String>, text: String, urgency: Option<String>, allow_resume: Option<bool>) -> Result<Value, String> {
+async fn send(app: AppHandle, to: Vec<String>, text: String, urgency: Option<String>, allow_resume: Option<bool>) -> Result<Value, String> {
     let urgency = urgency.unwrap_or_else(|| "normal".into());
-    blocking(move || ops::send_many_opts(&Store::open(), &to, &text, &urgency, Some(("app".into(), t("me").into())), allow_resume.unwrap_or(false)).map_err(err)).await
+    let r = blocking(move || ops::send_many_opts(&Store::open(), &to, &text, &urgency, Some(("app".into(), t("me").into())), allow_resume.unwrap_or(false)).map_err(err)).await;
+    forget_feed(&app);
+    r
 }
 
 /// The language the app and every later `dispatch` process use: `en` or `zh`.
@@ -52,18 +85,39 @@ async fn get_lang() -> Result<String, String> {
 }
 
 #[tauri::command]
-async fn set_lang(lang: String) -> Result<String, String> {
-    blocking(move || {
+async fn set_lang(app: AppHandle, lang: String) -> Result<String, String> {
+    let r = blocking(move || {
         let l = i18n::parse(&lang).ok_or_else(|| format!("unknown language {lang}"))?;
         i18n::save(l).map_err(|e| e.to_string())?;
         Ok(l.code().to_string())
+    })
+    .await;
+    // Stage texts in the cached feed are in the old language; the tray follows on its next tick.
+    forget_feed(&app);
+    r
+}
+
+/// System notifications on or off (replies and failed deliveries).
+#[tauri::command]
+async fn set_notify(on: bool) -> Result<bool, String> {
+    blocking(move || {
+        settings::set("notify", Value::Bool(on)).map_err(|e| e.to_string())?;
+        Ok(on)
     })
     .await
 }
 
 #[tauri::command]
-async fn reply(id: String, text: String) -> Result<Value, String> {
-    blocking(move || ops::reply(&Store::open(), &id, &text).map_err(err)).await
+async fn reply(app: AppHandle, id: String, text: String) -> Result<Value, String> {
+    let r = blocking(move || ops::reply(&Store::open(), &id, &text).map_err(err)).await;
+    forget_feed(&app);
+    r
+}
+
+fn forget_feed(app: &AppHandle) {
+    if let Ok(mut c) = app.state::<Cache>().feed.lock() {
+        *c = None;
+    }
 }
 
 fn open_url(url: &str) -> Result<(), String> {
@@ -148,6 +202,7 @@ async fn setup_status() -> Result<Value, String> {
             "grok_error": grok.error,
             "store_root": Store::open().root().to_string_lossy(),
             "claude_plugin": plugin_installed,
+            "notify": settings::notify_enabled(),
             "version": env!("CARGO_PKG_VERSION"),
         }))
     })
@@ -186,6 +241,7 @@ async fn install_hook() -> Result<String, String> {
 }
 
 fn updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    use tauri_plugin_updater::UpdaterExt;
     let mut b = app.updater_builder();
     // DISPATCH_UPDATE_URL points a build at a local latest.json while testing the flow.
     if let Ok(u) = std::env::var("DISPATCH_UPDATE_URL") {
@@ -214,22 +270,148 @@ async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
     app.restart();
 }
 
+// ---- the window, the menu bar item, the watcher ----
+
+/// Bring the main window back, whether it was hidden, minimized or just behind.
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// The menu bar menu: the counts, the recent dispatches (each opens the app on that one),
+/// Open, Send, Quit. Built on the main thread, where the system wants its menus made.
+fn tray_menu(app: &AppHandle, sum: &watch::Summary) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::new(app)?;
+    menu.append(&MenuItem::with_id(app, "counts", watch::headline(sum), false, None::<&str>)?)?;
+    if !sum.recent.is_empty() {
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+        for r in &sum.recent {
+            menu.append(&MenuItem::with_id(app, format!("d:{}", r.dispatch_id), &r.line, true, None::<&str>)?)?;
+        }
+    }
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItem::with_id(app, "open", t("tray.open"), true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "compose", t("tray.compose"), true, None::<&str>)?)?;
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&PredefinedMenuItem::quit(app, Some(t("tray.quit")))?)?;
+    Ok(menu)
+}
+
+fn on_tray_menu(app: &AppHandle, id: &str) {
+    match id {
+        "open" => show_main(app),
+        "compose" => {
+            show_main(app);
+            let _ = app.emit("tray:compose", ());
+        }
+        other => {
+            if let Some(did) = other.strip_prefix("d:") {
+                show_main(app);
+                let _ = app.emit("tray:select", did.to_string());
+            }
+        }
+    }
+}
+
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    let menu = tray_menu(app, &watch::Summary::default())?;
+    TrayIconBuilder::with_id(TRAY_ID)
+        .icon(icon)
+        .icon_as_template(true)
+        .tooltip("Dispatch")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, ev| on_tray_menu(app, ev.id().as_ref()))
+        .build(app)?;
+    Ok(())
+}
+
+/// Put the counts beside the icon and the recent list in the menu.
+fn refresh_tray(app: &AppHandle, sum: watch::Summary) {
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = app2.tray_by_id(TRAY_ID) {
+            if let Ok(menu) = tray_menu(&app2, &sum) {
+                let _ = tray.set_menu(Some(menu));
+            }
+            let _ = tray.set_title(watch::title(&sum));
+        }
+    });
+}
+
+fn notify(app: &AppHandle, e: &watch::Event) {
+    let (title, body) = watch::notification(e);
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// Read the feed every few seconds (less often while the window is hidden); keep the tray,
+/// the notifications and the window's cached feed current.
+fn start_watcher(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("dispatch-watch".into())
+        .spawn(move || {
+            let mut prev: Option<watch::Snapshot> = None;
+            let mut shown: Option<(&'static str, watch::Summary)> = None;
+            loop {
+                if let Ok(feed) = ops::feed(&Store::open(), 200) {
+                    let (snap, events) = watch::events(prev.as_ref(), &feed);
+                    let changed = prev.as_ref() != Some(&snap);
+                    prev = Some(snap);
+                    if let Ok(mut c) = app.state::<Cache>().feed.lock() {
+                        *c = Some((Instant::now(), feed.clone()));
+                    }
+                    if changed {
+                        let _ = app.emit("dispatch:changed", ());
+                    }
+                    let sum = watch::summary(&feed, RECENT_IN_TRAY);
+                    let lang = i18n::lang().code();
+                    if shown.as_ref().map(|(l, s)| *l != lang || *s != sum).unwrap_or(true) {
+                        refresh_tray(&app, sum.clone());
+                        shown = Some((lang, sum));
+                    }
+                    if !events.is_empty() && settings::notify_enabled() {
+                        for e in &events {
+                            notify(&app, e);
+                        }
+                    }
+                }
+                let visible = app.get_webview_window("main").map(|w| w.is_visible().unwrap_or(false)).unwrap_or(false);
+                std::thread::sleep(Duration::from_secs(if visible { 5 } else { 15 }));
+            }
+        })
+        .expect("spawn the watcher");
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .invoke_handler(tauri::generate_handler![sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang])
+        .plugin(tauri_plugin_notification::init())
+        .manage(Cache::default())
+        .invoke_handler(tauri::generate_handler![sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify])
+        .setup(|app| {
+            build_tray(app.handle())?;
+            start_watcher(app.handle().clone());
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Closing the window keeps the app in the menu bar; Quit is in the tray menu and ⌘Q.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building Dispatch");
     app.run(|app, event| {
         // The Dock icon: bring the window back, whether it was hidden, minimized or just behind.
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = event {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.show();
-                let _ = w.unminimize();
-                let _ = w.set_focus();
-            }
+            show_main(app);
         }
         #[cfg(not(target_os = "macos"))]
         {

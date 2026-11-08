@@ -86,6 +86,10 @@ const zh = {
   'settings.check': '检查更新',
   'settings.language': '语言',
   'settings.languageSub': 'App、命令行和递给 Agent 的提示语都跟着它',
+  'settings.notify': '系统通知',
+  'settings.notifySub': '只在两种情况下通知：收到回信，或者没送到。菜单栏图标常驻，关掉窗口 App 还在。',
+  'settings.notifyOn': '开',
+  'settings.notifyOff': '关',
 }
 
 const en: Record<Key, string> = {
@@ -169,6 +173,10 @@ const en: Record<Key, string> = {
   'settings.check': 'Check for updates',
   'settings.language': 'Language',
   'settings.languageSub': 'The app, the command line and what agents are handed all follow it',
+  'settings.notify': 'Notifications',
+  'settings.notifySub': 'Only two things notify: a reply came in, or a delivery failed. The menu bar item stays; closing the window keeps the app running.',
+  'settings.notifyOn': 'On',
+  'settings.notifyOff': 'Off',
 }
 
 export type Key = keyof typeof zh

@@ -38,16 +38,14 @@ pub fn parse(s: &str) -> Option<Lang> {
 
 const UNSET: u8 = 0;
 static OVERRIDE: AtomicU8 = AtomicU8::new(UNSET);
+
+/// Tests that switch the language take this, since the switch is process-wide.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static RESOLVED: OnceLock<Lang> = OnceLock::new();
 
-fn settings_path() -> std::path::PathBuf {
-    crate::store::Store::open().root().join("settings.json")
-}
-
 fn from_settings() -> Option<Lang> {
-    let text = std::fs::read_to_string(settings_path()).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("lang").and_then(|l| l.as_str()).and_then(parse)
+    crate::settings::get("lang").and_then(|l| l.as_str().and_then(parse))
 }
 
 fn from_system() -> Option<Lang> {
@@ -62,17 +60,7 @@ pub fn set(l: Lang) {
 /// Set it for this process and for every later `dispatch` process (the hook, the CLI).
 pub fn save(l: Lang) -> std::io::Result<()> {
     set(l);
-    let path = settings_path();
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut v: serde_json::Value = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_else(|| serde_json::json!({}));
-    if let Some(o) = v.as_object_mut() {
-        o.insert("lang".into(), serde_json::Value::String(l.code().into()));
-    } else {
-        v = serde_json::json!({ "lang": l.code() });
-    }
-    std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default() + "\n")
+    crate::settings::set("lang", serde_json::Value::String(l.code().into()))
 }
 
 pub fn lang() -> Lang {
@@ -138,6 +126,18 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "stage.delivered" => ("已送达", "Delivered"),
         "stage.queued_codex" => ("已入队", "Queued in Codex"),
         "stage.queued" => ("排队中", "Queued"),
+        "stage.failed" => ("没送到", "Failed"),
+        // the menu bar item and system notifications
+        "tray.queued" => ("排队 {n}", "{n} queued"),
+        "tray.failed" => ("没送到 {n}", "{n} failed"),
+        "tray.clear" => ("没有在排队或没送到的", "Nothing queued or failed"),
+        "tray.empty" => ("还没有派发", "No dispatches yet"),
+        "tray.open" => ("打开 Dispatch", "Open Dispatch"),
+        "tray.compose" => ("发消息…", "Send a message…"),
+        "tray.quit" => ("退出 Dispatch", "Quit Dispatch"),
+        "notify.reply_me" => ("{from} 回复了你", "{from} replied to you"),
+        "notify.reply" => ("{from} 回复了 {to}", "{from} replied to {to}"),
+        "notify.failed" => ("没送到 {to}", "Not delivered to {to}"),
 
         // the stored status words, as labels
         "status.unread" => ("未读", "unread"),
@@ -264,7 +264,7 @@ mod tests {
     fn every_key_has_both_languages() {
         for key in [
             "reach.off_later", "reach.now_desktop", "stage.queued", "status.unread", "send.envelope", "send.queued", "hook.header", "hook.item", "hook.footer", "open.unknown", "harness.human", "me", "cli.codex_cmd",
-            "cli.inbox_line", "cli.empty_text", "app.no_update",
+            "cli.inbox_line", "cli.empty_text", "app.no_update", "stage.failed", "tray.queued", "tray.failed", "tray.clear", "tray.empty", "tray.open", "tray.compose", "tray.quit", "notify.reply_me", "notify.reply", "notify.failed",
         ] {
             let (zh, en) = pair(key);
             assert!(!zh.is_empty() && !en.is_empty() && zh != "…" && en != "…", "{key}");
@@ -273,6 +273,7 @@ mod tests {
 
     #[test]
     fn set_wins() {
+        let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set(Lang::En);
         assert_eq!(t("stage.queued"), "Queued");
         set(Lang::Zh);

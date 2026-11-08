@@ -67,6 +67,7 @@ export interface SetupStatus {
   grok_error: string | null
   store_root: string
   claude_plugin: boolean
+  notify: boolean
   version: string
 }
 export interface UpdateCheck {
@@ -101,4 +102,5 @@ export const api = {
   updateInstall: () => invoke<void>('update_install'),
   getLang: () => invoke<string>('get_lang'),
   setLang: (lang: string) => invoke<string>('set_lang', { lang }),
+  setNotify: (on: boolean) => invoke<boolean>('set_notify', { on }),
 }

@@ -183,4 +183,5 @@ input, textarea { font: inherit; }
 .host__who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .host__name { font-weight: 500; }
 .host__found { font-size: 11.5px; color: var(--text-faint); user-select: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.host__found--wrap { white-space: normal; line-height: 1.45; }
 .cmd { flex: none; max-width: 60%; padding: 4px 8px; border-radius: 5px; background: var(--tag); font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--text-strong); user-select: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
