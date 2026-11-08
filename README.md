@@ -159,6 +159,8 @@ plugins/skill    the skill, written once; scripts/sync-plugins.sh copies it into
 
 The updater key lives outside the repository; `tauri.conf.json` carries only its public half.
 
+More: [the message format](docs/message-format.md) (files, status words, the run log), [how a message reaches a session](docs/adapters.md) (the adapters, the ladder, adding one), [CONTRIBUTING.md](CONTRIBUTING.md) (build, texts, releases). CI runs the tests on macOS, Linux and Windows; Linux and Windows bundles are built by `.github/workflows/release.yml` on each release tag, unsigned.
+
 ## Status
 
 0.1.x: macOS on Apple Silicon; Claude Code, Codex, and Grok Bot through `gbot`. Next on the list: native Grok gateway calls (no Node), Agent Comments calling Dispatch, Windows and Linux builds.

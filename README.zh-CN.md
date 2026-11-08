@@ -159,6 +159,8 @@ plugins/skill    skill 只写一份；scripts/sync-plugins.sh 同步进两个插
 
 更新签名私钥不在仓库里，`tauri.conf.json` 只带公钥。
 
+更多：[消息格式](docs/message-format.md)（文件、状态字、投递日志）、[消息怎么送到会话](docs/adapters.md)（各适配器、投递阶梯、怎么加一个）、[CONTRIBUTING.md](CONTRIBUTING.md)（构建、文案、发版）。CI 在 macOS、Linux、Windows 三个系统上跑测试；每个发版 tag 由 `.github/workflows/release.yml` 构建 Linux 和 Windows 安装包（未签名）。
+
 ## 现状
 
 0.1.x：macOS Apple Silicon；Claude Code、Codex，以及走 `gbot` 的 Grok Bot。接下来：Grok 网关的原生实现（去掉 Node 依赖）、Agent Comments 改为调用 Dispatch、Windows 和 Linux 构建。

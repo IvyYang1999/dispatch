@@ -11,6 +11,10 @@ on:
       tag:
         description: 'Release tag to attach the bundles to (for example v0.1.4)'
         required: true
+      attach:
+        description: 'Attach the bundles to that release (off: build only, keep them as workflow artifacts)'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -64,7 +68,9 @@ jobs:
         with:
           name: dispatch-${{ matrix.label }}
           path: out/*
+          retention-days: 7
       - name: Attach to the release
+        if: github.event_name == 'push' || inputs.attach
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
