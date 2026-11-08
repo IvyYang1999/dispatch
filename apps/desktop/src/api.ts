@@ -41,9 +41,11 @@ export interface Copy {
   short_id: string
   from: string
   from_name: string
+  from_harness?: string | null
   from_host_name?: string | null
   to: string
   to_name: string
+  to_harness?: string | null
   to_host_name?: string | null
   status: string
   stage: string
@@ -59,6 +61,7 @@ export interface Dispatch {
   dispatch_id: string
   from: string
   from_name: string
+  from_harness?: string | null
   from_host_name?: string | null
   created: string
   urgency: string

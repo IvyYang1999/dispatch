@@ -192,12 +192,13 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
               <div className="row__main">
                 <div className="row__line">
                   <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
+                  {d.from_harness && <span className="tag">{d.from_harness}</span>}
                   <span className="row__text">{d.text}</span>
                   <span className="row__time">{d.created.slice(11)}</span>
                 </div>
                 <div className="row__rcpts">
                   {d.recipients.map((r) => (
-                    <span key={r.letter_id} className="chip" data-kind={r.kind}>
+                    <span key={r.letter_id} className="chip" data-kind={r.kind} title={r.to_harness ?? ''}>
                       <span className="chip__dot" />
                       {r.to_host_name && <span className="chip__host">{r.to_host_name}/</span>}
                       {r.to_name}
@@ -215,7 +216,10 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
               <div className="detail__head">
                 <Avatar name={current.from_name} size={28} />
                 <div className="detail__who">
-                  <span className="detail__name">{withHost(current.from_name, current.from_host_name)}</span>
+                  <span className="detail__name">
+                    {withHost(current.from_name, current.from_host_name)}
+                    {current.from_harness && <span className="tag">{current.from_harness}</span>}
+                  </span>
                   <span className="detail__meta">
                     {current.created} · {current.recipients.length === 1 ? t('feed.sentOne') : t('feed.sentMany', { n: current.recipients.length })}
                   </span>
@@ -229,6 +233,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                   <div className="rcpt__head">
                     <Avatar name={r.to_name} size={20} />
                     <span className="rcpt__name">{r.to_host_name && <span className="rcpt__host">{r.to_host_name}/</span>}{r.to_name}</span>
+                    {r.to_harness && <span className="tag">{r.to_harness}</span>}
                     <Badge kind={r.kind} />
                     <span className="rcpt__time">{(r.reply?.created ?? r.created).slice(11)}</span>
                     {(r.kind === 'queued' || r.kind === 'failed') && (

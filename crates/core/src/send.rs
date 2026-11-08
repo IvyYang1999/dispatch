@@ -104,6 +104,18 @@ pub fn is_person(id: &str) -> bool {
     matches!(id, "app" | "cli" | "mcp")
 }
 
+/// What a sender runs on: a person at the app or the command line, or whatever discovery
+/// knows the id or name as. None when nothing says.
+pub fn sender_harness(from: &str) -> Option<&'static str> {
+    if is_person(from) {
+        return Some("human");
+    }
+    discover::sessions()
+        .into_iter()
+        .find(|s| s.id.eq_ignore_ascii_case(from) || s.name.as_deref().map(|n| n.eq_ignore_ascii_case(from)).unwrap_or(false))
+        .map(|s| harness_code(s.harness))
+}
+
 /// A session discovery did not list, known only by id (and name, from a stored copy).
 fn bare_session(harness: Harness, id: &str, name: Option<String>) -> Session {
     Session {
@@ -365,6 +377,7 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
         from_host_name: None,
         to_host: req.to.host.as_ref().map(|h| h.id.clone()),
         to_host_name: req.to.host.as_ref().map(|h| h.name.clone()),
+        from_harness: sender_harness(&req.from).map(str::to_string),
         created,
         body: req.text.clone(),
         path: String::new(),

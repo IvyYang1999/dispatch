@@ -111,6 +111,9 @@ pub struct Letter {
     pub to_host: Option<String>,
     #[serde(default)]
     pub to_host_name: Option<String>,
+    /// `claude` / `codex` / `grok` / `human`: what the sender runs on, when it was known at send time.
+    #[serde(default)]
+    pub from_harness: Option<String>,
     pub body: String,
     #[serde(default)]
     pub path: String,
@@ -333,7 +336,7 @@ pub fn render(l: &Letter) -> String {
     if let Some(d) = &l.deadline {
         extra.push_str(&format!("deadline: {d}\n"));
     }
-    for (k, v) in [("from_host", &l.from_host), ("from_host_name", &l.from_host_name), ("to_host", &l.to_host), ("to_host_name", &l.to_host_name)] {
+    for (k, v) in [("from_harness", &l.from_harness), ("from_host", &l.from_host), ("from_host_name", &l.from_host_name), ("to_host", &l.to_host), ("to_host_name", &l.to_host_name)] {
         if let Some(v) = v {
             extra.push_str(&format!("{k}: {v}\n"));
         }
@@ -376,6 +379,7 @@ pub fn parse(text: &str) -> Option<Letter> {
         from_host_name: None,
         to_host: None,
         to_host_name: None,
+        from_harness: None,
         body: body.trim_end().to_string(),
         path: String::new(),
     };
@@ -399,6 +403,7 @@ pub fn parse(text: &str) -> Option<Letter> {
             "from_host_name" => l.from_host_name = Some(v).filter(|s| !s.is_empty()),
             "to_host" => l.to_host = Some(v).filter(|s| !s.is_empty()),
             "to_host_name" => l.to_host_name = Some(v).filter(|s| !s.is_empty()),
+            "from_harness" => l.from_harness = Some(v).filter(|s| !s.is_empty()),
             _ => {}
         }
     }
@@ -437,6 +442,7 @@ mod tests {
             from_host_name: None,
             to_host: None,
             to_host_name: None,
+            from_harness: None,
             body: "hello\nworld".into(),
             path: String::new(),
         };
@@ -448,11 +454,13 @@ mod tests {
         assert_eq!(p.to_harness.as_deref(), Some("codex"));
         assert_eq!(time_text(p.deadline_at()), "2026-11-06 14:00");
         let mut away = l.clone();
+        away.from_harness = Some("grok".into());
         away.to_host = Some("m-1".into());
         away.to_host_name = Some("主力".into());
         let q = parse(&render(&away)).unwrap();
         assert_eq!(q.to_host.as_deref(), Some("m-1"));
         assert_eq!(q.to_host_name.as_deref(), Some("主力"));
+        assert_eq!(q.from_harness.as_deref(), Some("grok"));
         assert!(q.from_host.is_none());
         assert!(p.overdue(parse_time("2026-11-06 14:01").unwrap()));
         assert!(!p.overdue(parse_time("2026-11-06 13:59").unwrap()));
@@ -492,6 +500,7 @@ mod tests {
             from_host_name: None,
             to_host: None,
             to_host_name: None,
+            from_harness: None,
             body: "hi".into(),
             path: String::new(),
         };

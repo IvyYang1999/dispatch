@@ -589,6 +589,7 @@ mod tests {
             from_host_name: None,
             to_host: Some(b_me.id.clone()),
             to_host_name: Some(b_me.name.clone()),
+            from_harness: None,
         };
         let a_store = Store::at(a_root.clone());
         let mut mine = letter.clone();

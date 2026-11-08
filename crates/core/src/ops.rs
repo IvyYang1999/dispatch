@@ -259,6 +259,26 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
     Ok(json!({ "replied_to": orig.id, "to": { "id": target.id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail }))
 }
 
+/// `claude` / `codex` / `grok` / `human` as the label a person reads; None for anything else.
+fn harness_label(code: Option<&str>) -> Option<&'static str> {
+    use crate::model::Harness;
+    Some(
+        match code? {
+            "claude" => Harness::Claude,
+            "codex" => Harness::Codex,
+            "grok" => Harness::Grok,
+            "human" => Harness::Human,
+            _ => return None,
+        }
+        .label(),
+    )
+}
+
+/// The sender's harness: what the copy recorded, else what discovery says about the id now.
+fn sender_label(c: &store::Letter) -> Option<&'static str> {
+    harness_label(c.from_harness.as_deref()).or_else(|| harness_label(send::sender_harness(&c.from)))
+}
+
 /// The stage of a copy from its status alone: (i18n key, kind).
 fn stage_by_status(status: &str) -> (&'static str, &'static str) {
     match status {
@@ -329,7 +349,7 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
     } else {
         crate::i18n::status_label(&c.status).to_string()
     };
-    let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "from_host_name": c.from_host_name, "to": c.to, "to_name": c.to_name, "to_host_name": c.to_host_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "deadline": deadline, "path": c.path, "body": c.body });
+    let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "from_harness": sender_label(c), "from_host_name": c.from_host_name, "to": c.to, "to_name": c.to_name, "to_harness": harness_label(c.to_harness.as_deref()), "to_host_name": c.to_host_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "deadline": deadline, "path": c.path, "body": c.body });
     if with_runs {
         v["runs"] = json!(store.runs(&c.id));
     }
@@ -402,7 +422,7 @@ pub fn feed(store: &Store, limit: usize) -> Result<Value> {
                 v
             })
             .collect();
-        out.push(json!({ "dispatch_id": did, "from": sender, "from_name": first.from_name, "from_host_name": first.from_host_name, "created": first.created, "urgency": first.urgency, "text": first.body, "recipients": recipients }));
+        out.push(json!({ "dispatch_id": did, "from": sender, "from_name": first.from_name, "from_harness": sender_label(first), "from_host_name": first.from_host_name, "created": first.created, "urgency": first.urgency, "text": first.body, "recipients": recipients }));
     }
     Ok(json!({ "count": out.len(), "dispatches": out }))
 }
@@ -449,6 +469,7 @@ mod tests {
             from_host_name: None,
             to_host: None,
             to_host_name: None,
+            from_harness: None,
             body: "hi".into(),
             path: String::new(),
         };
@@ -479,6 +500,7 @@ mod tests {
                 from_host_name: None,
                 to_host: None,
                 to_host_name: None,
+                from_harness: Some("claude".into()),
                 body: body.into(),
                 path: String::new(),
             };
@@ -492,6 +514,8 @@ mod tests {
         assert_eq!(d["recipients"].as_array().unwrap().len(), 1, "one recipient, not two");
         assert_eq!(d["recipients"][0]["reply"]["body"], "done");
         assert_eq!(d["recipients"][0]["kind"], "replied");
+        assert_eq!(d["from_harness"], "Claude");
+        assert_eq!(d["recipients"][0]["to_harness"], "Claude");
         let _ = std::fs::remove_dir_all(dir);
     }
 

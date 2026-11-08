@@ -26,6 +26,7 @@ from_name: 🪞 Transparent
 to: a77bc4d3-…                 the recipient's session id (or bot id)
 to_name: 📷 ShyPoster
 to_harness: claude             claude / codex / grok: what the recipient runs on
+from_harness: grok             claude / codex / grok / human: what the sender runs on, when known
 urgency: 普通                   普通 or 紧急 (always stored in Chinese)
 wake: true
 status: 未读                    see below
@@ -40,7 +41,7 @@ The message body, as the sender wrote it.
 ```
 
 The front matter is what the Agent Comments mailbox hook already read, plus `id`,
-`dispatch_id`, `from_name`, `to_harness` and `deadline`. Old files without the last two still
+`dispatch_id`, `from_name`, `to_harness`, `from_harness` and `deadline`. Old files without the last three still
 parse: the harness is looked up, the deadline defaults to a day (an hour when urgent) after
 `created`. The four `*_host` lines appear only on copies that crossed to or from another machine
 (see [peers](peers.md)): the machine that delivers a copy owns its status, and the other machine
