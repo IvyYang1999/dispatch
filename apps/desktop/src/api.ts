@@ -26,6 +26,12 @@ export interface Session {
   host: Host | null
   /** `machine/name` for a remote session, the name alone here. */
   address: string
+  /** Its name in the address book, when it has one. */
+  contact?: string | null
+  /** One line on what it is for, from the address book. */
+  about?: string | null
+  /** The name came from a search, not a person; shown apart until confirmed. */
+  provisional?: boolean
   reach: Reach
   reason?: string
 }
@@ -94,6 +100,19 @@ export interface UpdateCheck {
   notes?: string | null
   date?: string | null
 }
+export interface Turn {
+  role: 'user' | 'assistant'
+  text: string
+  at: string | null
+  via_dispatch: boolean
+  from_agent: string | null
+}
+export interface SessionPageData {
+  session: Session
+  dispatches: (Dispatch & { direction: 'in' | 'out' })[]
+  turns: Turn[]
+  transcript_available: boolean
+}
 export interface PeerRow {
   id: string
   name: string
@@ -149,5 +168,10 @@ export const api = {
   peerCode: () => invoke<{ code: string; seconds_left: number }>('peer_code'),
   peerPair: (target: string, code: string) => invoke<{ id: string; name: string }>('peer_pair', { target, code }),
   peerRemove: (name: string) => invoke<boolean>('peer_remove', { name }),
+  contactSet: (name: string, session: string, about: string | null) => invoke<{ name: string; address: string; text: string }>('contact_set', { name, session, about }),
+  searchSessions: (query: string) => invoke<{ sessions: Session[] }>('search_sessions', { query }),
+  sessionPage: (id: string) => invoke<SessionPageData>('session_page', { id }),
+  harnessIcons: () => invoke<Record<string, string>>('harness_icons'),
+  contactRemove: (name: string) => invoke<{ removed: string }>('contact_remove', { name }),
   peerSetAddress: (name: string, address: string | null) => invoke<{ id: string; name: string; address: string | null }>('peer_set_address', { name, address }),
 }

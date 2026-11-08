@@ -106,6 +106,13 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// The address book: stable names for sessions (`add <name> [session]`, `remove <name>`)
+    Contacts {
+        #[command(subcommand)]
+        cmd: Option<ContactsCmd>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Listen for other machines in the foreground (the app does this while it runs)
     Serve {
         /// Port to listen on (default 47831)
@@ -114,6 +121,22 @@ enum Cmd {
     },
     /// Print the store folder
     Where,
+}
+
+#[derive(Subcommand)]
+enum ContactsCmd {
+    /// Every name and the session it points at
+    List,
+    /// Name a session (id, prefix, name or title fragment); without one, the session this command runs in
+    Add {
+        name: String,
+        session: Option<String>,
+        /// One line on what the session is for (other agents match it when looking for a role)
+        #[arg(long)]
+        about: Option<String>,
+    },
+    /// Forget a name
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -296,6 +319,35 @@ fn run() -> Result<i32> {
                 None => return Err(anyhow!("{}", t("cli.peers_not_found").replace("{q}", &name))),
             },
         },
+        Cmd::Contacts { cmd, json } => match cmd.unwrap_or(ContactsCmd::List) {
+            ContactsCmd::List => {
+                let v = dispatch_core::ops::contacts();
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                } else {
+                    let rows = v["contacts"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+                    if rows.is_empty() {
+                        println!("{}", t("cli.contacts_none"));
+                    }
+                    for c in rows {
+                        let mark = if c["provisional"].as_bool().unwrap_or(false) { "≈ " } else { "" };
+                        println!("{:<24} {:<8} {:<9} {:<4} {:<32} {}", truncate(&format!("{mark}{}", c["address"].as_str().unwrap_or("")), 24), c["harness"].as_str().unwrap_or(""), c["short_id"].as_str().unwrap_or(""), if c["running"].as_bool().unwrap_or(false) { t("cli.running_mark") } else { "  " }, truncate(&c["cwd"].as_str().map(model::short_cwd).unwrap_or_default(), 32), c["about"].as_str().unwrap_or(""));
+                    }
+                }
+            }
+            ContactsCmd::Add { name, session, about } => {
+                let v = dispatch_core::ops::register(&name, session.as_deref(), "cli", about.as_deref())?;
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                } else {
+                    println!("{}", v["text"].as_str().unwrap_or(""));
+                }
+            }
+            ContactsCmd::Remove { name } => {
+                dispatch_core::ops::unregister(&name)?;
+                println!("{}", t("cli.contacts_removed").replace("{name}", &name));
+            }
+        },
         Cmd::Serve { port } => {
             if let Some(p) = peer::mdns::serving() {
                 return Err(anyhow!("{}", t("cli.serve_busy").replace("{port}", &p.to_string())));
@@ -349,10 +401,15 @@ fn run() -> Result<i32> {
             let urgency = store::urgency_stored(&urgency).to_string();
             let mut reports = vec![];
             for who in &to {
-                let target = send::resolve(who)?;
+                let (target, how) = send::resolve_how(who)?;
                 let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume, deadline })?;
                 if !json {
                     println!("→ {} ({}): {} [{}]", target.address(), target.short_id, rep.detail, model::short_id(&rep.letter_id));
+                    if let Some(n) = dispatch_core::ops::remember_match(who, &target, how) {
+                        println!("  {}", n["note"].as_str().unwrap_or(""));
+                    }
+                } else {
+                    dispatch_core::ops::remember_match(who, &target, how);
                 }
                 reports.push(rep);
             }

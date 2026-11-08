@@ -25,6 +25,8 @@ const CODEX_RUNNING_WINDOW_MS: i64 = 15 * 60 * 1000;
 const LIST_TTL: Duration = Duration::from_secs(3);
 
 static LIST: Mutex<Option<(Instant, Vec<Session>)>> = Mutex::new(None);
+/// Every session on this machine whatever its age, for searches; remembered ten seconds.
+static ALL: Mutex<Option<(Instant, Vec<Session>)>> = Mutex::new(None);
 /// Parsed transcript heads, keyed by path, valid while the file's mtime and size hold.
 static HEADS: LazyLock<Mutex<HashMap<PathBuf, (i64, u64, Option<String>, Option<String>)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -110,7 +112,7 @@ fn ps_commands() -> String {
         .unwrap_or_default()
 }
 
-fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64) -> Vec<Session> {
+fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64, max_age: Option<i64>) -> Vec<Session> {
     let root = claude::claude_home().join("projects");
     let mut out = vec![];
     let Ok(dirs) = fs::read_dir(&root) else { return out };
@@ -125,7 +127,7 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64) ->
             let path = f.path();
             let Some(mtime) = mtime_ms(&path) else { continue };
             let running = running_ids.contains(&id.to_lowercase());
-            if !running && now - mtime > MAX_AGE_MS {
+            if !running && max_age.map(|m| now - mtime > m).unwrap_or(false) {
                 continue;
             }
             let (cwd, title) = head_of(&path, mtime);
@@ -149,7 +151,7 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64) ->
     out
 }
 
-fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
+fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>) -> Vec<Session> {
     let root = home_dir().join(".codex").join("sessions");
     let uuid_re = Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
     // Threads the shared daemon has loaded are running whatever the file times say.
@@ -163,7 +165,7 @@ fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
         let Some(m) = uuid_re.find(&name) else { continue };
         let id = m.as_str().to_lowercase();
         let Some(mtime) = mtime_ms(e.path()) else { continue };
-        if now - mtime > MAX_AGE_MS {
+        if max_age.map(|m| now - mtime > m).unwrap_or(false) {
             continue;
         }
         let (cwd, title) = head_of(e.path(), mtime);
@@ -236,6 +238,22 @@ pub fn sessions() -> Vec<Session> {
 }
 
 pub fn sessions_now() -> Vec<Session> {
+    gather(Some(MAX_AGE_MS))
+}
+
+/// Every session this machine has records of, however old, from a 10-second cache.
+pub fn all_local() -> Vec<Session> {
+    if let Some((at, list)) = ALL.lock().unwrap().as_ref() {
+        if at.elapsed() < Duration::from_secs(10) {
+            return list.clone();
+        }
+    }
+    let list = gather(None);
+    *ALL.lock().unwrap() = Some((Instant::now(), list.clone()));
+    list
+}
+
+fn gather(max_age: Option<i64>) -> Vec<Session> {
     let now = now_ms();
     let procs = ps_commands();
     let mut running_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -251,7 +269,7 @@ pub fn sessions_now() -> Vec<Session> {
     let codex_running = Regex::new(r"\bcodex\b").map(|re| re.is_match(&procs)).unwrap_or(false);
 
     let mut by_id: HashMap<String, Session> = HashMap::new();
-    for s in discover_claude(&running_ids, now).into_iter().chain(discover_codex(codex_running, now)).chain(discover_grok(now)) {
+    for s in discover_claude(&running_ids, now, max_age).into_iter().chain(discover_codex(codex_running, now, max_age)).chain(discover_grok(now)) {
         match by_id.get_mut(&s.id) {
             Some(prev) => {
                 // a session can appear under several project slugs after a cwd change
@@ -301,8 +319,76 @@ pub fn sessions_now() -> Vec<Session> {
         }
     }
     let mut all: Vec<Session> = by_id.into_values().collect();
+    // the address book: names on listed sessions, and the named ones the window left out
+    crate::contacts::apply_local(&mut all);
     all.sort_by(|a, b| b.running.cmp(&a.running).then(b.last_active.cmp(&a.last_active)));
     all
+}
+
+/// One session by id, whatever its age: the recent list first, then its files.
+pub fn lookup(id: &str) -> Option<Session> {
+    if let Some(s) = local().into_iter().find(|s| s.id.eq_ignore_ascii_case(id)) {
+        return Some(s);
+    }
+    lookup_files(id)
+}
+
+/// A session from its files alone: a Claude Code transcript, a Codex rollout, or a Grok bot.
+pub fn lookup_files(id: &str) -> Option<Session> {
+    let id = id.to_lowercase();
+    if crate::model::is_uuid(&id) {
+        if let Some(p) = claude::transcript_path(&id, None) {
+            let mtime = mtime_ms(&p).unwrap_or(0);
+            let (cwd, title) = head_of(&p, mtime);
+            return Some(Session {
+                harness: Harness::Claude,
+                short_id: short_id(&id),
+                running: claude::is_running(&id),
+                id,
+                name: None,
+                cwd,
+                title,
+                last_active: mtime,
+                desktop: false,
+                host_session_id: None,
+                status: None,
+                transcript: Some(p.to_string_lossy().to_string()),
+                host: None,
+            });
+        }
+        if let Some(p) = codex_rollout(&id) {
+            let mtime = mtime_ms(&p).unwrap_or(0);
+            let (cwd, title) = head_of(&p, mtime);
+            let loaded = crate::codex::state().loaded.contains(&id);
+            return Some(Session {
+                harness: Harness::Codex,
+                short_id: short_id(&id),
+                id,
+                name: None,
+                cwd,
+                title,
+                last_active: mtime,
+                running: loaded,
+                desktop: false,
+                host_session_id: None,
+                status: if loaded { Some("loaded".into()) } else { None },
+                transcript: Some(p.to_string_lossy().to_string()),
+                host: None,
+            });
+        }
+    }
+    discover_grok(now_ms()).into_iter().find(|s| s.id.eq_ignore_ascii_case(&id))
+}
+
+/// The rollout file of a Codex thread, by its id, at any age.
+fn codex_rollout(id: &str) -> Option<PathBuf> {
+    let root = home_dir().join(".codex").join("sessions");
+    WalkDir::new(&root)
+        .max_depth(5)
+        .into_iter()
+        .flatten()
+        .find(|e| e.file_type().is_file() && e.file_name().to_string_lossy().to_lowercase().contains(id))
+        .map(|e| e.path().to_path_buf())
 }
 
 #[cfg(test)]

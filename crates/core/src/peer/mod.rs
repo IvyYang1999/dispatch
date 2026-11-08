@@ -375,6 +375,8 @@ pub fn sessions_of(p: &PeerInfo) -> Option<Vec<Session>> {
                 reach.insert(s.id.clone(), rs.reach);
                 list.push(s);
             }
+            // names this machine gave sessions over there
+            crate::contacts::apply_remote(&p.id, &mut list);
             REMOTE.lock().unwrap().insert(p.id.clone(), Remote { at: Instant::now(), sessions: list.clone(), reach });
             Some(list)
         }
@@ -413,6 +415,16 @@ pub fn deliver(host: &Host, letter: &Letter) -> Result<(String, String, String),
     let Some(p) = peers().into_iter().find(|p| p.id == host.id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
     match ask(&p, &Request::Deliver { letter: letter.clone() })? {
         Response::Delivered { status, route, detail } => Ok((status, route, detail)),
+        Response::Error { message } => Err(PeerError::Refused(message)),
+        _ => Err(PeerError::Protocol("unexpected answer".into())),
+    }
+}
+
+/// The last turns of a session on a peer, as that machine reads them.
+pub fn transcript(host: &Host, session_id: &str, limit: usize) -> Result<Vec<crate::transcript::Turn>, PeerError> {
+    let Some(p) = peers().into_iter().find(|p| p.id == host.id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
+    match ask(&p, &Request::Transcript { session_id: session_id.to_string(), limit })? {
+        Response::Transcript { turns } => Ok(turns),
         Response::Error { message } => Err(PeerError::Refused(message)),
         _ => Err(PeerError::Protocol("unexpected answer".into())),
     }

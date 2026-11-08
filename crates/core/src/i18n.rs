@@ -164,6 +164,11 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "ops.cancelled" => ("已取消：{n} 封", "Cancelled: {n} copy(ies)"),
         "ops.retried" => ("重试 {n} 封", "Retried {n} copy(ies)"),
         "ops.bad_deadline" => ("截止时间写法不对：{s}（例：30m、2h、1d）", "Bad deadline \"{s}\" (try 30m, 2h, 1d)"),
+        "ops.registered" => ("已登记：「{name}」就是 {who}；以后直接发给这个名字", "Registered: \"{name}\" is {who}; address it by that name from now on"),
+        "ops.no_contact" => ("通讯录里没有「{name}」", "No contact called \"{name}\""),
+        "ops.provisional_note" => ("这个会话还没有正式名字，先暂记为「{name}」；要长期用就让用户确认或起个名", "This session has no confirmed name yet; it is noted as \"{name}\" for now. Ask the user to confirm or name it if it will be addressed again"),
+        "cli.contacts_none" => ("通讯录是空的。`dispatch contacts add <名字> [会话]` 给一个会话起名；不给会话就是当前这个。", "The address book is empty. `dispatch contacts add <name> [session]` names a session; without one, the calling session."),
+        "cli.contacts_removed" => ("已删除「{name}」", "Removed \"{name}\""),
         "cli.sweep" => ("过期标为没送到：{failed}；重试：{retried}", "marked not delivered: {failed}; retried: {retried}"),
         "cli.sweep_retry" => ("  ↻ {to}: {detail}", "  ↻ {to}: {detail}"),
 

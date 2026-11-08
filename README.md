@@ -28,6 +28,8 @@ Claude Code, Codex and Grok Bot sessions on one computer cannot talk to each oth
 - **Receipts** read from the session's own transcript: queued, started, finished, replied.
 - **Not delivered.** When nobody can hand a message over (the session is closed and there is no hook, no codex command, no Grok Bot app) it is marked failed at once, with the fix; a queued copy past its deadline (1 h urgent, 24 h normal, adjustable) counts as failed too. Retry and cancel exist; the app makes a postman's round every half minute and delivers queued copies whose route has opened.
 - **One dispatch, many recipients,** each with its own delivery state.
+- **An address book.** Give a session a stable name and a one-line role (star it in the directory, `dispatch contacts add … --about`, or let the agent register itself with `dispatch_register`) and send to the name: no search, no guessing, and the name stays good after discovery's two-day window has forgotten the session. The directory searches every session you ever had, whatever its age. A recipient an agent found by a fragment is noted under those words as a provisional name until you confirm or rename it.
+- **The clients' own icons.** Sender and recipients are marked with the icon of the installed Claude, Codex or Grok Bot app, read from your machine at run time (Dispatch ships none of them); a text tag stands in where a client is not installed.
 - **Across machines.** Machines running Dispatch on one network find each other with Bonjour, pair once with a six-digit code, and talk directly over an encrypted connection; no server, no account. A message to `Mac mini/release` is stored on that machine and delivered by its own ladder, and the reply comes back the same way. Machines the network cannot see (over Tailscale, say) take an address by hand. [How it works](docs/peers.md).
 - **Plugins** for Claude Code and Codex: nine MCP tools, a skill that says when and how to use them, and the hook.
 - **A desktop app** for the humans: the feed, the directory, a composer, one-click installs, and an "open session" button on every recipient. A menu bar item reads "2 queued · 1 failed"; system notifications only for a reply or a failed delivery.
@@ -112,6 +114,8 @@ dispatch send --to codex-thread --deadline 30m "…"  # counts as failed after 3
 dispatch retry <message id>                         # try a queued or failed message again
 dispatch cancel <message id>                        # withdraw one that has not been delivered
 dispatch sweep                                      # the postman's round: expire overdue, deliver what can go now (the app does this every 30 s)
+dispatch contacts add "Dispatch dev" <session>      # a stable name for a session (no session: the one this runs in); `contacts` lists, `contacts remove` forgets
+dispatch send --to "Dispatch dev" "…"              # an exact name wins over any fragment match
 dispatch peers                                      # this machine and the paired ones; `peers code` shows a pairing code, `peers pair <name> <code>` pairs, `peers scan` browses
 dispatch send --to "Mac mini/release" "…"           # a session on a paired machine
 dispatch serve                                      # listen for other machines without the app (the app listens while it runs)
@@ -129,7 +133,7 @@ dispatch mcp                                        # the MCP server over stdio 
 </p>
 
 - **Feed.** One row per dispatch, a chip per recipient colored by its state, the message with its recipients and their replies on the right. Filters for queued and failed. Queued and failed recipients carry Retry and Cancel.
-- **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now. Paired machines' sessions follow, each group under its machine's name.
+- **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now. Paired machines' sessions follow, each group under its machine's name. The star on a row names the session for the address book.
 - **Send.** The recipient box is the finder. Urgency. Several recipients at once.
 - **Settings.** One-click install, the plugin commands to copy, other machines (pairing), the language, notifications, where the messages live, check for updates.
 - **Other machines.** Machines running Dispatch on your network appear in Settings; press Pair and enter the code the other one shows. Their sessions join the directory and the composer, and a reply from one of them lands in your feed.

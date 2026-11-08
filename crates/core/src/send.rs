@@ -52,9 +52,22 @@ pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+/// How a recipient was found: by its id, by an exact name, or by a fragment of a name,
+/// title, folder or description (the kind of match worth remembering as a provisional name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Match {
+    Id,
+    Exact,
+    Fragment,
+}
+
 /// Resolve a recipient: a full id, a short id prefix, a desktop name or a title fragment,
 /// with a paired machine's name in front (`主力/release`) to look only there.
 pub fn resolve(query: &str) -> Result<Session> {
+    resolve_how(query).map(|(s, _)| s)
+}
+
+pub fn resolve_how(query: &str) -> Result<(Session, Match)> {
     let (host, q) = match peer::split_address(query.trim()) {
         Some((p, rest)) => (Some(p), rest),
         None => (None, query.trim().to_string()),
@@ -62,10 +75,13 @@ pub fn resolve(query: &str) -> Result<Session> {
     let q = q.as_str();
     // the person at the app or the command line: replies to them land in the feed
     if is_person(q) {
-        return Ok(match &host {
-            Some(p) => peer::remote_target(&p.id, &p.name, q, Some(q.into()), Harness::Human),
-            None => bare_session(Harness::Human, q, Some(q.into())),
-        });
+        return Ok((
+            match &host {
+                Some(p) => peer::remote_target(&p.id, &p.name, q, Some(q.into()), Harness::Human),
+                None => bare_session(Harness::Human, q, Some(q.into())),
+            },
+            Match::Exact,
+        ));
     }
     let all: Vec<Session> = discover::sessions().into_iter().filter(|s| match &host {
         Some(p) => s.host.as_ref().map(|h| h.id == p.id).unwrap_or(false),
@@ -73,24 +89,47 @@ pub fn resolve(query: &str) -> Result<Session> {
     }).collect();
     if is_uuid(q) {
         if let Some(s) = all.iter().find(|s| s.id.eq_ignore_ascii_case(q)) {
-            return Ok(s.clone());
+            return Ok((s.clone(), Match::Id));
         }
-        return Ok(match &host {
-            Some(p) => peer::remote_target(&p.id, &p.name, q, None, Harness::Claude),
-            None => bare_session(Harness::Claude, q, None),
-        });
+        return Ok((
+            match &host {
+                Some(p) => peer::remote_target(&p.id, &p.name, q, None, Harness::Claude),
+                // its files say what it runs on, whatever its age; else a Claude session by default
+                None => discover::lookup_files(q).unwrap_or_else(|| bare_session(Harness::Claude, q, None)),
+            },
+            Match::Id,
+        ));
+    }
+    // an exact name (a contact, provisional or not, or the name the client gave it) wins over any fragment
+    let book = crate::contacts::list();
+    let named = |s: &Session| {
+        let host_id = s.host.as_ref().map(|h| h.id.as_str());
+        s.name.as_deref().map(|n| n.eq_ignore_ascii_case(q)).unwrap_or(false)
+            || book.iter().any(|c| c.name.eq_ignore_ascii_case(q) && c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id)
+    };
+    let exact: Vec<&Session> = all.iter().filter(|s| named(s)).collect();
+    if exact.len() == 1 {
+        return Ok((exact[0].clone(), Match::Exact));
     }
     let ql = q.to_lowercase();
+    let about = |s: &Session| -> Option<String> {
+        let host_id = s.host.as_ref().map(|h| h.id.as_str());
+        book.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id).and_then(|c| c.description.clone())
+    };
     let mut hits: Vec<&Session> = all.iter().filter(|s| s.id.to_lowercase().starts_with(&ql)).collect();
+    let how = if hits.is_empty() { Match::Fragment } else { Match::Id };
     if hits.is_empty() {
         hits = all.iter().filter(|s| s.name.as_deref().map(|n| n.to_lowercase().contains(&ql)).unwrap_or(false)).collect();
+    }
+    if hits.is_empty() {
+        hits = all.iter().filter(|s| about(s).map(|d| d.to_lowercase().contains(&ql)).unwrap_or(false)).collect();
     }
     if hits.is_empty() {
         hits = all.iter().filter(|s| s.title.as_deref().map(|n| n.to_lowercase().contains(&ql)).unwrap_or(false)).collect();
     }
     match hits.len() {
         0 => Err(anyhow!("{}", t("send.no_match").replace("{q}", q))),
-        1 => Ok(hits[0].clone()),
+        1 => Ok((hits[0].clone(), how)),
         _ => {
             let list: Vec<String> = hits.iter().take(8).map(|s| format!("  {}  {}  {}", s.short_address(), s.display_name(), s.cwd.as_deref().map(crate::model::short_cwd).unwrap_or_default())).collect();
             Err(anyhow!("{}", t("send.many_match").replace("{q}", q).replace("{n}", &hits.len().to_string()).replace("{list}", &list.join("\n"))))

@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { api, type Copy, type Dispatch, type Kind, type OpenResult, type PeerOverview, type Session, type SetupStatus, type UpdateCheck } from './api'
+import { api, type Copy, type Dispatch, type Kind, type OpenResult, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
-type Screen = 'feed' | 'agents' | 'compose' | 'settings'
+type Screen = 'feed' | 'agents' | 'compose' | 'settings' | 'session'
 
 const kindText = (k: Kind) => t(`kind.${k}` as const)
 
@@ -53,6 +53,52 @@ function withHost(name: string, host?: string | null): string {
   return host ? `${name} @ ${host}` : name
 }
 
+// The clients' own icons, taken from the installed apps by the backend; a text tag where none is.
+let icons: Record<string, string> = {}
+const iconListeners = new Set<() => void>()
+async function loadIcons(): Promise<void> {
+  try {
+    icons = await api.harnessIcons()
+    iconListeners.forEach((l) => l())
+  } catch {
+    /* text tags stay */
+  }
+}
+function useIcons(): Record<string, string> {
+  return useSyncExternalStore(
+    (cb) => {
+      iconListeners.add(cb)
+      return () => iconListeners.delete(cb)
+    },
+    () => icons,
+    () => icons,
+  )
+}
+function harnessKey(label: string): string {
+  if (label === 'Claude') return 'claude'
+  if (label === 'Codex') return 'codex'
+  if (label === 'Grok Bot') return 'grok'
+  return 'human'
+}
+
+function HarnessMark({ harness, size = 14 }: { harness?: string | null; size?: number }) {
+  const all = useIcons()
+  if (!harness) return null
+  const key = harnessKey(harness)
+  if (key === 'human') {
+    return (
+      <svg className="hmark hmark--person" width={size} height={size} viewBox="0 0 16 16" aria-label={harness}>
+        <title>{harness}</title>
+        <circle cx="8" cy="5" r="3" fill="currentColor" />
+        <path d="M2 14c0-3.3 2.7-5 6-5s6 1.7 6 5z" fill="currentColor" />
+      </svg>
+    )
+  }
+  const src = all[key]
+  if (!src) return <span className="tag">{harness}</span>
+  return <img className="hmark" width={size} height={size} src={src} alt={harness} title={harness} />
+}
+
 function presence(s: Session): string {
   if (!s.running) return t('presence.offline')
   const st = s.status ?? 'idle'
@@ -62,6 +108,7 @@ function presence(s: Session): string {
 
 function useOpen() {
   const [notice, setNotice] = useState<string | null>(null)
+  const say = useCallback((text: string) => setNotice(text || null), [])
   const open = useCallback(async (id: string) => {
     try {
       const r: OpenResult = await api.openSession(id)
@@ -72,7 +119,7 @@ function useOpen() {
       setNotice(String(e))
     }
   }, [])
-  return { open, notice, clear: () => setNotice(null) }
+  return { open, notice, clear: () => setNotice(null), say }
 }
 
 // ---- Feed ----
@@ -192,7 +239,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
               <div className="row__main">
                 <div className="row__line">
                   <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
-                  {d.from_harness && <span className="tag">{d.from_harness}</span>}
+                  <HarnessMark harness={d.from_harness} />
                   <span className="row__text">{d.text}</span>
                   <span className="row__time">{d.created.slice(11)}</span>
                 </div>
@@ -218,7 +265,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                 <div className="detail__who">
                   <span className="detail__name">
                     {withHost(current.from_name, current.from_host_name)}
-                    {current.from_harness && <span className="tag">{current.from_harness}</span>}
+                    <HarnessMark harness={current.from_harness} />
                   </span>
                   <span className="detail__meta">
                     {current.created} · {current.recipients.length === 1 ? t('feed.sentOne') : t('feed.sentMany', { n: current.recipients.length })}
@@ -233,7 +280,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                   <div className="rcpt__head">
                     <Avatar name={r.to_name} size={20} />
                     <span className="rcpt__name">{r.to_host_name && <span className="rcpt__host">{r.to_host_name}/</span>}{r.to_name}</span>
-                    {r.to_harness && <span className="tag">{r.to_harness}</span>}
+                    <HarnessMark harness={r.to_harness} />
                     <Badge kind={r.kind} />
                     <span className="rcpt__time">{(r.reply?.created ?? r.created).slice(11)}</span>
                     {(r.kind === 'queued' || r.kind === 'failed') && (
@@ -273,27 +320,47 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
 
 // ---- Agents ----
 
-function Agents({ onCompose }: { onCompose: (to: string) => void }) {
+function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; onOpenPage: (id: string) => void }) {
   const lang = useLang()
   const [sessions, setSessions] = useState<Session[]>([])
   const [tool, setTool] = useState<string>('all')
-  const [showAll, setShowAll] = useState(false)
-  const { open, notice, clear } = useOpen()
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<Session[] | null>(null)
+  const [editing, setEditing] = useState<{ id: string; name: string; about: string } | null>(null)
+  const { open, notice, clear, say } = useOpen()
   const load = useCallback(async () => {
     try {
-      const r = await api.sessions(!showAll)
+      const r = await api.sessions(true)
       setSessions(r.sessions)
     } catch {
       /* keep the last list */
     }
-  }, [showAll, lang])
+  }, [lang])
   useEffect(() => {
     load()
     const h = setInterval(load, 10000)
     return () => clearInterval(h)
   }, [load])
-  const tools = useMemo(() => Array.from(new Set(sessions.map((s) => s.harness))), [sessions])
-  const shown = sessions.filter((s) => tool === 'all' || s.harness === tool)
+  // the search box looks through every session with records here, whatever its age
+  const search = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setResults(null)
+      return
+    }
+    try {
+      const r = await api.searchSessions(q)
+      setResults(r.sessions)
+    } catch {
+      setResults([])
+    }
+  }, [])
+  useEffect(() => {
+    const h = setTimeout(() => search(query), 200)
+    return () => clearTimeout(h)
+  }, [query, search, lang])
+  const base = results ?? sessions
+  const tools = useMemo(() => Array.from(new Set(base.map((s) => s.harness))), [base])
+  const shown = base.filter((s) => tool === 'all' || s.harness === tool)
   // this machine first, then each paired machine under its own name
   const groups = useMemo(() => {
     const m = new Map<string, { key: string; title: string; items: Session[] }>()
@@ -304,45 +371,185 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
     }
     return Array.from(m.values())
   }, [shown, lang])
+  const save = async (s: Session) => {
+    if (!editing) return
+    const { name, about } = editing
+    setEditing(null)
+    try {
+      if (name.trim()) {
+        const r = await api.contactSet(name.trim(), addressOf(s), about.trim() || null)
+        say(r.text)
+      } else if (s.contact) {
+        await api.contactRemove(s.contact)
+      }
+    } catch (e) {
+      say(String(e))
+    }
+    load()
+    if (results) search(query)
+  }
+  const onKey = (s: Session) => (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') save(s)
+    if (e.key === 'Escape') setEditing(null)
+  }
   return (
     <>
       <header className="bar" data-tauri-drag-region>
         <span className="bar__title" data-tauri-drag-region>{t('nav.agents')}</span>
         <span className="tabs">
-          <button className="tab" data-active={tool === 'all' || undefined} onClick={() => setTool('all')}>{t('tabs.all')} <i>{sessions.length}</i></button>
+          <button className="tab" data-active={tool === 'all' || undefined} onClick={() => setTool('all')}>{t('tabs.all')} <i>{base.length}</i></button>
           {tools.map((h) => (
-            <button key={h} className="tab" data-active={tool === h || undefined} onClick={() => setTool(h)}>{h} <i>{sessions.filter((s) => s.harness === h).length}</i></button>
+            <button key={h} className="tab" data-active={tool === h || undefined} onClick={() => setTool(h)}>{h} <i>{base.filter((s) => s.harness === h).length}</i></button>
           ))}
         </span>
         <span className="bar__spacer" />
-        <label className="check"><input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> {t('agents.showAll')}</label>
+        <input className="input input--search" placeholder={t('agents.search')} value={query} onChange={(e) => setQuery(e.target.value)} />
       </header>
       <div className="lines">
         {groups.map((g) => (
           <div key={g.key}>
             {groups.length > 1 && <div className="lines__group">{g.title} <i>{g.items.length}</i></div>}
             {g.items.map((s) => (
-          <div key={s.id} className="line">
-            <Avatar name={s.name} />
-            <span className="line__name" title={s.id}>{s.name}</span>
-            <span className="tag">{s.harness}</span>
-            <span className="line__where" title={s.cwd ?? ''}>{s.cwd_short ?? ''}</span>
-            <span className="line__presence" data-presence={s.running ? (s.status ?? 'idle') : 'offline'}>
-              <span className="line__dot" />
-              {presence(s)}
-            </span>
-            <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
-            <span className="line__actions">
-              <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(addressOf(s))}>✎</button>
-              <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
-            </span>
-          </div>
+              <div
+                key={s.id}
+                className="line line--link"
+                data-editing={editing?.id === s.id || undefined}
+                onClick={(e) => {
+                  if ((e.target as HTMLElement).closest('button, input')) return
+                  onOpenPage(addressOf(s))
+                }}
+              >
+                <Avatar name={s.name} />
+                {editing?.id === s.id ? (
+                  <span className="line__edit">
+                    <input className="input" autoFocus placeholder={t('contact.placeholder')} title={t('contact.hint')} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} onKeyDown={onKey(s)} />
+                    <input className="input input--about" placeholder={t('contact.about')} value={editing.about} onChange={(e) => setEditing({ ...editing, about: e.target.value })} onKeyDown={onKey(s)} />
+                    <button className="btn btn--primary btn--small" onClick={() => save(s)}>{t('action.save')}</button>
+                    <button className="btn btn--ghost btn--small" onClick={() => setEditing(null)}>{t('action.cancel')}</button>
+                  </span>
+                ) : (
+                  <>
+                    <span className="line__who" title={s.id}>
+                      <span className="line__name">
+                        {s.contact && !s.provisional && <span className="line__star">★</span>}
+                        {s.name}
+                        {s.contact && s.provisional && <span className="line__prov" title={t('contact.provisional')}>≈ {s.contact}</span>}
+                      </span>
+                      {s.about && <span className="line__about">{s.about}</span>}
+                    </span>
+                    <HarnessMark harness={s.harness} size={16} />
+                    <span className="line__where" title={s.cwd ?? ''}>{s.cwd_short ?? ''}</span>
+                    <span className="line__presence" data-presence={s.running ? (s.status ?? 'idle') : 'offline'}>
+                      <span className="line__dot" />
+                      {presence(s)}
+                    </span>
+                    <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
+                    <span className="line__actions">
+                      <button className="btn btn--ghost btn--icon" title={s.contact && !s.provisional ? t('action.unname') : t('action.name')} onClick={() => setEditing({ id: s.id, name: s.contact ?? '', about: s.about ?? '' })}>{s.contact && !s.provisional ? '★' : '☆'}</button>
+                      <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(addressOf(s))}>✎</button>
+                      <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
+                    </span>
+                  </>
+                )}
+              </div>
             ))}
           </div>
         ))}
-        {shown.length === 0 && <div className="empty">{t('agents.empty')}</div>}
+        {shown.length === 0 && <div className="empty">{results ? t('agents.noResults') : t('agents.empty')}</div>}
         {notice && <div className="notice" onClick={clear}>{notice}</div>}
       </div>
+    </>
+  )
+}
+
+// ---- Session page ----
+
+function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onCompose: (to: string) => void; onFeedPick: (dispatchId: string) => void; onBack: () => void }) {
+  const lang = useLang()
+  const [page, setPage] = useState<SessionPageData | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const { open, notice, clear } = useOpen()
+  const load = useCallback(() => api.sessionPage(id).then((p) => { setPage(p); setErr(null) }).catch((e) => setErr(String(e))), [id, lang])
+  useEffect(() => {
+    load()
+    const h = setInterval(load, 8000)
+    return () => clearInterval(h)
+  }, [load])
+  const s = page?.session
+  return (
+    <>
+      <header className="bar" data-tauri-drag-region>
+        <button className="btn btn--ghost btn--small" onClick={onBack}>‹ {t('session.back')}</button>
+        <span className="bar__title" data-tauri-drag-region>{s?.name ?? ''}</span>
+        <span className="bar__spacer" />
+        {s && <button className="btn btn--primary" onClick={() => onCompose(addressOf(s))}>{t('action.message')}</button>}
+      </header>
+      {err && <div className="empty">{err}</div>}
+      {s && page && (
+        <div className="page">
+          <div className="who">
+            <Avatar name={s.name} size={40} />
+            <div className="who__text">
+              <div className="who__line">
+                <span className="who__name">{s.contact && !s.provisional && <span className="line__star">★</span>}{s.name}</span>
+                <HarnessMark harness={s.harness} size={16} />
+                {s.host && <span className="tag">{s.host.name}</span>}
+              </div>
+              {s.about && <div className="who__about">{s.about}</div>}
+              <div className="who__meta">
+                {s.cwd_short && <span title={s.cwd ?? ''}>{s.cwd_short}</span>}
+                <span>{presence(s)}</span>
+                <span className="line__how" data-reach={s.reach.level}>{s.reach.text}</span>
+              </div>
+            </div>
+            <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
+          </div>
+          <div className="page__cols">
+            <section className="page__col">
+              <div className="section-title">{t('session.dispatches')} <i>{page.dispatches.length}</i></div>
+              {page.dispatches.length === 0 && <div className="empty">{t('session.noDispatches')}</div>}
+              {page.dispatches.map((d) => (
+                <div key={d.dispatch_id} className="row" onClick={() => onFeedPick(d.dispatch_id)}>
+                  <Avatar name={d.from_name} />
+                  <div className="row__main">
+                    <div className="row__line">
+                      <span className="tag tag--dir" data-dir={d.direction}>{d.direction === 'in' ? t('session.in') : t('session.out')}</span>
+                      <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
+                      <HarnessMark harness={d.from_harness} />
+                      <span className="row__text">{d.text}</span>
+                      <span className="row__time">{d.created.slice(5)}</span>
+                    </div>
+                    <div className="row__rcpts">
+                      {d.recipients.map((r) => (
+                        <span key={r.letter_id} className="chip" data-kind={r.kind} title={r.to_harness ?? ''}>
+                          <span className="chip__dot" />
+                          {r.to_host_name && <span className="chip__host">{r.to_host_name}/</span>}
+                          {r.to_name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </section>
+            <section className="page__col">
+              <div className="section-title">{t('session.transcript')}</div>
+              {!page.transcript_available && <div className="empty">{t('session.noTranscript')}</div>}
+              {page.transcript_available && page.turns.length === 0 && <div className="empty">{t('session.emptyTranscript')}</div>}
+              {page.turns.map((u, i) => (
+                <div key={i} className="turn" data-role={u.role} data-dispatch={u.via_dispatch || undefined}>
+                  <div className="turn__head">
+                    <span className="turn__role">{u.role === 'user' ? (u.via_dispatch ? t('session.viaDispatch', { from: u.from_agent ?? '?' }) : t('turn.user')) : t('turn.assistant')}</span>
+                    {u.at && <span className="turn__time">{u.at.slice(5, 16).replace('T', ' ')}</span>}
+                  </div>
+                  <p className="turn__text">{u.text}</p>
+                </div>
+              ))}
+            </section>
+          </div>
+          {notice && <div className="notice" onClick={clear}>{notice}</div>}
+        </div>
+      )}
     </>
   )
 }
@@ -426,7 +633,7 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
                 <div className="cand__who">
                   <div className="cand__line">
                     <span className="cand__name">{c.address}</span>
-                    <span className="tag">{c.harness}</span>
+                    <HarnessMark harness={c.harness} />
                     <span className="cand__presence">{presence(c)}</span>
                   </div>
                   <span className="cand__reason">{reasonText(c)} · {c.reach.text}</span>
@@ -767,9 +974,19 @@ export function App() {
   const [live, setLive] = useState<Session[]>([])
   const [queued, setQueued] = useState(0)
   const [pick, setPick] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const openPage = (id: string) => {
+    setSessionId(id)
+    setScreen('session')
+  }
+  const feedPick = (dispatchId: string) => {
+    setPick(dispatchId)
+    setScreen('feed')
+  }
 
   useEffect(() => {
     loadLang()
+    loadIcons()
   }, [])
   // the menu bar item: a dispatch picked from its list, or Send
   useEffect(() => {
@@ -822,7 +1039,7 @@ export function App() {
         <div className="group">
           <div className="section">{t('side.local')}</div>
           {live.filter((s) => !s.host).slice(0, 8).map((s) => (
-            <div key={s.id} className="agent" title={s.cwd ?? ''}>
+            <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
               <Avatar name={s.name} size={16} />
               <span className="agent__name">{s.name}</span>
               <span className="presence" data-on={s.running || undefined} />
@@ -833,7 +1050,7 @@ export function App() {
           <div key={h.id} className="group">
             <div className="section">{h.name}</div>
             {live.filter((s) => s.host?.id === h.id).slice(0, 5).map((s) => (
-              <div key={s.id} className="agent" title={s.cwd ?? ''}>
+              <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
                 <Avatar name={s.name} size={16} />
                 <span className="agent__name">{s.name}</span>
                 <span className="presence" data-on={s.running || undefined} />
@@ -844,7 +1061,8 @@ export function App() {
       </nav>
       <main className="panel">
         {screen === 'feed' && <Feed onCompose={compose} pick={pick} />}
-        {screen === 'agents' && <Agents onCompose={compose} />}
+        {screen === 'agents' && <Agents onCompose={compose} onOpenPage={openPage} />}
+        {screen === 'session' && sessionId && <SessionPage id={sessionId} onCompose={compose} onFeedPick={feedPick} onBack={() => setScreen('agents')} />}
         {screen === 'compose' && <Compose presetTo={composeTo} onSent={() => setScreen('feed')} />}
         {screen === 'settings' && <Settings />}
       </main>

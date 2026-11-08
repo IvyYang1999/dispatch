@@ -112,6 +112,10 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
                     }
                     Response::Ok
                 }
+                Request::Transcript { session_id, limit } => {
+                    let turns = discover::lookup(&session_id).map(|s| crate::transcript::recent(&s, limit.min(100))).unwrap_or_default();
+                    Response::Transcript { turns }
+                }
                 Request::Hello | Request::Pair { .. } => Response::Error { message: "unexpected".into() },
             }
         }
