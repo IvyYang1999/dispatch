@@ -314,6 +314,29 @@ pub fn queue(thread_id: &str, text: &str, resume: bool) -> Result<QueueOutcome> 
     Ok(queue_outcome(&stdout, &stderr, resume, loaded))
 }
 
+/// Put a message in a thread's queue with Codex's own queue (`thread/queue/add`), on the
+/// shared daemon when there is one, else a private app-server. Whichever Codex process has the
+/// thread open (the desktop app, a terminal, the daemon) picks it up when the thread is idle,
+/// about every ten seconds; a thread nobody has open waits until it is opened. Nothing is
+/// loaded or resumed here. Returns the queued submission's id.
+pub fn queue_add(thread_id: &str, text: &str, client_id: &str) -> Result<String> {
+    let mut srv = Server::connect()?;
+    queue_add_on(&mut srv, thread_id, text, client_id)
+}
+
+fn queue_add_on(srv: &mut Server, thread_id: &str, text: &str, client_id: &str) -> Result<String> {
+    let r = srv.call(
+        "thread/queue/add",
+        json!({ "threadId": thread_id, "clientUserMessageId": client_id, "input": [{ "type": "text", "text": text, "text_elements": [] }] }),
+        Duration::from_secs(20),
+    )?;
+    let q = &r["queuedSubmission"];
+    if q["clientUserMessageId"].as_str() != Some(client_id) {
+        return Err(anyhow!("Codex answered, but the queue receipt does not match this message; check the thread before retrying"));
+    }
+    q["id"].as_str().map(str::to_string).ok_or_else(|| anyhow!("Codex answered without a queue id"))
+}
+
 /// The rollout file of a thread, by its id.
 pub fn rollout_path(thread_id: &str) -> Option<PathBuf> {
     let root = home_dir().join(".codex").join("sessions");
@@ -398,6 +421,31 @@ mod tests {
         assert!(start.elapsed() < Duration::from_millis(500));
         worker.join().unwrap();
     }
+    #[test]
+    fn queue_add_sends_the_message_and_checks_the_receipt() {
+        for (answer_id, ok) in [("letter-1", true), ("someone-else", false)] {
+            let (client, server) = UnixStream::pair().unwrap();
+            let worker = std::thread::spawn(move || {
+                let mut ws = tungstenite::accept(server).unwrap();
+                let request: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(request["method"], "thread/queue/add");
+                assert_eq!(request["params"]["threadId"], "t-1");
+                assert_eq!(request["params"]["input"][0]["text"], "hello");
+                ws.send(Message::Text(json!({"id":request["id"],"result":{"queuedSubmission":{"id":"q-9","clientUserMessageId":answer_id}}}).to_string().into())).unwrap();
+                let _ = ws.read();
+            });
+            let (ws, _) = tungstenite::client("ws://localhost/", client).unwrap();
+            let mut srv = Server { transport: Transport::Shared(ws), next_id: 1, shared: true };
+            let got = queue_add_on(&mut srv, "t-1", "hello", "letter-1");
+            assert_eq!(got.is_ok(), ok, "{got:?}");
+            if ok {
+                assert_eq!(got.unwrap(), "q-9");
+            }
+            drop(srv);
+            worker.join().unwrap();
+        }
+    }
+
     #[test]
     fn queue_warning_is_not_a_successful_resume() {
         let out = queue_outcome("Queued fixture message", "Warning: failed to resume the thread", true, false);

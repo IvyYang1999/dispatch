@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { api, type Copy, type Dispatch, type Kind, type OpenResult, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
@@ -464,17 +464,52 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
 
 // ---- Session page ----
 
+/** `MM-DD HH:mm` in this machine's time; records carry UTC. */
+function localStamp(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** Long text folds to a few lines with a toggle. */
+function Clamp({ text }: { text: string }) {
+  useLang()
+  const [open, setOpen] = useState(false)
+  const long = text.length > 420 || text.split('\n').length > 9
+  return (
+    <>
+      <p className={`msg__text${long && !open ? ' msg__text--clamp' : ''}`}>{text}</p>
+      {long && <button className="msg__more" onClick={() => setOpen(!open)}>{open ? t('msg.less') : t('msg.more')}</button>}
+    </>
+  )
+}
+
 function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onCompose: (to: string) => void; onFeedPick: (dispatchId: string) => void; onBack: () => void }) {
   const lang = useLang()
   const [page, setPage] = useState<SessionPageData | null>(null)
   const [err, setErr] = useState<string | null>(null)
+  const [showDispatches, setShowDispatches] = useState(false)
   const { open, notice, clear } = useOpen()
+  const chatRef = useRef<HTMLDivElement>(null)
+  const pinned = useRef(true)
   const load = useCallback(() => api.sessionPage(id).then((p) => { setPage(p); setErr(null) }).catch((e) => setErr(String(e))), [id, lang])
   useEffect(() => {
+    pinned.current = true
     load()
     const h = setInterval(load, 8000)
     return () => clearInterval(h)
   }, [load])
+  // keep the newest exchange in view unless the reader scrolled up
+  useEffect(() => {
+    const el = chatRef.current
+    if (el && pinned.current) el.scrollTop = el.scrollHeight
+  }, [page])
+  const onScroll = () => {
+    const el = chatRef.current
+    if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  }
   const s = page?.session
   return (
     <>
@@ -486,84 +521,82 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
       </header>
       {err && <div className="empty">{err}</div>}
       {s && page && (
-        <div className="page">
-          <div className="who">
-            <Avatar name={s.name} size={40} />
-            <div className="who__text">
-              <div className="who__line">
-                <span className="who__name">{s.contact && !s.provisional && <span className="line__star">★</span>}{s.name}</span>
-                <HarnessMark harness={s.harness} size={16} />
-                {s.host && <span className="tag">{s.host.name}</span>}
+        <div className="spage">
+          <div className="spage__head">
+            <div className="who">
+              <Avatar name={s.name} size={40} />
+              <div className="who__text">
+                <div className="who__line">
+                  <span className="who__name">{s.contact && !s.provisional && <span className="line__star">★</span>}{s.name}</span>
+                  <HarnessMark harness={s.harness} size={16} />
+                  {s.host && <span className="tag">{s.host.name}</span>}
+                </div>
+                {s.about && <div className="who__about">{s.about}</div>}
+                <div className="who__meta">
+                  {s.cwd_short && <span title={s.cwd ?? ''}>{s.cwd_short}</span>}
+                  <span>{presence(s)}</span>
+                  <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
+                </div>
               </div>
-              {s.about && <div className="who__about">{s.about}</div>}
-              <div className="who__meta">
-                {s.cwd_short && <span title={s.cwd ?? ''}>{s.cwd_short}</span>}
-                <span>{presence(s)}</span>
-                <span className="line__how" data-reach={s.reach.level}>{s.reach.text}</span>
-              </div>
+              <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
             </div>
-            <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
+            {page.dispatches.length > 0 && (
+              <div className="spage__dispatches">
+                <button className="spage__toggle" onClick={() => setShowDispatches(!showDispatches)}>
+                  {showDispatches ? '▾' : '▸'} {t('session.dispatches')} <i>{page.dispatches.length}</i>
+                </button>
+                {showDispatches && (
+                  <div className="spage__dlist">
+                    {page.dispatches.map((d) => (
+                      <div key={d.dispatch_id} className="row" onClick={() => onFeedPick(d.dispatch_id)}>
+                        <Avatar name={d.from_name} size={20} />
+                        <div className="row__main">
+                          <div className="row__line">
+                            <span className="tag tag--dir" data-dir={d.direction}>{d.direction === 'in' ? t('session.in') : t('session.out')}</span>
+                            <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
+                            <HarnessMark harness={d.from_harness} />
+                            <span className="row__text">{d.text}</span>
+                            <span className="row__time">{d.created.slice(5)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
-          <div className="page__cols">
-            <section className="page__col">
-              <div className="section-title">{t('session.dispatches')} <i>{page.dispatches.length}</i></div>
-              {page.dispatches.length === 0 && <div className="empty">{t('session.noDispatches')}</div>}
-              {page.dispatches.map((d) => (
-                <div key={d.dispatch_id} className="row" onClick={() => onFeedPick(d.dispatch_id)}>
-                  <Avatar name={d.from_name} />
-                  <div className="row__main">
-                    <div className="row__line">
-                      <span className="tag tag--dir" data-dir={d.direction}>{d.direction === 'in' ? t('session.in') : t('session.out')}</span>
-                      <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
-                      <HarnessMark harness={d.from_harness} />
-                      <span className="row__text">{d.text}</span>
-                      <span className="row__time">{d.created.slice(5)}</span>
+          <div className="chat" ref={chatRef} onScroll={onScroll}>
+            {!page.transcript_available && <div className="empty">{t('session.noTranscript')}</div>}
+            {page.transcript_available && page.rounds.length === 0 && <div className="empty">{t('session.emptyTranscript')}</div>}
+            {page.rounds.map((r, i) => {
+              const u = r.user
+              const at = localStamp(u?.at ?? r.replies[0]?.at)
+              return (
+                <div key={i} className="exchange">
+                  {at && <div className="chat__time">{at}</div>}
+                  {u && (
+                    <div className="msg msg--prompt" data-dispatch={u.via_dispatch || undefined}>
+                      {u.via_dispatch && <div className="msg__from">📨 {t('session.viaDispatch', { from: u.from_agent ?? '?' })}</div>}
+                      <div className="msg__bubble">
+                        <Clamp text={u.text} />
+                      </div>
                     </div>
-                    <div className="row__rcpts">
-                      {d.recipients.map((r) => (
-                        <span key={r.letter_id} className="chip" data-kind={r.kind} title={r.to_harness ?? ''}>
-                          <span className="chip__dot" />
-                          {r.to_host_name && <span className="chip__host">{r.to_host_name}/</span>}
-                          {r.to_name}
-                        </span>
-                      ))}
+                  )}
+                  <div className="msg msg--reply">
+                    <div className="msg__who">
+                      <HarnessMark harness={s.harness} size={14} />
+                      <span>{s.name}</span>
                     </div>
+                    {r.replies.length === 0 ? (
+                      <p className="msg__text msg__text--faint">{i === page.rounds.length - 1 ? t('round.pending') : t('round.noText')}</p>
+                    ) : (
+                      <Clamp text={r.replies.map((x) => x.text).join('\n\n')} />
+                    )}
                   </div>
                 </div>
-              ))}
-            </section>
-            <section className="page__col">
-              <div className="section-title">{t('session.transcript')}</div>
-              {!page.transcript_available && <div className="empty">{t('session.noTranscript')}</div>}
-              {page.transcript_available && page.rounds.length === 0 && <div className="empty">{t('session.emptyTranscript')}</div>}
-              {page.rounds.map((r, i) => {
-                const u = r.user
-                const at = u?.at ?? r.replies[0]?.at ?? null
-                return (
-                  <div key={i} className="round" data-dispatch={u?.via_dispatch || undefined}>
-                    <div className="round__prompt">
-                      <span className="round__who">
-                        {u?.via_dispatch ? <span className="round__mail">📨</span> : <HarnessMark harness="Human" size={14} />}
-                        <span className="round__label">{u ? (u.via_dispatch ? t('session.viaDispatch', { from: u.from_agent ?? '?' }) : t('turn.user')) : t('round.noPrompt')}</span>
-                        {at && <span className="round__time">{at.slice(5, 16).replace('T', ' ')}</span>}
-                      </span>
-                      {u && <p className="round__text">{u.text}</p>}
-                    </div>
-                    <div className="round__reply">
-                      <span className="round__who">
-                        <HarnessMark harness={s.harness} size={14} />
-                        <span className="round__label">{s.name}</span>
-                      </span>
-                      {r.replies.length === 0 ? (
-                        <p className="round__text round__text--faint">{t('round.pending')}</p>
-                      ) : (
-                        <p className="round__text">{r.replies.map((x) => x.text).join('\n\n')}</p>
-                      )}
-                    </div>
-                  </div>
-                )
-              })}
-            </section>
+              )
+            })}
           </div>
           {notice && <div className="notice" onClick={clear}>{notice}</div>}
         </div>

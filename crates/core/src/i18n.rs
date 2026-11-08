@@ -114,6 +114,8 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "reach.bypass_none" => ("收不到：它跳过了权限确认，又没装 hook", "Unreachable: bypasses permissions, no hook"),
         "reach.codex_nocli" => ("收不到：本机没找到 codex 命令", "Unreachable: no codex command"),
         "reach.codex_nodaemon" => ("待接通：Codex 的 app-server daemon 没开", "Waiting: Codex daemon not running"),
+        "reach.codex_queue" => ("进 Codex 的队列：它在 Codex 里开着且空闲时十秒左右接收，没开着的等你打开它", "Into Codex's queue: taken within about ten seconds while it is open and idle in Codex; one that is not open waits until you open it"),
+        "send.codex_queued_open" => ("已进 Codex 的队列：它在 Codex（桌面端或终端）里开着且空闲时十秒左右接收；没开着的等你在 Codex 里打开它", "In Codex's queue: taken within about ten seconds while the thread is open and idle in Codex (desktop or terminal); one that is not open waits until you open it in Codex"),
         "reach.codex_now" => ("立刻送到：排在它当前这一轮之后", "At once: after its current turn"),
         "reach.codex_notloaded" => ("待接通：会话没挂在 daemon 上（桌面里开着的会话不在 daemon 里）", "Waiting: not loaded on the daemon"),
         "reach.grok_noapp" => ("收不到：本机没装 Grok Bot", "Unreachable: Grok Bot is not installed"),

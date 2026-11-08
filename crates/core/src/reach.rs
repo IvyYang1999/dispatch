@@ -83,12 +83,10 @@ pub fn decide(s: &Session, hook_installed: bool) -> Reach {
             let st = crate::codex::state();
             if !st.cli {
                 Reach { level: Level::None, text: t("reach.codex_nocli").into(), fix: Some("login".into()) }
-            } else if !st.daemon {
-                Reach { level: Level::None, text: t("reach.codex_nodaemon").into(), fix: Some("daemon".into()) }
-            } else if st.loaded.contains(&s.id) {
+            } else if st.daemon && st.loaded.contains(&s.id) {
                 Reach { level: Level::Now, text: t("reach.codex_now").into(), fix: None }
             } else {
-                Reach { level: Level::None, text: t("reach.codex_notloaded").into(), fix: Some("resume".into()) }
+                Reach { level: Level::Later, text: t("reach.codex_queue").into(), fix: None }
             }
         }
         Harness::Grok => {

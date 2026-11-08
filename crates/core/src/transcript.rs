@@ -34,6 +34,15 @@ pub struct Round {
 pub fn rounds(turns: &[Turn], limit: usize) -> Vec<Round> {
     let mut out: Vec<Round> = vec![];
     for t in turns {
+        // images attached to a prompt arrive as a message of their own: they belong to it
+        if t.role == "user" && IMAGES_RE.is_match(&t.text) {
+            if let Some(Round { user: Some(u), replies }) = out.last_mut() {
+                if replies.is_empty() {
+                    u.text = format!("{}\n{}", u.text, t.text.trim());
+                    continue;
+                }
+            }
+        }
         if t.role == "user" {
             out.push(Round { user: Some(t.clone()), replies: vec![] });
         } else {
@@ -52,9 +61,11 @@ pub fn rounds(turns: &[Turn], limit: usize) -> Vec<Round> {
 const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_CHARS: usize = 600;
 /// Harness boilerplate that says nothing about the conversation.
-const TAGS: [&str; 10] = ["system-reminder", "environment_context", "user_instructions", "permissions_instructions", "local-command-stdout", "local-command-caveat", "command-name", "command-message", "command-args", "skills_instructions"];
+const TAGS: [&str; 11] = ["system-reminder", "environment_context", "user_instructions", "permissions_instructions", "local-command-stdout", "local-command-caveat", "command-name", "command-message", "command-args", "skills_instructions", "INSTRUCTIONS"];
 
 static TAG_RES: LazyLock<Vec<Regex>> = LazyLock::new(|| TAGS.iter().map(|t| Regex::new(&format!(r"(?s)<{t}[^>]*>.*?</{t}>")).unwrap()).collect());
+static PASTE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"</?pasted_content[^>]*>").unwrap());
+static IMAGES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(\s*\[Image: source: [^\]]+\]\s*)+$").unwrap());
 static FROM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:📨 来自 |📨 From |（来自 |\(from )([^（(，,]+?)(?:（|\s\(|，|,)").unwrap());
 
 /// The last `limit` turns of the session's record, oldest first.
@@ -130,8 +141,14 @@ fn clean(raw: &str) -> String {
     for re in TAG_RES.iter() {
         t = re.replace_all(&t, "").to_string();
     }
+    // a paste's markers go, its text stays
+    t = PASTE_RE.replace_all(&t, "").to_string();
     let t = t.trim();
     if t.starts_with('<') && t.ends_with('>') && !t.contains("\n\n") {
+        return String::new();
+    }
+    // Codex hands the project's AGENTS.md to the model as a user message
+    if t.starts_with("# AGENTS.md instructions") {
         return String::new();
     }
     t.to_string()
@@ -180,11 +197,11 @@ mod tests {
     #[test]
     fn rounds_group_a_prompt_with_everything_said_back() {
         let mk = |role: &str, text: &str| Turn { role: role.into(), text: text.into(), at: None, via_dispatch: text.starts_with("📨"), from_agent: None };
-        let turns = vec![mk("assistant", "orphan"), mk("user", "q1"), mk("assistant", "a1"), mk("assistant", "a1b"), mk("user", "📨 from x"), mk("assistant", "a2"), mk("user", "q3")];
+        let turns = vec![mk("assistant", "orphan"), mk("user", "q1"), mk("user", "[Image: source: /tmp/a.png]"), mk("assistant", "a1"), mk("assistant", "a1b"), mk("user", "📨 from x"), mk("assistant", "a2"), mk("user", "q3")];
         let all = rounds(&turns, 10);
         assert_eq!(all.len(), 4);
         assert!(all[0].user.is_none() && all[0].replies.len() == 1);
-        assert_eq!(all[1].user.as_ref().unwrap().text, "q1");
+        assert_eq!(all[1].user.as_ref().unwrap().text, "q1\n[Image: source: /tmp/a.png]", "image paths join the prompt they belong to");
         assert_eq!(all[1].replies.len(), 2);
         assert!(all[2].user.as_ref().unwrap().via_dispatch);
         assert!(all[3].replies.is_empty(), "a prompt still being answered has no replies yet");
@@ -202,6 +219,8 @@ mod tests {
             r#"{"timestamp":"2026-10-28T12:14:20Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}}"#,
             r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#,
         ];
+        let mut lines = lines.to_vec();
+        lines.insert(2, r##"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"# AGENTS.md instructions for /x\n\n<INSTRUCTIONS>\nbe nice\n</INSTRUCTIONS>"}]}}"##);
         let turns = parse(&lines.join("\n"), Harness::Codex, 10);
         assert_eq!(turns.len(), 2, "{turns:?}");
         assert_eq!(turns[0].role, "user");

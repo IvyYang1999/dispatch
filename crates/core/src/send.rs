@@ -240,14 +240,22 @@ fn deliver_codex(store: &Store, to: &Session, letter: &mut Letter, allow_resume:
     if !st.cli {
         return fail(store, letter, "codex", "codex not installed", t("send.failed_codex_nocli").into(), report);
     }
-    if !st.daemon {
-        store.append_run(&letter.id, "codex", "skipped", "no app-server daemon")?;
-        return Ok(report("stored", t("send.codex_nodaemon").into()));
-    }
-    let loaded = st.loaded.contains(&to.id);
-    if !loaded && !allow_resume {
-        store.append_run(&letter.id, "codex", "skipped", "thread not loaded on the daemon; resume not allowed")?;
-        return Ok(report("stored", t("send.codex_notloaded").into()));
+    let loaded = st.daemon && st.loaded.contains(&to.id);
+    if !loaded && !(allow_resume && st.daemon) {
+        // Codex's own queue: whichever Codex process has the thread open (the desktop app
+        // included) takes it when the thread is idle; one nobody has open waits to be opened.
+        let text = envelope(letter);
+        return match crate::codex::queue_add(&to.id, &text, &letter.id) {
+            Ok(qid) => {
+                store.set_status(letter, store::DELIVERED_CODEX)?;
+                store.append_run(&letter.id, "codex", "queued", &format!("thread/queue/add {qid}"))?;
+                Ok(report("inbox", t("send.codex_queued_open").into()))
+            }
+            Err(e) => {
+                store.append_run(&letter.id, "codex", "failed", &format!("{e:#}"))?;
+                Ok(report("stored", t("send.codex_failed").replace("{err}", &format!("{e:#}"))))
+            }
+        };
     }
     let text = envelope(letter);
     match crate::codex::queue(&to.id, &text, !loaded) {
