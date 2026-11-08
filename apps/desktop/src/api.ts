@@ -126,6 +126,8 @@ export interface PeerRow {
   paired_at: string
   online: boolean
   seen: { addrs: string[]; port: number } | null
+  /** Why it is offline, when it is: the last failure in words. */
+  problem?: string | null
 }
 export interface SeenRow {
   id: string
@@ -168,6 +170,7 @@ export const api = {
   setLang: (lang: string) => invoke<string>('set_lang', { lang }),
   setNotify: (on: boolean) => invoke<boolean>('set_notify', { on }),
   setInbound: (on: boolean) => invoke<{ inbound: string | null }>('set_inbound', { on }),
+  openLocalNetworkSettings: () => invoke<boolean>('open_local_network_settings'),
   setTheme: (theme: string) => invoke<string>('set_theme', { theme }),
   peersOverview: () => invoke<PeerOverview>('peers_overview'),
   peerScan: () => invoke<PeerOverview>('peer_scan'),

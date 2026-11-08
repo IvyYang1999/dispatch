@@ -771,13 +771,22 @@ function Peers() {
             <span className="host__found host__found--wrap">{t('peers.codeShown', { s: left })}</span>
           </div>
         )}
+        {ov?.peers.some((p) => !p.online && p.problem) && (
+          <div className="host host--code">
+            <span className="host__found host__found--wrap">{t('peers.blocked')}</span>
+            <button className="btn btn--small" onClick={() => run(api.openLocalNetworkSettings)}>{t('peers.openPrivacy')}</button>
+          </div>
+        )}
         {ov?.peers.map((p) => (
           <div key={p.id} className="host">
             <div className="host__who">
               <span className="host__name">
                 {p.name} <span className="tag" data-on={p.online || undefined}>{p.online ? t('peers.online') : t('peers.offline')}</span>
               </span>
-              <span className="host__found">{p.address ?? (p.seen ? addrOf(p.seen) : t('peers.pairedAt', { t: p.paired_at }))}</span>
+              <span className="host__found host__found--wrap">
+                {p.address ?? (p.seen ? addrOf(p.seen) : t('peers.pairedAt', { t: p.paired_at }))}
+                {!p.online && p.problem ? ` · ${p.problem}` : ''}
+              </span>
             </div>
             <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => run(() => api.peerRemove(p.name))}>{t('peers.remove')}</button>
           </div>

@@ -318,6 +318,11 @@ static STAGES: LazyLock<Mutex<HashMap<String, (String, String)>>> = LazyLock::ne
 static MIRRORED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn mark_offline(p: &PeerInfo, why: String) {
+    // a line for whoever has to find out why a machine is "offline"
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(state_dir().join("errors.log")) {
+        use std::io::Write as _;
+        let _ = writeln!(f, "{} {} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), p.name, why);
+    }
     OFFLINE.lock().unwrap().insert(p.id.clone(), (Instant::now() + OFFLINE_BACKOFF, why));
     REMOTE.lock().unwrap().remove(&p.id);
 }
@@ -333,10 +338,25 @@ fn mark_online(p: &PeerInfo) {
 /// Whether a peer is reachable right now: an address is known, it did not just fail, and its
 /// port answers a connection (which is dropped unused).
 pub fn online(p: &PeerInfo) -> bool {
-    if backing_off(p) {
-        return false;
+    !backing_off(p) && probe(p).is_ok()
+}
+
+/// Try the peer's addresses in order; Ok(the address that answered) or Err(why the last one did
+/// not), in words a person can act on.
+pub fn probe(p: &PeerInfo) -> Result<String, String> {
+    let addrs = client::addresses(p);
+    if addrs.is_empty() {
+        return Err("no address: not seen on the network and none set by hand".into());
     }
-    client::addresses(p).iter().any(|a| std::net::TcpStream::connect_timeout(a, Duration::from_millis(700)).is_ok())
+    let mut errors: Vec<String> = vec![];
+    for a in &addrs {
+        match std::net::TcpStream::connect_timeout(a, Duration::from_millis(700)) {
+            Ok(_) => return Ok(a.to_string()),
+            Err(e) => errors.push(format!("{a}: {e}")),
+        }
+    }
+    errors.truncate(3);
+    Err(errors.join("; "))
 }
 
 fn ask(p: &PeerInfo, req: &Request) -> Result<Response, PeerError> {
@@ -524,7 +544,9 @@ pub fn overview() -> Value {
         .iter()
         .map(|p| {
             let s = seen.iter().find(|s| s.id == p.id);
-            json!({ "id": p.id, "name": p.name, "address": p.address, "paired_at": p.paired_at, "online": online(p), "seen": s.map(|s| json!({ "addrs": s.addrs, "port": s.port })) })
+            let backoff = OFFLINE.lock().unwrap().get(&p.id).filter(|(until, _)| Instant::now() < *until).map(|(_, why)| why.clone());
+            let probe = probe(p);
+            json!({ "id": p.id, "name": p.name, "address": p.address, "paired_at": p.paired_at, "online": backoff.is_none() && probe.is_ok(), "seen": s.map(|s| json!({ "addrs": s.addrs, "port": s.port })), "problem": backoff.or_else(|| probe.err()) })
         })
         .collect();
     let unpaired: Vec<Value> = seen.iter().filter(|s| !b.peers.iter().any(|p| p.id == s.id)).map(|s| json!({ "id": s.id, "name": s.name, "addrs": s.addrs, "port": s.port })).collect();

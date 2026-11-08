@@ -155,6 +155,8 @@ const zh = {
   'peers.pairedWith': '已和 {name} 配对。',
   'peers.manual': '按地址配对',
   'peers.manualSub': '不在同一局域网（比如走 Tailscale）时，填对方的地址和它显示的配对码。',
+  'peers.blocked': '连不上这台电脑。macOS 要在「系统设置 → 隐私与安全性 → 本地网络」里允许 Dispatch，否则 App 连局域网会被拦；两台都要开。',
+  'peers.openPrivacy': '打开本地网络设置',
 }
 
 const en: Record<Key, string> = {
@@ -307,6 +309,8 @@ const en: Record<Key, string> = {
   'peers.pairedWith': 'Paired with {name}.',
   'peers.manual': 'Pair by address',
   'peers.manualSub': 'For a machine the network cannot see (over Tailscale, say): its address and the code it shows.',
+  'peers.blocked': 'This machine cannot be reached. macOS must allow Dispatch under System Settings → Privacy & Security → Local Network, or the app is blocked from the local network; both machines need it.',
+  'peers.openPrivacy': 'Open Local Network settings',
 }
 
 export type Key = keyof typeof zh

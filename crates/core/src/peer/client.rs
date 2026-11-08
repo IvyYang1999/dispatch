@@ -56,7 +56,7 @@ fn connect(addrs: &[SocketAddr], key: &[u8]) -> Result<wire::Conn, PeerError> {
     if addrs.is_empty() {
         return Err(PeerError::Offline("no address".into()));
     }
-    let mut last = String::new();
+    let mut errors: Vec<String> = vec![];
     for a in addrs {
         match TcpStream::connect_timeout(a, CONNECT_TIMEOUT) {
             Ok(s) => {
@@ -65,10 +65,11 @@ fn connect(addrs: &[SocketAddr], key: &[u8]) -> Result<wire::Conn, PeerError> {
                 let _ = s.set_nodelay(true);
                 return wire::initiate(s, key).map_err(protocol);
             }
-            Err(e) => last = format!("{a}: {e}"),
+            Err(e) => errors.push(format!("{a}: {e}")),
         }
     }
-    Err(PeerError::Offline(last))
+    errors.truncate(3);
+    Err(PeerError::Offline(errors.join("; ")))
 }
 
 /// One request to a paired peer, its key pinned to what pairing recorded.

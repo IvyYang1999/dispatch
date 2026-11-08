@@ -193,6 +193,19 @@ async fn peer_set_address(name: String, address: Option<String>) -> Result<Value
     blocking(move || peer::set_address(&name, address).map(|p| json!({ "id": p.id, "name": p.name, "address": p.address })).map_err(err)).await
 }
 
+/// macOS: the Privacy & Security → Local Network pane, where the user allows Dispatch to reach
+/// other machines; elsewhere nothing to open.
+#[tauri::command]
+async fn open_local_network_settings() -> Result<bool, String> {
+    #[cfg(target_os = "macos")]
+    {
+        open_url("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")?;
+        return Ok(true);
+    }
+    #[allow(unreachable_code)]
+    Ok(false)
+}
+
 /// Listen for other machines: the port from settings (`peer_port`), else the default.
 fn start_listener() {
     std::thread::Builder::new()
@@ -624,7 +637,7 @@ pub fn run() {
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
-            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page, set_inbound
+            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings
         ])
         .setup(|app| {
             let handle = app.handle().clone();
