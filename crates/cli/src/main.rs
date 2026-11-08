@@ -115,6 +115,11 @@ enum HookCmd {
 }
 
 fn main() {
+    // `dispatch sessions | head` closes the pipe early: end quietly instead of panicking in println.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
     let code = match run() {
         Ok(c) => c,
         Err(e) => {

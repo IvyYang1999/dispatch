@@ -207,7 +207,30 @@ fn open_in_terminal(command: &str, cwd: Option<&str>) -> Result<(), String> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Linux: the first terminal emulator on PATH runs the command in a login shell and stays open.
+#[cfg(target_os = "linux")]
+fn open_in_terminal(command: &str, cwd: Option<&str>) -> Result<(), String> {
+    let sh_quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let shell = match cwd {
+        Some(d) if !d.is_empty() => format!("cd {} && {}; exec bash", sh_quote(d), command),
+        _ => format!("{command}; exec bash"),
+    };
+    let on_path = |name: &str| std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file())).unwrap_or(false);
+    let (term, args): (&str, Vec<&str>) = if on_path("gnome-terminal") {
+        ("gnome-terminal", vec!["--", "bash", "-lc", &shell])
+    } else if on_path("konsole") {
+        ("konsole", vec!["-e", "bash", "-lc", &shell])
+    } else if on_path("x-terminal-emulator") {
+        ("x-terminal-emulator", vec!["-e", "bash", "-lc", &shell])
+    } else if on_path("xterm") {
+        ("xterm", vec!["-e", "bash", "-lc", &shell])
+    } else {
+        return Err("no terminal emulator found".into());
+    };
+    std::process::Command::new(term).args(args).spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn open_in_terminal(_command: &str, _cwd: Option<&str>) -> Result<(), String> {
     Err("no terminal launcher on this system".into())
 }
@@ -399,11 +422,16 @@ fn on_tray_menu(app: &AppHandle, id: &str) {
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    // macOS: the bare mark as a template image (the system tints it). Elsewhere the app icon,
+    // since a black glyph would vanish on a dark taskbar.
+    #[cfg(target_os = "macos")]
     let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray.png"))?;
+    #[cfg(not(target_os = "macos"))]
+    let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))?;
     let menu = tray_menu(app, &watch::Summary::default())?;
     TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        .icon_as_template(true)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("Dispatch")
         .menu(&menu)
         .show_menu_on_left_click(true)

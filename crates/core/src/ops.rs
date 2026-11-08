@@ -316,10 +316,19 @@ pub fn feed(store: &Store, limit: usize) -> Result<Value> {
         let mut copies: Vec<&store::Letter> = groups[&did].clone();
         copies.sort_by(|a, b| a.created.cmp(&b.created).then(a.path.cmp(&b.path)));
         // The oldest copy is the sender's; the copies it sent are the recipients, the rest are replies
-        // (a reply shares the dispatch id and goes back to the sender).
+        // (a reply shares the dispatch id and goes back to the sender). A session that writes to
+        // itself has one recipient copy with from == to; any later copy like it is its reply.
         let first = copies[0];
         let sender = first.from.clone();
-        let (sent, replies): (Vec<&store::Letter>, Vec<&store::Letter>) = copies.iter().partition(|c| c.from == sender);
+        let mut sent: Vec<&store::Letter> = vec![];
+        let mut replies: Vec<&store::Letter> = vec![];
+        for c in &copies {
+            if c.from == sender && (c.to != sender || !sent.iter().any(|s| s.to == c.to)) {
+                sent.push(c);
+            } else {
+                replies.push(c);
+            }
+        }
         let recipients: Vec<Value> = sent
             .iter()
             .map(|c| {
@@ -379,6 +388,41 @@ mod tests {
         };
         s.write_letter(&mut l).unwrap();
         l
+    }
+
+    #[test]
+    fn a_dispatch_to_oneself_shows_one_recipient_and_its_reply() {
+        let dir = std::env::temp_dir().join(format!("dispatch-ops-self-{}", uuid::Uuid::new_v4()));
+        let s = Store::at(dir.clone());
+        let me = "22222222-3333-4444-8555-666666666666";
+        let mk = |body: &str, created: &str| {
+            let mut l = Letter {
+                id: uuid::Uuid::new_v4().to_string(),
+                dispatch_id: "d-self".into(),
+                from: me.into(),
+                from_name: "Me".into(),
+                to: me.into(),
+                to_name: "Me".into(),
+                urgency: "普通".into(),
+                wake: true,
+                status: UNREAD.into(),
+                created: created.into(),
+                deadline: Some("2999-01-01 00:00".into()),
+                to_harness: Some("claude".into()),
+                body: body.into(),
+                path: String::new(),
+            };
+            s.write_letter(&mut l).unwrap();
+            l
+        };
+        mk("note to self", "2026-11-08 09:00");
+        mk("done", "2026-11-08 09:05");
+        let v = feed(&s, 10).unwrap();
+        let d = &v["dispatches"][0];
+        assert_eq!(d["recipients"].as_array().unwrap().len(), 1, "one recipient, not two");
+        assert_eq!(d["recipients"][0]["reply"]["body"], "done");
+        assert_eq!(d["recipients"][0]["kind"], "replied");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

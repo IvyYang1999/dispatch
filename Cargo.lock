@@ -941,6 +941,7 @@ dependencies = [
  "anyhow",
  "clap",
  "dispatch-core",
+ "libc",
  "serde_json",
 ]
 

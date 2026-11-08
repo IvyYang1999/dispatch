@@ -67,6 +67,39 @@ function useOpen() {
 
 // ---- Feed ----
 
+// Shown until the command line and the hook are installed: the one thing a first run needs.
+function FirstRun() {
+  useLang()
+  const [st, setSt] = useState<SetupStatus | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    api.setupStatus().then(setSt).catch(() => setSt(null))
+  }, [])
+  if (!st || !st.bundled_cli || (st.binary && st.hook_installed)) return null
+  const install = async () => {
+    setBusy(true)
+    try {
+      await api.installCli()
+      setMsg(t('firstrun.done'))
+      setSt(await api.setupStatus())
+    } catch (e) {
+      setMsg(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="callout">
+      <div className="callout__text">
+        <span className="callout__title">{t('firstrun.title')}</span>
+        <span className="callout__sub">{msg ?? t('firstrun.sub')}</span>
+      </div>
+      <button className="btn btn--primary btn--small" disabled={busy} onClick={install}>{t('settings.install')}</button>
+    </div>
+  )
+}
+
 function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: string | null }) {
   const lang = useLang()
   const [items, setItems] = useState<Dispatch[]>([])
@@ -140,6 +173,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
       </header>
       <div className="split">
         <div className="list">
+          <FirstRun />
           {err && <div className="empty">{err}</div>}
           {!err && shown.length === 0 && <div className="empty">{t('feed.empty')}</div>}
           {shown.map((d) => (
@@ -194,7 +228,16 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                     )}
                     <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(r.to)}>↗</button>
                   </div>
-                  {r.reply ? <p className="rcpt__reply">{r.reply.body}</p> : <p className="rcpt__note">{r.stage}</p>}
+                  {r.reply ? (
+                    <>
+                      <p className="rcpt__reply">{r.reply.body}</p>
+                      <div className="rcpt__foot">
+                        <button className="btn btn--ghost btn--small" onClick={() => onCompose(r.to)}>{t('action.reply')}</button>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="rcpt__note">{r.stage}</p>
+                  )}
                 </div>
               ))}
               {notice && (
