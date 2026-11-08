@@ -107,7 +107,9 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "reach.noinbox_none" => ("收不到：开着但没开收信口，又没装 hook", "Unreachable: no inbox, no hook"),
         "reach.now_desktop" => ("立刻送到：Claude 客户端开着", "At once: open in the Claude app"),
         "reach.now_terminal" => ("立刻送到：终端里开着", "At once: open in a terminal"),
-        "reach.bypass_later" => ("它跳过了权限确认，要等它下次说话", "Bypasses permissions; at its next turn"),
+        "reach.bypass_busy" => ("它跳过了权限确认；本轮结束时由 hook 递进去", "Bypasses permission checks; handed over when its turn ends"),
+        "reach.bypass_idle" => ("它跳过了权限确认；等它下次开口（设置里可开「立即收信」）", "Bypasses permission checks; at its next turn (Settings can turn on immediate delivery)"),
+        "reach.refuse_later" => ("它拒收其他会话的消息（crossSessionInbound = refuse）；等它下次说话时由 hook 递", "It refuses messages from other sessions (crossSessionInbound = refuse); the hook hands it over at its next turn"),
         "reach.bypass_none" => ("收不到：它跳过了权限确认，又没装 hook", "Unreachable: bypasses permissions, no hook"),
         "reach.codex_nocli" => ("收不到：本机没找到 codex 命令", "Unreachable: no codex command"),
         "reach.codex_nodaemon" => ("待接通：Codex 的 app-server daemon 没开", "Waiting: Codex daemon not running"),
@@ -132,14 +134,19 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "stage.delivered_hook" => ("已送达（hook 递的）", "Delivered by the hook"),
         "stage.delivered" => ("已送达", "Delivered"),
         "stage.queued_codex" => ("已入队", "Queued in Codex"),
-        "stage.queued" => ("排队中", "Queued"),
+        "stage.queued" => ("等待中", "Waiting"),
         "stage.failed" => ("没送到", "Failed"),
         "stage.cancelled" => ("已取消", "Cancelled"),
-        "stage.queued_until" => ("排队中 · 截止 {t}", "Queued · until {t}"),
+        "stage.queued_until" => ("等待中 · 截止 {t}", "Waiting · until {t}"),
+        "stage.wait_open" => ("等它下次打开 · 截止 {t}", "When next opened · until {t}"),
+        "stage.wait_turn_end" => ("本轮结束时递进去 · 截止 {t}", "Handed over when its turn ends · until {t}"),
+        "stage.wait_speak" => ("等它下次开口 · 截止 {t}", "At its next turn · until {t}"),
+        "stage.wait_codex" => ("待接通 · 截止 {t}", "Waiting to connect · until {t}"),
+        "stage.wait_peer" => ("等那台电脑上线 · 截止 {t}", "Until that machine is back · until {t}"),
         // the menu bar item and system notifications
-        "tray.queued" => ("排队 {n}", "{n} queued"),
+        "tray.queued" => ("等待 {n}", "{n} waiting"),
         "tray.failed" => ("没送到 {n}", "{n} failed"),
-        "tray.clear" => ("没有在排队或没送到的", "Nothing queued or failed"),
+        "tray.clear" => ("没有在等待或没送到的", "Nothing waiting or failed"),
         "tray.empty" => ("还没有派发", "No dispatches yet"),
         "tray.open" => ("打开 Dispatch", "Open Dispatch"),
         "tray.compose" => ("发消息…", "Send a message…"),
@@ -205,7 +212,7 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "send.peer_already" => ("这封已经到过了", "Already received"),
         "send.from_at" => ("{from} @ {host}", "{from} @ {host}"),
         "send.stored_hook" => ("{why}，留在信箱，等 hook 递", "{why}; kept in the store for the hook"),
-        "send.hold" => ("它跳过了权限确认，直投会被扣下；留在信箱，等 hook 递", "It bypasses permission checks, so a direct delivery would be held; kept in the store for the hook"),
+        "send.hold" => ("它跳过了权限确认，直投会被扣下；留在信箱：它忙着就本轮结束时递到，空闲就等它下次开口（设置里可开「立即收信」）", "It bypasses permission checks, so a direct delivery would be held; kept in the store: handed over when its turn ends if it is busy, at its next turn if idle (Settings can turn on immediate delivery)"),
         "send.refuse" => ("它拒收其他程序的消息；留在信箱，等 hook 递", "It refuses messages from other programs; kept in the store for the hook"),
         "send.unreachable" => ("收信口连不上（可能是过期记录）；留在信箱，等 hook 递", "Its inbox could not be reached (a stale record, perhaps); kept in the store for the hook"),
         "send.written_nowait" => ("已写入收信口，未等确认", "Written to its inbox; did not wait for confirmation"),
@@ -244,6 +251,13 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "cli.peers_address" => ("{name} 的地址设为 {addr}", "{name} is now reached at {addr}"),
         "cli.serve" => ("监听端口 {port}，mDNS {mdns}；Ctrl-C 停止", "Listening on port {port}, mDNS {mdns}; Ctrl-C stops"),
         "cli.serve_busy" => ("本机已经有一个在监听（端口 {port}）", "Something on this machine is already listening (port {port})"),
+        "cli.inbound_now" => ("Claude Code 的 crossSessionInbound：{v}", "Claude Code's crossSessionInbound: {v}"),
+        "cli.inbound_unset" => ("未设置：跳过权限确认的会话会扣下外来消息（桌面 App 里五分钟后丢弃），Dispatch 因此改走 hook，等它下次说话", "unset: sessions that bypass permission checks hold outside messages (the desktop app drops them after five minutes), so Dispatch uses the hook and waits for their next turn"),
+        "cli.inbound_accept" => ("accept：每个 Claude 会话立即收到 Dispatch 的消息；忙着的在两次工具调用之间读到，空闲的直接开始新一轮", "accept: every Claude session takes Dispatch's messages at once; a busy one reads between tool calls, an idle one starts a new turn"),
+        "cli.inbound_hold" => ("hold：所有外来消息都扣下等批准；Dispatch 走 hook", "hold: every outside message is held for approval; Dispatch uses the hook"),
+        "cli.inbound_refuse" => ("refuse：外来消息一律丢弃；Dispatch 走 hook", "refuse: outside messages are dropped; Dispatch uses the hook"),
+        "cli.inbound_bad" => ("取值只能是 accept、hold、refuse 或 default", "The value must be accept, hold, refuse or default"),
+        "cli.inbound_set" => ("已写入 ~/.claude/settings.json（原文件已备份）", "Written to ~/.claude/settings.json (the old file was backed up)"),
         "cli.grok_app" => ("Grok Bot App：{v}", "Grok Bot app: {v}"),
         "cli.grok_login" => ("登录状态：{v}", "signed in: {v}"),
         "cli.grok_cli" => ("gbot 命令：{v}", "gbot command: {v}"),
@@ -334,9 +348,9 @@ mod tests {
     fn set_wins() {
         let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set(Lang::En);
-        assert_eq!(t("stage.queued"), "Queued");
+        assert_eq!(t("stage.queued"), "Waiting");
         set(Lang::Zh);
-        assert_eq!(t("stage.queued"), "排队中");
+        assert_eq!(t("stage.queued"), "等待中");
         set(Lang::En);
     }
 }

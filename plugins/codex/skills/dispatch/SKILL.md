@@ -35,10 +35,12 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
 2. Locate the recipient with `dispatch_find` (a name, a folder, a word from its
    first message) or `dispatch_sessions`. Send only when exactly one candidate
    is clearly right; if several match, show them to the user and ask.
-3. Look at `reach` before sending: `now` means it arrives at once, `later` the
-   next time that session speaks (its hook hands it over), `none` means nobody
-   will read it until the user fixes something (`reach.text` says what). Tell
-   the user when it is `later` or `none`.
+3. Look at `reach` before sending: `now` means it arrives at once, `later`
+   means the hook hands it over when that session's turn ends or at its next
+   turn, `none` means nobody will read it until the user fixes something
+   (`reach.text` says what). Tell the user when it is `later` or `none`; when
+   `reach.fix` is `inbound`, the user can turn on immediate delivery for
+   sessions that bypass permission checks in Dispatch's Settings.
 4. `dispatch_send` with `to` (one or more sessions) and a `text` written like a
    brief to a colleague: what you need, any ids or paths, by when, and that they
    can answer with `dispatch_reply`. Keep the dispatch_id from the result.

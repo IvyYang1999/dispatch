@@ -134,7 +134,7 @@ pub fn summary(feed: &Value, recent: usize) -> Summary {
     out
 }
 
-/// The text beside the menu bar icon: `排队 2 · 没送到 1`; nothing when both are zero.
+/// The text beside the menu bar icon: `等待 2 · 没送到 1`; nothing when both are zero.
 pub fn title(sum: &Summary) -> Option<String> {
     let mut parts = vec![];
     if sum.queued > 0 {
@@ -218,12 +218,12 @@ mod tests {
         crate::i18n::set(crate::i18n::Lang::Zh);
         let sum = summary(&feed(false, false), 5);
         assert_eq!((sum.queued, sum.failed, sum.total), (1, 0, 2));
-        assert_eq!(title(&sum).as_deref(), Some("排队 1"));
-        assert_eq!(sum.recent[0].line, "我 → Researcher: Please check the e2e run and tell m…  · 排队中");
+        assert_eq!(title(&sum).as_deref(), Some("等待 1"));
+        assert_eq!(sum.recent[0].line, "我 → Researcher: Please check the e2e run and tell m…  · 等待中");
         assert_eq!(sum.recent[1].line, "Transparent → KeyKeeper, Shyposter +1: ping");
         let sum = summary(&feed(true, false), 5);
         assert_eq!(title(&sum), None);
-        assert_eq!(headline(&sum), "没有在排队或没送到的");
+        assert_eq!(headline(&sum), "没有在等待或没送到的");
         assert_eq!(headline(&summary(&json!({ "dispatches": [] }), 5)), "还没有派发");
         crate::i18n::set(crate::i18n::Lang::En);
         assert_eq!(title(&summary(&feed(false, true), 5)).as_deref(), Some("1 failed"));

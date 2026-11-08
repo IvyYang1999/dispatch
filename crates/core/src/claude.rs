@@ -375,6 +375,36 @@ pub fn mode(session_id: &str, cwd: Option<&str>) -> Option<String> {
     mode
 }
 
+/// Claude Code's `crossSessionInbound` in the user's settings: `accept`, `hold`, `refuse`, or None.
+pub fn inbound_setting() -> Option<String> {
+    read_json(&claude_home().join("settings.json"), 1024 * 1024)?.get("crossSessionInbound")?.as_str().map(str::to_string)
+}
+
+/// Set it, or clear it with None. The settings file is backed up first, like the hook does.
+pub fn set_inbound(value: Option<&str>) -> Result<()> {
+    let path = claude_home().join("settings.json");
+    let mut v: Value = match fs::read_to_string(&path) {
+        Ok(t) => serde_json::from_str(&t).context("settings.json is not valid JSON")?,
+        Err(_) => serde_json::json!({}),
+    };
+    if path.exists() {
+        let bak = claude_home().join(format!("settings.json.bak-dispatch-{}", chrono::Local::now().format("%Y%m%dT%H%M%S")));
+        fs::copy(&path, &bak)?;
+    }
+    let obj = v.as_object_mut().context("settings.json root is not an object")?;
+    match value {
+        Some(x) => {
+            obj.insert("crossSessionInbound".into(), serde_json::json!(x));
+        }
+        None => {
+            obj.remove("crossSessionInbound");
+        }
+    }
+    fs::create_dir_all(claude_home())?;
+    fs::write(&path, serde_json::to_string_pretty(&v)? + "\n")?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gate {
     Accept,

@@ -90,6 +90,8 @@ export interface SetupStatus {
   claude_plugin: boolean
   notify: boolean
   theme: 'system' | 'light' | 'dark'
+  /** Claude Code's crossSessionInbound in the user's settings: accept / hold / refuse, or null. */
+  inbound: string | null
   version: string
   cli_sync_error: string | null
 }
@@ -161,6 +163,7 @@ export const api = {
   getLang: () => invoke<string>('get_lang'),
   setLang: (lang: string) => invoke<string>('set_lang', { lang }),
   setNotify: (on: boolean) => invoke<boolean>('set_notify', { on }),
+  setInbound: (on: boolean) => invoke<{ inbound: string | null }>('set_inbound', { on }),
   setTheme: (theme: string) => invoke<string>('set_theme', { theme }),
   peersOverview: () => invoke<PeerOverview>('peers_overview'),
   peerScan: () => invoke<PeerOverview>('peer_scan'),

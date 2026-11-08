@@ -113,6 +113,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Claude Code's setting for messages from other sessions: show it, or set accept / hold / refuse / default
+    Inbound { value: Option<String> },
     /// Listen for other machines in the foreground (the app does this while it runs)
     Serve {
         /// Port to listen on (default 47831)
@@ -348,6 +350,21 @@ fn run() -> Result<i32> {
                 println!("{}", t("cli.contacts_removed").replace("{name}", &name));
             }
         },
+        Cmd::Inbound { value } => {
+            if let Some(v) = value {
+                let v = v.trim().to_ascii_lowercase();
+                let set = match v.as_str() {
+                    "accept" | "hold" | "refuse" => Some(v.as_str()),
+                    "default" | "unset" | "none" => None,
+                    _ => return Err(anyhow!("{}", t("cli.inbound_bad"))),
+                };
+                claude::set_inbound(set)?;
+                println!("{}", t("cli.inbound_set"));
+            }
+            let now = claude::inbound_setting();
+            println!("{}", t("cli.inbound_now").replace("{v}", now.as_deref().unwrap_or("-")));
+            println!("{}", match now.as_deref() { Some("accept") => t("cli.inbound_accept"), Some("hold") => t("cli.inbound_hold"), Some("refuse") => t("cli.inbound_refuse"), _ => t("cli.inbound_unset") });
+        }
         Cmd::Serve { port } => {
             if let Some(p) = peer::mdns::serving() {
                 return Err(anyhow!("{}", t("cli.serve_busy").replace("{port}", &p.to_string())));

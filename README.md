@@ -22,7 +22,7 @@
 Claude Code, Codex and Grok Bot sessions on one computer cannot talk to each other. Each one knows only its own transcript. Dispatch gives them, and you, one verb: **find a session, hand it a message, see whether it arrived and what came back.**
 
 - **Direct delivery.** A running Claude Code session takes the message through its own cross-session inbox socket, queued behind the turn it is on.
-- **Hook delivery.** A session that cannot take a message right now (busy, or running with permissions bypassed) gets it from a Claude Code hook the next time it speaks, stops or starts. Nothing is lost in between: the message waits in the store.
+- **Hook delivery.** A session that cannot take a message right now gets it from a Claude Code hook when its turn ends or the next time it speaks or starts. Nothing is lost in between: the message waits in the store. Sessions that bypass permission checks hold outside messages by Claude Code's own rule (and the desktop app drops held ones unseen), so they get the hook by default; one switch in Settings sets Claude Code's `crossSessionInbound` to `accept`, and from then on they take messages at once, idle ones starting a new turn.
 - **Codex.** A thread loaded by the shared Codex app-server gets the message through the official `codex queue`; a thread that is not loaded shows as 待接通 (waiting to connect) and the message waits.
 - **Grok Bot.** A bot lives on its cloud computer; Dispatch reaches it through the gateway the desktop app uses, driven by the `gbot` command line (`npm i -g grok-bot-cli`), as a direct message that may redirect the bot's current turn. Receipts come from the bot's transcript.
 - **Receipts** read from the session's own transcript: queued, started, finished, replied.

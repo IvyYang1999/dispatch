@@ -127,6 +127,17 @@ async fn set_theme(app: AppHandle, theme: String) -> Result<String, String> {
     Ok(theme)
 }
 
+/// Claude Code's `crossSessionInbound`: `accept` lets sessions that bypass permission checks
+/// take Dispatch's messages at once; off removes the key (Claude Code's own rule applies).
+#[tauri::command]
+async fn set_inbound(on: bool) -> Result<Value, String> {
+    blocking(move || {
+        dispatch_core::claude::set_inbound(if on { Some("accept") } else { None }).map_err(err)?;
+        Ok(json!({ "inbound": dispatch_core::claude::inbound_setting() }))
+    })
+    .await
+}
+
 /// System notifications on or off (replies and failed deliveries).
 #[tauri::command]
 async fn set_notify(on: bool) -> Result<bool, String> {
@@ -407,6 +418,7 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "claude_plugin": plugin_installed,
             "notify": settings::notify_enabled(),
             "theme": theme_setting(),
+            "inbound": dispatch_core::claude::inbound_setting(),
             "version": env!("CARGO_PKG_VERSION"),
         }))
     })
@@ -612,7 +624,7 @@ pub fn run() {
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
-            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page
+            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page, set_inbound
         ])
         .setup(|app| {
             let handle = app.handle().clone();

@@ -74,6 +74,41 @@ pub fn uninstall() -> Result<()> {
     Ok(())
 }
 
+/// Take a copy out of the box while it is handed over, so a second hook run (the plugin's and
+/// the installed one both fire on the same event) does not hand it over as well. The file comes
+/// back under its name once marked.
+fn claim(path: &str) -> Option<String> {
+    let claimed = format!("{path}.handing");
+    fs::rename(path, &claimed).ok()?;
+    Some(claimed)
+}
+
+fn release(claimed: &str) -> Option<String> {
+    let back = claimed.strip_suffix(".handing")?.to_string();
+    fs::rename(claimed, &back).ok()?;
+    Some(back)
+}
+
+/// A copy left claimed by a run that died comes back after `age`.
+pub fn recover_stale(store: &Store, age: std::time::Duration) -> usize {
+    let mut n = 0;
+    let Ok(boxes) = fs::read_dir(store.messages_dir()) else { return 0 };
+    for b in boxes.flatten() {
+        let Ok(files) = fs::read_dir(b.path()) else { continue };
+        for f in files.flatten() {
+            let name = f.file_name().to_string_lossy().to_string();
+            if !name.ends_with(".md.handing") {
+                continue;
+            }
+            let old = f.metadata().and_then(|m| m.modified()).ok().and_then(|m| m.elapsed().ok()).map(|e| e >= age).unwrap_or(true);
+            if old && release(&f.path().to_string_lossy()).is_some() {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 pub struct HookOutput {
     pub text: String,
     pub to_stderr: bool,
@@ -89,24 +124,91 @@ pub fn run(store: &Store, input: &str) -> Result<HookOutput> {
     if ev.get("stop_hook_active").and_then(|v| v.as_bool()).unwrap_or(false) {
         return Ok(quiet);
     }
+    recover_stale(store, std::time::Duration::from_secs(60));
     let mut letters = store.list(Some(sid), true)?;
     if letters.is_empty() {
         return Ok(quiet);
     }
     letters.sort_by(|a, b| a.created.cmp(&b.created));
-    let mut text = t("hook.header").replace("{n}", &letters.len().to_string());
-    for (i, l) in letters.iter_mut().enumerate() {
-        text.push_str(
+    let mut items = String::new();
+    let mut n = 0;
+    for l in letters.iter_mut() {
+        // another run of the hook has this one
+        let Some(claimed) = claim(&l.path) else { continue };
+        l.path = claimed;
+        n += 1;
+        items.push_str(
             &t("hook.item")
-                .replace("{i}", &(i + 1).to_string())
-                .replace("{from}", &l.from_name)
+                .replace("{i}", &n.to_string())
+                .replace("{from}", &crate::send::sender_text(l))
                 .replace("{created}", &l.created)
                 .replace("{id}", &crate::model::short_id(&l.id))
                 .replace("{body}", l.body.trim()),
         );
         store.set_status(l, READ_BY_HOOK)?;
         store.append_run(&l.id, "hook", "handed", event)?;
+        if let Some(back) = release(&l.path) {
+            l.path = back;
+        }
     }
+    if n == 0 {
+        return Ok(quiet);
+    }
+    let mut text = t("hook.header").replace("{n}", &n.to_string());
+    text.push_str(&items);
     text.push_str(&t("hook.footer").replace("{cmd}", &crate::model::self_cmd()));
     Ok(HookOutput { text, to_stderr: event == "Stop", exit_code: if event == "Stop" { 2 } else { 0 } })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Letter, UNREAD};
+
+    #[test]
+    fn a_copy_another_run_holds_is_skipped_and_a_stale_claim_comes_back() {
+        let dir = std::env::temp_dir().join(format!("dispatch-hook-{}", uuid::Uuid::new_v4()));
+        let s = Store::at(dir.clone());
+        let sid = "55555555-6666-4777-8888-999999999999";
+        let mk = |body: &str| {
+            let mut l = Letter {
+                id: uuid::Uuid::new_v4().to_string(),
+                dispatch_id: uuid::Uuid::new_v4().to_string(),
+                from: "cli".into(),
+                from_name: "cli".into(),
+                to: sid.into(),
+                to_name: "T".into(),
+                urgency: "普通".into(),
+                wake: true,
+                status: UNREAD.into(),
+                created: crate::store::now_text(),
+                deadline: Some("2999-01-01 00:00".into()),
+                to_harness: Some("claude".into()),
+                from_host: None,
+                from_host_name: None,
+                to_host: None,
+                to_host_name: None,
+                from_harness: Some("human".into()),
+                body: body.into(),
+                path: String::new(),
+            };
+            s.write_letter(&mut l).unwrap();
+            l
+        };
+        let a = mk("first");
+        let b = mk("second");
+        // another run has b
+        let held = claim(&b.path).unwrap();
+        let out = run(&s, &format!(r#"{{"session_id":"{sid}","hook_event_name":"UserPromptSubmit"}}"#)).unwrap();
+        assert!(out.text.contains("first") && !out.text.contains("second"), "{}", out.text);
+        assert!(out.text.contains("1 message") || out.text.contains("1 条"));
+        assert_eq!(s.find(&a.id).unwrap().unwrap().status, READ_BY_HOOK);
+        assert!(std::path::Path::new(&a.path).is_file(), "a is back under its name");
+        assert!(std::path::Path::new(&held).is_file(), "b is still held");
+        // the held copy is invisible to the box until it is released
+        assert_eq!(s.list(Some(sid), true).unwrap().len(), 0);
+        assert_eq!(recover_stale(&s, std::time::Duration::ZERO), 1);
+        assert_eq!(s.list(Some(sid), true).unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

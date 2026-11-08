@@ -855,6 +855,19 @@ function Settings() {
           </div>
           <div className="host">
             <div className="host__who">
+              <span className="host__name">{t('settings.inbound')}</span>
+              <span className="host__found host__found--wrap">
+                {st?.inbound && st.inbound !== 'accept' ? `${t('settings.inboundOther', { v: st.inbound })} ` : ''}
+                {t('settings.inboundSub')}
+              </span>
+            </div>
+            <span className="seg">
+              <button data-active={st?.inbound === 'accept' || undefined} onClick={() => run('inbound', async () => { await api.setInbound(true) })}>{t('settings.notifyOn')}</button>
+              <button data-active={st?.inbound !== 'accept' || undefined} onClick={() => run('inbound', async () => { await api.setInbound(false) })}>{t('settings.notifyOff')}</button>
+            </span>
+          </div>
+          <div className="host">
+            <div className="host__who">
               <span className="host__name">Codex</span>
               <span className="host__found">{codexText}</span>
             </div>

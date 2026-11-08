@@ -374,7 +374,36 @@ fn stage_by_status(status: &str) -> (&'static str, &'static str) {
     }
 }
 
-const STAGE_KEYS: [&str; 10] = ["stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued"];
+const STAGE_KEYS: [&str; 16] = ["stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
+
+/// Why a pending copy waits, from the recipient's state right now: the session is closed, busy
+/// (the hook hands it over when the turn ends), idle (its next turn), a Codex thread not on the
+/// daemon, or a machine that is off.
+fn waiting_key(c: &store::Letter) -> &'static str {
+    if c.to_host.is_some() {
+        return "stage.wait_peer";
+    }
+    let Some(s) = discover::local().into_iter().find(|s| s.id.eq_ignore_ascii_case(&c.to)) else { return "stage.wait_open" };
+    match s.harness {
+        crate::model::Harness::Codex => {
+            if s.running && s.status.as_deref() == Some("loaded") {
+                "stage.queued_until"
+            } else {
+                "stage.wait_codex"
+            }
+        }
+        crate::model::Harness::Claude => {
+            if !s.running {
+                "stage.wait_open"
+            } else if matches!(s.status.as_deref(), Some("busy") | Some("running")) {
+                "stage.wait_turn_end"
+            } else {
+                "stage.wait_speak"
+            }
+        }
+        _ => "stage.queued_until",
+    }
+}
 
 /// The coarse state of a copy (`kind`: queued, delivered, working, replied, failed, cancelled) and
 /// the i18n key of its stage text, from the store's status and, after a direct delivery here, the
@@ -385,6 +414,7 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
             return remote;
         }
         let (key, kind) = stage_by_status(&c.status);
+        let key = if kind == "queued" { waiting_key(c) } else { key };
         return (kind.into(), key.into());
     }
     let runs = store.runs(&c.id);
@@ -417,6 +447,7 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
         (Some(claude::Receipt::Queued), _) => ("stage.queued_after_turn", "delivered"),
         _ => stage_by_status(&c.status),
     };
+    let key = if kind == "queued" { waiting_key(c) } else { key };
     (kind.into(), key.into())
 }
 
@@ -425,7 +456,7 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
     let (kind, key) = stage_of(store, c);
     let deadline = store::time_text(c.deadline_at());
     let stage = if kind == "queued" {
-        t("stage.queued_until").replace("{t}", short_time(&deadline))
+        t(if STAGE_KEYS.contains(&key.as_str()) { &key } else { "stage.queued_until" }).replace("{t}", short_time(&deadline))
     } else if STAGE_KEYS.contains(&key.as_str()) {
         t(&key).to_string()
     } else {

@@ -59,9 +59,11 @@ pub fn decide(s: &Session, hook_installed: bool) -> Reach {
                     text: if inbox.desktop { t("reach.now_desktop").into() } else { t("reach.now_terminal").into() },
                     fix: None,
                 },
-                Gate::Hold | Gate::Refuse => {
+                gate => {
                     if hook_installed {
-                        Reach { level: Level::Later, text: t("reach.bypass_later").into(), fix: None }
+                        let busy = matches!(s.status.as_deref(), Some("busy") | Some("running"));
+                        let key = if gate == Gate::Refuse { "reach.refuse_later" } else if busy { "reach.bypass_busy" } else { "reach.bypass_idle" };
+                        Reach { level: Level::Later, text: t(key).into(), fix: Some("inbound".into()) }
                     } else {
                         Reach { level: Level::None, text: t("reach.bypass_none").into(), fix: Some("hook".into()) }
                     }
