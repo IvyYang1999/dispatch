@@ -85,7 +85,7 @@ pub(crate) fn serve_conn(conn: &mut Conn) -> anyhow::Result<()> {
 
 /// Answer one request from an authenticated connection.
 pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
-    let me = me();
+    let me = match me() { Ok(me) => me, Err(e) => return Response::Error { message: format!("{e:#}") } };
     match req {
         Request::Hello => Response::Welcome { id: me.id, name: me.name, version: env!("CARGO_PKG_VERSION").into(), iroh: net::my_id() },
         Request::Pair { proof, id, name, iroh, iroh_addr } => {
@@ -117,7 +117,11 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
             }
         }
         other => {
-            let Some(peer) = peer_by_key(&conn.remote_key) else { return Response::Error { message: "not paired with this machine".into() } };
+            let peer = match peer_by_key(&conn.remote_key) {
+                Ok(Some(peer)) => peer,
+                Ok(None) => return Response::Error { message: "not paired with this machine".into() },
+                Err(e) => return Response::Error { message: format!("{e:#}") },
+            };
             let store = Store::open();
             match other {
                 Request::Sessions => {
@@ -234,7 +238,7 @@ fn deliver_in(store: &Store, peer: &PeerInfo, mut letter: Letter, signature: Opt
         }
     }
     if peer.rule == "contacts" && crate::contacts::for_session(&letter.to, None).is_none() {
-        return refuse(peer, &letter, &t("send.peer_contacts_only").replace("{host}", &me().name));
+        return refuse(peer, &letter, &t("send.peer_contacts_only").replace("{host}", &match me() { Ok(m) => m.name, Err(e) => return Response::Error { message: format!("{e:#}") } }));
     }
     let hold = !peer.verified || peer.rule == "ask";
     letter.from_host = Some(peer.id.clone());

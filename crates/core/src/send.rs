@@ -68,7 +68,7 @@ pub fn resolve(query: &str) -> Result<Session> {
 }
 
 pub fn resolve_how(query: &str) -> Result<(Session, Match)> {
-    let (host, q) = match peer::split_address(query.trim()) {
+    let (host, q) = match peer::split_address(query.trim())? {
         Some((p, rest)) => (Some(p), rest),
         None => (None, query.trim().to_string()),
     };

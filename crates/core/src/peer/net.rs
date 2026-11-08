@@ -112,15 +112,22 @@ fn key_path() -> PathBuf {
 
 /// The stable iroh key: the listener's identity and the key letters are signed with.
 pub(crate) fn secret() -> Result<SecretKey> {
+    let _lock = super::persistence::lock()?;
+    super::persistence::load_locked()?;
     let path = key_path();
-    if let Ok(text) = std::fs::read_to_string(&path) {
-        let bytes = hex::decode(text.trim()).context("peer.iroh.key is not hex")?;
-        let arr: [u8; 32] = bytes.try_into().map_err(|_| anyhow!("peer.iroh.key is not 32 bytes"))?;
-        return Ok(SecretKey::from_bytes(&arr));
+    match std::fs::read_to_string(&path) {
+        Ok(text) => {
+            let bytes = hex::decode(text.trim()).context("peer.iroh.key is not hex; file preserved")?;
+            let arr: [u8; 32] = bytes.try_into().map_err(|_| anyhow!("peer.iroh.key is not 32 bytes; file preserved"))?;
+            Ok(SecretKey::from_bytes(&arr))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let key = SecretKey::generate();
+            super::persistence::create_private(&path, hex::encode(key.to_bytes()).as_bytes())?;
+            Ok(key)
+        }
+        Err(e) => Err(e).context("cannot read peer.iroh.key; existing key preserved"),
     }
-    let key = SecretKey::generate();
-    super::write_private(&path, &hex::encode(key.to_bytes()))?;
-    Ok(key)
 }
 
 /// This machine's iroh endpoint id (also its signing key), as text.

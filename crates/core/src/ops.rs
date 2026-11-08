@@ -37,17 +37,17 @@ fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Co
 }
 
 /// Who is calling: the Claude Code session this process was spawned by, if any.
-pub fn whoami() -> Value {
-    let me = crate::peer::me();
+pub fn whoami() -> Result<Value> {
+    let me = crate::peer::me()?;
     let machine = json!({ "id": me.id, "name": me.name });
-    match claude::caller_session() {
+    Ok(match claude::caller_session() {
         Some(i) => {
             let contact = crate::contacts::for_session(&i.session_id, None).map(|c| c.name);
             let handle = contact.clone().unwrap_or_else(|| short_id(&i.session_id));
             json!({ "session_id": i.session_id, "short_id": short_id(&i.session_id), "name": i.name.clone().unwrap_or_else(|| short_id(&i.session_id)), "contact": contact, "harness": "Claude", "cwd": i.cwd, "desktop": i.desktop, "machine": machine, "address_elsewhere": format!("{}/{}", me.name, handle) })
         }
         None => json!({ "session_id": null, "name": "unknown", "harness": null, "machine": machine }),
-    }
+    })
 }
 
 /// The caller's identity for `from`: (id, name).
@@ -120,7 +120,7 @@ pub fn search(query: &str) -> Value {
 }
 
 fn matches(query: &str, sessions: Vec<Session>) -> Vec<Value> {
-    let (host, q) = match crate::peer::split_address(query.trim()) {
+    let (host, q) = match crate::peer::split_address(query.trim()).ok().flatten() {
         Some((p, rest)) => (Some(p), rest.to_lowercase()),
         None => (None, query.trim().to_lowercase()),
     };
@@ -197,7 +197,7 @@ pub fn remember_match(query: &str, target: &Session, how: send::Match) -> Option
     if how != send::Match::Fragment || send::is_person(&target.id) {
         return None;
     }
-    let (_, q) = crate::peer::split_address(query.trim()).map(|(p, rest)| (Some(p), rest)).unwrap_or((None, query.trim().to_string()));
+    let (_, q) = crate::peer::split_address(query.trim()).ok().flatten().map(|(p, rest)| (Some(p), rest)).unwrap_or((None, query.trim().to_string()));
     if q.is_empty() || crate::contacts::for_session(&target.id, target.host.as_ref().map(|h| h.id.as_str())).is_some() {
         return None;
     }

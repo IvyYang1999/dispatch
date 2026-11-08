@@ -226,7 +226,7 @@ fn run() -> Result<i32> {
             dispatch_core::mcp::serve(&st);
         }
         Cmd::Whoami => {
-            println!("{}", serde_json::to_string_pretty(&dispatch_core::ops::whoami())?);
+            println!("{}", serde_json::to_string_pretty(&dispatch_core::ops::whoami()?)?);
         }
         Cmd::Codex => {
             let s = dispatch_core::codex::state_now();
@@ -291,7 +291,7 @@ fn run() -> Result<i32> {
         }
         Cmd::Peers { cmd, json } => match cmd.unwrap_or(PeersCmd::List) {
             PeersCmd::List => {
-                let v = peer::overview();
+                let v = peer::overview()?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&v)?);
                 } else {
@@ -304,7 +304,7 @@ fn run() -> Result<i32> {
             }
             PeersCmd::Scan => {
                 peer::mdns::scan(Duration::from_secs(2));
-                let v = peer::overview();
+                let v = peer::overview()?;
                 if json {
                     println!("{}", serde_json::to_string_pretty(&v)?);
                 } else {
@@ -316,7 +316,7 @@ fn run() -> Result<i32> {
                     println!("{}", t("cli.peers_code_needs_listener"));
                 }
                 let (code, secs) = peer::new_code()?;
-                let me = peer::me();
+                let me = peer::me()?;
                 println!("{}", t("cli.peers_code").replace("{code}", &code).replace("{secs}", &secs.to_string()).replace("{name}", &me.name));
             }
             PeersCmd::Link => {
@@ -330,7 +330,7 @@ fn run() -> Result<i32> {
                     peer::pair(&target, code.as_deref().ok_or_else(|| anyhow!("{}", t("cli.peers_need_code")))?)?
                 };
                 println!("{}", t("cli.peers_paired").replace("{name}", &p.name).replace("{id}", &model::short_id(&p.id)));
-                println!("  {}", peer::fingerprint(&p.public_key));
+                println!("  {}", peer::fingerprint(&p.public_key)?);
                 if !p.verified {
                     println!("{}", t("cli.peers_unverified").replace("{name}", &p.name));
                 }
