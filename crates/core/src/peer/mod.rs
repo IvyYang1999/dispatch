@@ -90,9 +90,7 @@ fn rule_all() -> String {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Book {
-    #[serde(default)]
     pub me: Me,
-    #[serde(default)]
     pub peers: Vec<PeerInfo>,
 }
 

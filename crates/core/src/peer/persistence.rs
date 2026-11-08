@@ -150,7 +150,8 @@ mod tests {
         let original = peer::load().unwrap();
         let book = fs::read(peer::book_path()).unwrap();
         let key = fs::read(peer::key_path()).unwrap();
-        for damaged in [b"".as_slice(), b"{", b"{}", b"{\"me\":null}"] {
+        let missing_peers = serde_json::to_vec(&serde_json::json!({"me": original.me})).unwrap();
+        for damaged in [b"".as_slice(), b"{", b"{}", b"{\"me\":null}", &missing_peers] {
             fs::write(peer::book_path(), damaged).unwrap();
             assert!(peer::load().is_err());
             assert!(peer::set_name("must not persist").is_err());
@@ -255,7 +256,7 @@ mod tests {
                 .args(["--exact", "peer::persistence::tests::subprocess_writer", "--nocapture"])
                 .env("DISPATCH_PERSISTENCE_TEST_ROOT", &fixture.0)
                 .env("DISPATCH_PERSISTENCE_TEST_INDEX", i.to_string())
-                .stdout(Stdio::null()).stderr(Stdio::piped()).spawn().unwrap());
+                .stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().unwrap());
         }
         let deadline = Instant::now() + Duration::from_secs(25);
         loop {
