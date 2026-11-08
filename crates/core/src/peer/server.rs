@@ -138,6 +138,11 @@ fn deliver_in(store: &Store, peer: &PeerInfo, mut letter: Letter) -> Response {
     if let Ok(all) = store.list(None, false) {
         if let Some(mut existing) = all.into_iter().find(|l| l.id == letter.id) {
             if store::pending(&existing.status) {
+                // this machine's own sweep may have just tried: no second attempt within five minutes
+                let recent = store.runs(&existing.id).last().and_then(|r| chrono::DateTime::parse_from_rfc3339(&r.at).ok()).map(|at| (chrono::Local::now().fixed_offset() - at).num_seconds() < 300).unwrap_or(false);
+                if recent {
+                    return Response::Delivered { status: existing.status.clone(), route: "stored".into(), detail: t("send.peer_recent").into() };
+                }
                 return match send::redeliver(store, &mut existing) {
                     Ok(rep) => Response::Delivered { status: existing.status, route: rep.route, detail: rep.detail },
                     Err(e) => Response::Error { message: format!("{e:#}") },

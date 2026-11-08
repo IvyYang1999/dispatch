@@ -213,6 +213,7 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "send.peer_error" => ("和 {host} 通信出错：{why}；留在信箱", "Could not talk to {host}: {why}; kept in the store"),
         "send.peer_route" => ("{host}：{detail}", "{host}: {detail}"),
         "send.peer_already" => ("这封已经到过了", "Already received"),
+        "send.peer_recent" => ("这封已经在手里，几分钟内刚试过投递；由这边的邮差接着管", "Already here and tried within the last few minutes; this machine's sweep keeps at it"),
         "send.from_at" => ("{from} @ {host}", "{from} @ {host}"),
         "send.stored_hook" => ("{why}，留在信箱，等 hook 递", "{why}; kept in the store for the hook"),
         "send.hold" => ("它跳过了权限确认，直投会被扣下；留在信箱：它忙着就本轮结束时递到，空闲就等它下次开口（设置里可开「立即收信」）", "It bypasses permission checks, so a direct delivery would be held; kept in the store: handed over when its turn ends if it is busy, at its next turn if idle (Settings can turn on immediate delivery)"),

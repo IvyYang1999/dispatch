@@ -100,9 +100,35 @@ pub fn home_dir() -> std::path::PathBuf {
     dirs::home_dir().unwrap_or_else(|| "/".into())
 }
 
-/// The `dispatch` command as another session can run it: this binary's absolute path, quoted.
+/// The `dispatch` command as another session can run it, quoted: the installed command line
+/// when there is one, else this binary when it is the command line, else the command line
+/// beside this binary (the app ships it as a sidecar), else plain `dispatch`. The app itself
+/// delivers messages too, and its own binary must never be the answer: it is not the CLI.
 pub fn self_cmd() -> String {
-    std::env::current_exe().map(|p| format!("\"{}\"", p.display())).unwrap_or_else(|_| "dispatch".into())
+    let installed = home_dir().join(".dispatch").join("bin").join(if cfg!(windows) { "dispatch.exe" } else { "dispatch" });
+    cli_command(std::env::current_exe().ok().as_deref(), &installed)
+}
+
+fn cli_command(exe: Option<&std::path::Path>, installed: &std::path::Path) -> String {
+    let quote = |p: &std::path::Path| format!("\"{}\"", p.display());
+    if installed.is_file() {
+        return quote(installed);
+    }
+    if let Some(exe) = exe {
+        let name = exe.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if name == "dispatch" || name == "dispatch.exe" {
+            return quote(exe);
+        }
+        if let Some(dir) = exe.parent() {
+            for n in ["dispatch", "dispatch.exe", "dispatch-aarch64-apple-darwin", "dispatch-x86_64-apple-darwin", "dispatch-x86_64-unknown-linux-gnu", "dispatch-aarch64-unknown-linux-gnu", "dispatch-x86_64-pc-windows-msvc.exe"] {
+                let p = dir.join(n);
+                if p.is_file() {
+                    return quote(&p);
+                }
+            }
+        }
+    }
+    "dispatch".into()
 }
 
 pub fn now_ms() -> i64 {
@@ -123,4 +149,38 @@ pub fn short_cwd(cwd: &str) -> String {
     }
     let lead = if p.starts_with('/') { "/" } else { "" };
     format!("{}{}/…/{}", lead, parts[..head_n].join("/"), parts[parts.len() - 2..].join("/"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reply_command_is_always_the_command_line_never_the_app() {
+        let dir = std::env::temp_dir().join(format!("dispatch-selfcmd-{}", uuid::Uuid::new_v4()));
+        let app_bin = dir.join("Dispatch.app/Contents/MacOS");
+        std::fs::create_dir_all(&app_bin).unwrap();
+        let desktop = app_bin.join("dispatch-desktop");
+        std::fs::write(&desktop, b"").unwrap();
+        let missing = dir.join("none/dispatch");
+        // the app's own binary, no CLI anywhere: the plain command, not the app
+        assert_eq!(cli_command(Some(&desktop), &missing), "dispatch");
+        // the sidecar beside the app wins over nothing
+        let sidecar = app_bin.join("dispatch");
+        std::fs::write(&sidecar, b"").unwrap();
+        assert_eq!(cli_command(Some(&desktop), &missing), format!("\"{}\"", sidecar.display()));
+        // the command line itself, when that is what runs
+        let cli = dir.join("target/release/dispatch");
+        std::fs::create_dir_all(cli.parent().unwrap()).unwrap();
+        std::fs::write(&cli, b"").unwrap();
+        assert_eq!(cli_command(Some(&cli), &missing), format!("\"{}\"", cli.display()));
+        // the installed command line beats both, with its spaces quoted
+        let installed = dir.join("home dir/.dispatch/bin/dispatch");
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, b"").unwrap();
+        let cmd = cli_command(Some(&desktop), &installed);
+        assert_eq!(cmd, format!("\"{}\"", installed.display()));
+        assert!(!cmd.contains("dispatch-desktop"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
