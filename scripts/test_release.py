@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import tempfile
 import subprocess
+import shutil
+import zipfile
 import unittest
 from unittest.mock import patch
 
@@ -13,6 +15,22 @@ spec.loader.exec_module(release)
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_cli_notarization_parent_does_not_leak_into_install_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp); package = out / 'install'; package.mkdir()
+            with zipfile.ZipFile(out / 'app.zip', 'w') as z:
+                z.writestr('Dispatch.app/Contents/MacOS/dispatch', b'signed CLI')
+            with zipfile.ZipFile(out / 'cli.zip', 'w') as z:
+                z.writestr('MacOS/dispatch', b'signed CLI')
+            class ArchiveRunner:
+                def run(self, args):
+                    if args[1:4] == ['-x', '-k', out / 'app.zip'] or args[1:4] == ['-x', '-k', out / 'cli.zip']:
+                        with zipfile.ZipFile(args[3]) as z: z.extractall(args[4])
+                    else: shutil.copy2(args[1], args[2])
+            release.unpack_payload(out, package, ArchiveRunner())
+            self.assertEqual({p.name for p in package.iterdir()}, {'Dispatch.app', 'dispatch'})
+            self.assertEqual((package / 'dispatch').read_bytes(), b'signed CLI')
+
     def test_existing_tag_or_missing_auth_never_passes_publication_preflight(self):
         class FakeRunner:
             def __init__(self, code, error): self.code, self.error = code, error

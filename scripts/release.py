@@ -169,6 +169,17 @@ def manifest(directory):
             for p in sorted(directory.rglob('*')) if p.is_symlink() or p.is_file()}
 
 
+def unpack_payload(out, package, runner):
+    runner.run(['ditto', '-x', '-k', out / 'app.zip', package])
+    # ditto --keepParent preserves the CLI's MacOS/ parent. That internal
+    # notarization layout must not leak into the first-install package.
+    with tempfile.TemporaryDirectory(prefix='cli-', dir=package.parent) as tmp:
+        runner.run(['ditto', '-x', '-k', out / 'cli.zip', tmp])
+        candidates = [p for p in Path(tmp).rglob('dispatch') if p.is_file()]
+        require(len(candidates) == 1, 'Expected one CLI in the notarized archive')
+        runner.run(['ditto', candidates[0], package / 'dispatch'])
+
+
 def finish(out, plan, config, runner):
     prepared = json.loads((out / 'prepared.json').read_text())
     for name in ['app.zip', 'cli.zip']:
@@ -179,8 +190,7 @@ def finish(out, plan, config, runner):
     with tempfile.TemporaryDirectory(prefix='package-', dir=out) as tmp:
         package = Path(tmp) / ('Dispatch-' + version + '-macos-' + arch)
         package.mkdir()
-        for name in ['app.zip', 'cli.zip']:
-            runner.run(['ditto', '-x', '-k', out / name, package])
+        unpack_payload(out, package, runner)
         app = package / 'Dispatch.app'
         cli = package / 'dispatch'
         info = plistlib.loads((app / 'Contents/Info.plist').read_bytes())
