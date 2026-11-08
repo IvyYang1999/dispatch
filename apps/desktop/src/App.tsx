@@ -535,16 +535,34 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
             <section className="page__col">
               <div className="section-title">{t('session.transcript')}</div>
               {!page.transcript_available && <div className="empty">{t('session.noTranscript')}</div>}
-              {page.transcript_available && page.turns.length === 0 && <div className="empty">{t('session.emptyTranscript')}</div>}
-              {page.turns.map((u, i) => (
-                <div key={i} className="turn" data-role={u.role} data-dispatch={u.via_dispatch || undefined}>
-                  <div className="turn__head">
-                    <span className="turn__role">{u.role === 'user' ? (u.via_dispatch ? t('session.viaDispatch', { from: u.from_agent ?? '?' }) : t('turn.user')) : t('turn.assistant')}</span>
-                    {u.at && <span className="turn__time">{u.at.slice(5, 16).replace('T', ' ')}</span>}
+              {page.transcript_available && page.rounds.length === 0 && <div className="empty">{t('session.emptyTranscript')}</div>}
+              {page.rounds.map((r, i) => {
+                const u = r.user
+                const at = u?.at ?? r.replies[0]?.at ?? null
+                return (
+                  <div key={i} className="round" data-dispatch={u?.via_dispatch || undefined}>
+                    <div className="round__prompt">
+                      <span className="round__who">
+                        {u?.via_dispatch ? <span className="round__mail">📨</span> : <HarnessMark harness="Human" size={14} />}
+                        <span className="round__label">{u ? (u.via_dispatch ? t('session.viaDispatch', { from: u.from_agent ?? '?' }) : t('turn.user')) : t('round.noPrompt')}</span>
+                        {at && <span className="round__time">{at.slice(5, 16).replace('T', ' ')}</span>}
+                      </span>
+                      {u && <p className="round__text">{u.text}</p>}
+                    </div>
+                    <div className="round__reply">
+                      <span className="round__who">
+                        <HarnessMark harness={s.harness} size={14} />
+                        <span className="round__label">{s.name}</span>
+                      </span>
+                      {r.replies.length === 0 ? (
+                        <p className="round__text round__text--faint">{t('round.pending')}</p>
+                      ) : (
+                        <p className="round__text">{r.replies.map((x) => x.text).join('\n\n')}</p>
+                      )}
+                    </div>
                   </div>
-                  <p className="turn__text">{u.text}</p>
-                </div>
-              ))}
+                )
+              })}
             </section>
           </div>
           {notice && <div className="notice" onClick={clear}>{notice}</div>}

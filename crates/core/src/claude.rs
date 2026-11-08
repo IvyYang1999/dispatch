@@ -368,11 +368,60 @@ pub fn mode(session_id: &str, cwd: Option<&str>) -> Option<String> {
             return mode.clone();
         }
     }
-    let tail = read_tail(&file, 512 * 1024).ok()?;
-    let re = regex::Regex::new(r#""permissionMode":"([A-Za-z]+)""#).ok()?;
-    let mode = re.captures_iter(&tail).last().map(|c| c[1].to_string());
+    let cached = MODES.lock().unwrap().get(&file).cloned();
+    let mode = match cached {
+        // the file only grew: a newer mode can only be in the new bytes, else the old one stands
+        Some((_, old_size, Some(old))) if size >= old_size => mode_in_range(&file, old_size, size).or(Some(old)),
+        _ => mode_from_file(&file),
+    };
     MODES.lock().unwrap().insert(file, (mtime, size, mode.clone()));
     mode
+}
+
+const MODE_CHUNK: u64 = 512 * 1024;
+/// How far back a transcript is read for its mode before giving up (the record is written
+/// once per mode change, so it is usually near the start of a long file).
+const MODE_SCAN_MAX: u64 = 64 * 1024 * 1024;
+
+fn last_mode_in(text: &str) -> Option<String> {
+    static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#""permissionMode":"([A-Za-z]+)""#).unwrap());
+    RE.captures_iter(text).last().map(|c| c[1].to_string())
+}
+
+fn read_range(path: &Path, from: u64, to: u64) -> Option<String> {
+    let mut f = fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(from)).ok()?;
+    let mut buf = vec![0u8; (to - from) as usize];
+    f.read_exact(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).to_string())
+}
+
+/// The last `permissionMode` written between two offsets.
+fn mode_in_range(path: &Path, from: u64, to: u64) -> Option<String> {
+    if to <= from {
+        return None;
+    }
+    // a record straddling the old end is still seen
+    let from = from.saturating_sub(4096);
+    last_mode_in(&read_range(path, from, to)?)
+}
+
+/// The last `permissionMode` anywhere in the file: read backwards in half-megabyte pieces
+/// (each overlapping the next by a few KB so a record on the seam is not missed).
+pub fn mode_from_file(path: &Path) -> Option<String> {
+    let size = fs::metadata(path).ok()?.len();
+    let mut end = size;
+    let mut scanned = 0u64;
+    while end > 0 && scanned < MODE_SCAN_MAX {
+        let start = end.saturating_sub(MODE_CHUNK);
+        let text = read_range(path, start, (end + 4096).min(size))?;
+        if let Some(m) = last_mode_in(&text) {
+            return Some(m);
+        }
+        scanned += end - start;
+        end = start;
+    }
+    None
 }
 
 /// Claude Code's `crossSessionInbound` in the user's settings: `accept`, `hold`, `refuse`, or None.
@@ -414,18 +463,25 @@ pub enum Gate {
 
 /// What the session would do with a message from us. Claude Code holds messages while
 /// the session runs in bypassPermissions unless `crossSessionInbound` says otherwise;
-/// an unknown mode counts as holding.
+/// an unknown mode counts as holding, but is reported as unknown, not as bypassing.
 pub fn gate(session_id: &str, cwd: Option<&str>) -> Gate {
+    gate_reason(session_id, cwd).0
+}
+
+/// The gate and why: `crossSessionInbound=accept|hold|refuse`, `bypassPermissions`, `mode
+/// unknown`, or `mode=<the mode>`.
+pub fn gate_reason(session_id: &str, cwd: Option<&str>) -> (Gate, String) {
     let settings = read_json(&claude_home().join("settings.json"), 1024 * 1024);
     match settings.as_ref().and_then(|s| s.get("crossSessionInbound")).and_then(|v| v.as_str()) {
-        Some("accept") => return Gate::Accept,
-        Some("refuse") => return Gate::Refuse,
-        Some("hold") => return Gate::Hold,
+        Some("accept") => return (Gate::Accept, "crossSessionInbound=accept".into()),
+        Some("refuse") => return (Gate::Refuse, "crossSessionInbound=refuse".into()),
+        Some("hold") => return (Gate::Hold, "crossSessionInbound=hold".into()),
         _ => {}
     }
     match mode(session_id, cwd).as_deref() {
-        None | Some("bypassPermissions") => Gate::Hold,
-        _ => Gate::Accept,
+        None => (Gate::Hold, "mode unknown".into()),
+        Some("bypassPermissions") => (Gate::Hold, "bypassPermissions".into()),
+        Some(m) => (Gate::Accept, format!("mode={m}")),
     }
 }
 
@@ -484,6 +540,30 @@ mod tests {
     #[test]
     fn slug_matches_claude_code() {
         assert_eq!(project_slug("/Users/creator/vaults/main-2026-10-05/项目/开发项目/Agent信箱"), "-Users-creator-vaults-main-2026-10-05---------Agent--");
+    }
+
+    #[test]
+    fn the_mode_is_found_however_far_back_and_the_newest_wins() {
+        use std::io::Write as _;
+        let dir = std::env::temp_dir().join(format!("dispatch-mode-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("s.jsonl");
+        let mut text = String::from("{\"type\":\"user\",\"permissionMode\":\"auto\",\"message\":{\"content\":\"hi\"}}\n");
+        let filler = format!("{{\"type\":\"assistant\",\"message\":{{\"content\":\"{}\"}}}}\n", "x".repeat(1000));
+        for _ in 0..700 {
+            text.push_str(&filler);
+        }
+        fs::write(&file, &text).unwrap();
+        assert!(fs::metadata(&file).unwrap().len() > 512 * 1024, "the mode line is outside the old half-megabyte window");
+        assert_eq!(mode_from_file(&file).as_deref(), Some("auto"));
+        assert_eq!(mode_in_range(&file, 8192, fs::metadata(&file).unwrap().len()), None, "nothing newer after the first line");
+        let before = fs::metadata(&file).unwrap().len();
+        fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(b"{\"type\":\"user\",\"permissionMode\":\"bypassPermissions\"}\n").unwrap();
+        assert_eq!(mode_in_range(&file, before, fs::metadata(&file).unwrap().len()).as_deref(), Some("bypassPermissions"), "the appended bytes carry the newer mode");
+        assert_eq!(mode_from_file(&file).as_deref(), Some("bypassPermissions"));
+        fs::write(&file, "{\"type\":\"user\"}\n").unwrap();
+        assert_eq!(mode_from_file(&file), None, "no record: unknown, not bypass");
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]

@@ -561,10 +561,11 @@ pub fn session_page(store: &Store, query: &str) -> Result<Value> {
         }
     }
     let (turns, readable) = match &s.host {
-        Some(h) => (crate::peer::transcript(h, &s.id, 24).unwrap_or_default(), true),
-        None => (crate::transcript::recent(&s, 24), s.transcript.is_some()),
+        Some(h) => (crate::peer::transcript(h, &s.id, 80).unwrap_or_default(), true),
+        None => (crate::transcript::recent(&s, 80), s.transcript.is_some()),
     };
-    Ok(json!({ "session": session, "dispatches": dispatches, "turns": turns, "transcript_available": readable }))
+    let rounds = crate::transcript::rounds(&turns, 16);
+    Ok(json!({ "session": session, "dispatches": dispatches, "rounds": rounds, "transcript_available": readable }))
 }
 
 /// How to open a session on this machine: a URL the system opens, or a command to copy.

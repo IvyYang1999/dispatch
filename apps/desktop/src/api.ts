@@ -109,10 +109,14 @@ export interface Turn {
   via_dispatch: boolean
   from_agent: string | null
 }
+export interface Round {
+  user: Turn | null
+  replies: Turn[]
+}
 export interface SessionPageData {
   session: Session
   dispatches: (Dispatch & { direction: 'in' | 'out' })[]
-  turns: Turn[]
+  rounds: Round[]
   transcript_available: boolean
 }
 export interface PeerRow {

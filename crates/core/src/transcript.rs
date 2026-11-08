@@ -20,6 +20,35 @@ pub struct Turn {
     pub from_agent: Option<String>,
 }
 
+/// One exchange: what the person (or Dispatch, for the person) said, and everything the agent
+/// said back before the next prompt. Tool calls are not part of a transcript turn here, so the
+/// replies are the agent's words only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Round {
+    pub user: Option<Turn>,
+    pub replies: Vec<Turn>,
+}
+
+/// Group turns into rounds: a user turn opens a round, assistant turns join the open one
+/// (a reply with no prompt before it opens one of its own). Newest `limit` rounds.
+pub fn rounds(turns: &[Turn], limit: usize) -> Vec<Round> {
+    let mut out: Vec<Round> = vec![];
+    for t in turns {
+        if t.role == "user" {
+            out.push(Round { user: Some(t.clone()), replies: vec![] });
+        } else {
+            match out.last_mut() {
+                Some(r) => r.replies.push(t.clone()),
+                None => out.push(Round { user: None, replies: vec![t.clone()] }),
+            }
+        }
+    }
+    if out.len() > limit {
+        out.drain(..out.len() - limit);
+    }
+    out
+}
+
 const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_CHARS: usize = 600;
 /// Harness boilerplate that says nothing about the conversation.
@@ -146,6 +175,21 @@ mod tests {
         let last = parse(&lines.join("\n"), Harness::Claude, 1);
         assert_eq!(last.len(), 1);
         assert!(last[0].text.starts_with("📨 Dispatch"));
+    }
+
+    #[test]
+    fn rounds_group_a_prompt_with_everything_said_back() {
+        let mk = |role: &str, text: &str| Turn { role: role.into(), text: text.into(), at: None, via_dispatch: text.starts_with("📨"), from_agent: None };
+        let turns = vec![mk("assistant", "orphan"), mk("user", "q1"), mk("assistant", "a1"), mk("assistant", "a1b"), mk("user", "📨 from x"), mk("assistant", "a2"), mk("user", "q3")];
+        let all = rounds(&turns, 10);
+        assert_eq!(all.len(), 4);
+        assert!(all[0].user.is_none() && all[0].replies.len() == 1);
+        assert_eq!(all[1].user.as_ref().unwrap().text, "q1");
+        assert_eq!(all[1].replies.len(), 2);
+        assert!(all[2].user.as_ref().unwrap().via_dispatch);
+        assert!(all[3].replies.is_empty(), "a prompt still being answered has no replies yet");
+        assert_eq!(rounds(&turns, 2).len(), 2);
+        assert_eq!(rounds(&turns, 2)[0].user.as_ref().unwrap().text, "📨 from x");
     }
 
     #[test]

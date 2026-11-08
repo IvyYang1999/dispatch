@@ -207,6 +207,18 @@ input, textarea { font: inherit; }
 .page__col .row { padding: 8px 10px; }
 .page__col .empty { padding: 18px 0; }
 .tag--dir[data-dir="in"] { color: var(--accent); background: var(--accent-soft); }
+.round { display: flex; flex-direction: column; border-radius: 9px; box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
+.round[data-dispatch] { box-shadow: inset 0 0 0 1px var(--accent-soft), inset 3px 0 0 var(--accent); }
+.round__prompt { padding: 9px 12px 8px; background: var(--row-hover); }
+.round[data-dispatch] .round__prompt { background: var(--accent-soft); }
+.round__reply { padding: 9px 12px 10px; }
+.round__who { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--text-faint); }
+.round__label { font-weight: 500; color: var(--text); }
+.round[data-dispatch] .round__prompt .round__label { color: var(--accent); }
+.round__time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.round__text { margin: 5px 0 0; font-size: 12.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow: hidden; user-select: text; }
+.round__text--faint { color: var(--text-faint); font-style: italic; }
+.round__mail { font-size: 12px; line-height: 1; }
 .turn { padding: 8px 10px; border-radius: 7px; background: var(--row-hover); }
 .turn[data-role="assistant"] { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
 .turn[data-dispatch] { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }

@@ -53,7 +53,8 @@ pub fn decide(s: &Session, hook_installed: bool) -> Reach {
                     Reach { level: Level::None, text: t("reach.nosocket_none").into(), fix: Some("hook".into()) }
                 };
             }
-            match claude::gate(&s.id, inbox.cwd.as_deref()) {
+            let (gate, why) = claude::gate_reason(&s.id, inbox.cwd.as_deref());
+            match gate {
                 Gate::Accept => Reach {
                     level: Level::Now,
                     text: if inbox.desktop { t("reach.now_desktop").into() } else { t("reach.now_terminal").into() },
@@ -62,7 +63,15 @@ pub fn decide(s: &Session, hook_installed: bool) -> Reach {
                 gate => {
                     if hook_installed {
                         let busy = matches!(s.status.as_deref(), Some("busy") | Some("running"));
-                        let key = if gate == Gate::Refuse { "reach.refuse_later" } else if busy { "reach.bypass_busy" } else { "reach.bypass_idle" };
+                        let key = if gate == Gate::Refuse {
+                            "reach.refuse_later"
+                        } else if why == "mode unknown" {
+                            "reach.unknown_later"
+                        } else if busy {
+                            "reach.bypass_busy"
+                        } else {
+                            "reach.bypass_idle"
+                        };
                         Reach { level: Level::Later, text: t(key).into(), fix: Some("inbound".into()) }
                     } else {
                         Reach { level: Level::None, text: t("reach.bypass_none").into(), fix: Some("hook".into()) }

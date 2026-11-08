@@ -313,14 +313,17 @@ fn deliver_claude(store: &Store, to: &Session, letter: &mut Letter, wait: bool, 
         store.append_run(&letter.id, "inbox", "skipped", why_log)?;
         return Ok(report("stored", t("send.stored_hook").replace("{why}", why)));
     };
-    match claude::gate(&to.id, inbox.cwd.as_deref()) {
+    let (gate, why) = claude::gate_reason(&to.id, inbox.cwd.as_deref());
+    match gate {
         Gate::Accept => {}
         Gate::Hold => {
+            let unknown = why == "mode unknown";
+            let text_why = if unknown { t("send.why_unknown") } else { t("send.why_hold") };
             if !hook_on {
-                return fail(store, letter, "inbox", "bypassPermissions would hold it", t("send.failed_nohook").replace("{why}", t("send.why_hold")), report);
+                return fail(store, letter, "inbox", &format!("{why}: would be held"), t("send.failed_nohook").replace("{why}", text_why), report);
             }
-            store.append_run(&letter.id, "inbox", "skipped", "bypassPermissions would hold it")?;
-            return Ok(report("stored", t("send.hold").into()));
+            store.append_run(&letter.id, "inbox", "skipped", &format!("{why}: would be held"))?;
+            return Ok(report("stored", t(if unknown { "send.hold_unknown" } else { "send.hold" }).into()));
         }
         Gate::Refuse => {
             if !hook_on {
