@@ -150,6 +150,9 @@ def build_archives(out, runner, identity):
         app = Path(tmp) / 'Dispatch.app'
         runner.run(['ditto', ROOT / 'target/release/bundle/macos/Dispatch.app', app])
         embedded = app / 'Contents/MacOS/dispatch'
+        # Tauri replaces the linker's ad-hoc signature. Use the just-built CLI as
+        # the canonical input before our own inside-out Developer ID signing.
+        runner.run(['ditto', ROOT / 'target/release/dispatch', embedded])
         require(embedded.read_bytes() == (ROOT / 'target/release/dispatch').read_bytes(), 'Bundled CLI does not match this build')
         for item in [embedded, app]:
             runner.run(['codesign', '--force', '--options', 'runtime', '--timestamp', '--sign', identity, item])
