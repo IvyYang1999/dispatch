@@ -43,6 +43,13 @@ pub fn decide(s: &Session, hook_installed: bool) -> Reach {
                     Reach { level: Level::None, text: t("reach.noinbox_none").into(), fix: Some("hook".into()) }
                 };
             };
+            if !claude::inbox_supported() {
+                return if hook_installed {
+                    Reach { level: Level::Later, text: t("reach.nosocket_later").into(), fix: None }
+                } else {
+                    Reach { level: Level::None, text: t("reach.nosocket_none").into(), fix: Some("hook".into()) }
+                };
+            }
             match claude::gate(&s.id, inbox.cwd.as_deref()) {
                 Gate::Accept => Reach {
                     level: Level::Now,

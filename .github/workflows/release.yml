@@ -1,0 +1,71 @@
+# Linux and Windows bundles for a release. The macOS build stays on a Mac (scripts/release.sh),
+# where the Developer ID, notarization and the updater key are. These bundles are unsigned and
+# carry no updater artifacts; they are attached to the GitHub release of the tag.
+name: Release bundles (Linux, Windows)
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach the bundles to (for example v0.1.4)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            label: linux-x86_64
+            bundles: deb,rpm,appimage
+            cli: dispatch
+          - os: windows-latest
+            label: windows-x86_64
+            bundles: msi,nsis
+            cli: dispatch.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Linux libraries Tauri needs
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+      - name: Command line, placed as the app's sidecar
+        run: node scripts/sidecar.mjs
+      - name: App bundles
+        working-directory: apps/desktop
+        run: npm run tauri build -- --bundles ${{ matrix.bundles }} --config src-tauri/tauri.ci.conf.json
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p out
+          cp target/release/${{ matrix.cli }} "out/dispatch-${{ matrix.label }}${{ runner.os == 'Windows' && '.exe' || '' }}"
+          find target/release/bundle -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.msi' -o -name '*-setup.exe' \) -exec cp {} out/ \;
+          ls -la out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dispatch-${{ matrix.label }}
+          path: out/*
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: out/*

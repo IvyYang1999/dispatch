@@ -195,7 +195,7 @@ fn run() -> Result<i32> {
             let home = model::home_dir();
             let bin_dir = home.join(".dispatch").join("bin");
             std::fs::create_dir_all(&bin_dir)?;
-            let target = bin_dir.join("dispatch");
+            let target = bin_dir.join(if cfg!(windows) { "dispatch.exe" } else { "dispatch" });
             let me = std::env::current_exe()?;
             if me != target {
                 let tmp = bin_dir.join(".dispatch.tmp");

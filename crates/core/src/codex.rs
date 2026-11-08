@@ -13,26 +13,54 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::{mpsc, Mutex};
+#[cfg(unix)]
 use tungstenite::{Message, WebSocket};
 use std::time::{Duration, Instant};
 
 /// Finder-launched apps do not inherit the terminal's PATH. Prefer PATH, then standard
 /// CLI locations and the installed Codex desktop bundles; use the same executable everywhere.
+/// A file this user can run: on Unix an executable bit, on Windows any file (`.exe`, `.cmd`).
+pub(crate) fn is_executable(p: &Path) -> bool {
+    let Ok(m) = std::fs::metadata(p) else { return false };
+    if !m.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        m.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// `name` as it would be installed on this system: `codex` on Unix, `codex.exe` / `codex.cmd` on Windows too.
+pub(crate) fn command_names(name: &str) -> Vec<String> {
+    if cfg!(windows) {
+        vec![format!("{name}.exe"), format!("{name}.cmd"), name.to_string()]
+    } else {
+        vec![name.to_string()]
+    }
+}
+
 pub fn executable() -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
+    let names = command_names("codex");
     let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).map(|dir| dir.join("codex")).collect()).unwrap_or_default();
+        .map(|paths| std::env::split_paths(&paths).flat_map(|dir| names.iter().map(move |n| dir.join(n))).collect()).unwrap_or_default();
     candidates.extend([home_dir().join(".local/bin/codex"), PathBuf::from("/opt/homebrew/bin/codex"), PathBuf::from("/usr/local/bin/codex")]);
     #[cfg(target_os = "macos")]
     for root in [PathBuf::from("/Applications"), home_dir().join("Applications")] {
         candidates.push(root.join("Codex.app/Contents/Resources/codex"));
         candidates.push(root.join("ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"));
     }
-    candidates.into_iter().find(|p| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false))
+    candidates.into_iter().find(|p| is_executable(p))
 }
 
 pub fn command() -> Command {
@@ -46,6 +74,7 @@ pub fn daemon_socket() -> PathBuf {
 /// A JSON-RPC session with an app-server: `shared` when it is the daemon every Codex client
 /// on this machine can share, false when it is a private server we spawned (reads only).
 enum Transport {
+    #[cfg(unix)]
     Shared(WebSocket<UnixStream>),
     Private { child: Child, stdin: ChildStdin, incoming: mpsc::Receiver<String> },
 }
@@ -57,6 +86,7 @@ pub struct Server {
 }
 
 impl Drop for Server {
+    #[allow(irrefutable_let_patterns)]
     fn drop(&mut self) {
         if let Transport::Private { child, .. } = &mut self.transport {
             let _ = child.kill();
@@ -73,6 +103,12 @@ impl Server {
         Ok(s)
     }
 
+    #[cfg(windows)]
+    fn shared() -> Result<Server> {
+        Err(anyhow!("the Codex daemon socket is not supported on Windows"))
+    }
+
+    #[cfg(unix)]
     fn shared() -> Result<Server> {
         let stream = UnixStream::connect(daemon_socket()).context("connect Codex daemon")?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -106,8 +142,10 @@ impl Server {
         Self::initialize(Transport::Private { child, stdin, incoming }, false)
     }
 
+    #[cfg_attr(windows, allow(unused_variables))]
     fn write(&mut self, value: Value, timeout: Duration) -> Result<()> {
         match &mut self.transport {
+            #[cfg(unix)]
             Transport::Shared(ws) => {
                 ws.get_ref().set_write_timeout(Some(timeout))?;
                 ws.send(Message::Text(value.to_string().into()))?;
@@ -129,6 +167,7 @@ impl Server {
             let remaining = deadline.checked_duration_since(Instant::now())
                 .filter(|d| !d.is_zero()).ok_or_else(|| anyhow!("{method}: no answer within {timeout:?}"))?;
             let text = match &mut self.transport {
+                #[cfg(unix)]
                 Transport::Shared(ws) => {
                     ws.get_ref().set_read_timeout(Some(remaining))?;
                     match ws.read()? {
@@ -340,6 +379,7 @@ fn receipt_text(text: &str, marker: &str) -> Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     #[test]
     fn websocket_handshake_and_call_deadline() {
         let (client, server) = UnixStream::pair().unwrap();

@@ -13,7 +13,10 @@ use anyhow::{Context, Result};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom};
+#[cfg(unix)]
+use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -41,10 +44,26 @@ pub fn claude_home() -> PathBuf {
     home_dir().join(".claude")
 }
 
+#[cfg(unix)]
 fn alive(pid: i32) -> bool {
     // kill(pid, 0) says whether the process exists; EPERM means it does, under another user.
     let r = unsafe { libc::kill(pid, 0) };
     r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(windows)]
+fn alive(pid: i32) -> bool {
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
+        .unwrap_or(false)
+}
+
+/// Whether this system can write to a session's inbox socket (Unix sockets). Elsewhere the
+/// store and the hook carry every message.
+pub fn inbox_supported() -> bool {
+    cfg!(unix)
 }
 
 fn read_json(path: &Path, max: u64) -> Option<Value> {
@@ -81,10 +100,13 @@ pub fn live_records() -> Vec<LiveInbox> {
         if !sp.is_absolute() {
             continue;
         }
-        let Ok(md) = fs::symlink_metadata(&sp) else { continue };
-        use std::os::unix::fs::FileTypeExt;
-        if !md.file_type().is_socket() {
-            continue;
+        #[cfg(unix)]
+        {
+            let Ok(md) = fs::symlink_metadata(&sp) else { continue };
+            use std::os::unix::fs::FileTypeExt;
+            if !md.file_type().is_socket() {
+                continue;
+            }
         }
         let inbox = LiveInbox {
             session_id: sid.to_lowercase(),
@@ -122,15 +144,36 @@ pub fn session_for_pid(pid: i32) -> Option<LiveInbox> {
     live_records().into_iter().find(|r| r.pid == pid)
 }
 
+#[cfg(unix)]
 fn parent_of(pid: i32) -> Option<i32> {
     let out = std::process::Command::new("ps").args(["-o", "ppid=", "-p", &pid.to_string()]).output().ok()?;
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
+#[cfg(windows)]
+fn parent_of(pid: i32) -> Option<i32> {
+    let out = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &format!("(Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').ParentProcessId")])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+fn my_parent() -> Option<i32> {
+    #[cfg(unix)]
+    {
+        Some(std::os::unix::process::parent_id() as i32)
+    }
+    #[cfg(windows)]
+    {
+        parent_of(std::process::id() as i32)
+    }
+}
+
 /// The Claude Code session this process was started by (an MCP server or a hook is its
 /// child, sometimes through a shell): walk up the parents until one has a live record.
 pub fn caller_session() -> Option<LiveInbox> {
-    let mut pid = std::os::unix::process::parent_id() as i32;
+    let mut pid = my_parent()?;
     for _ in 0..6 {
         if pid <= 1 {
             return None;
@@ -191,6 +234,12 @@ pub enum SendOutcome {
     Unreachable,
 }
 
+#[cfg(windows)]
+pub fn send(_inbox: &LiveInbox, _text: &str, _msg_id: &str, _timeout: Duration) -> SendOutcome {
+    SendOutcome::Unreachable
+}
+
+#[cfg(unix)]
 pub fn send(inbox: &LiveInbox, text: &str, msg_id: &str, timeout: Duration) -> SendOutcome {
     let Ok(mut s) = UnixStream::connect(&inbox.socket) else { return SendOutcome::Unreachable };
     let _ = s.set_write_timeout(Some(timeout));

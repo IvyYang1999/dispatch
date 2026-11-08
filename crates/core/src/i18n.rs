@@ -117,6 +117,8 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "reach.grok_nocli" => ("收不到：没有 gbot 命令行（npm i -g grok-bot-cli）", "Unreachable: no gbot command (npm i -g grok-bot-cli)"),
         "reach.grok_offline" => ("待接通：Grok 网关连不上：{e}", "Waiting: the Grok gateway did not answer: {e}"),
         "reach.grok_now" => ("立刻送到：当作你的直接消息，可能打断它当前这一轮", "At once: as a direct message; it may redirect its current turn"),
+        "reach.nosocket_later" => ("这个系统上不能直投，要等它下次说话", "No direct delivery on this system; at its next turn"),
+        "reach.nosocket_none" => ("收不到：这个系统上不能直投，又没装 hook", "Unreachable: no direct delivery on this system, no hook"),
         "reach.human" => ("人不收消息", "People do not take messages"),
 
         // where a copy stands
@@ -180,6 +182,7 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "send.grok_failed" => ("gbot send 失败：{err}；留在信箱", "gbot send failed: {err}; kept in the store"),
         "send.why_noinbox" => ("开着但没有收信口", "running, but without an inbox"),
         "send.why_off" => ("没开着", "not running"),
+        "send.why_nosocket" => ("这个系统上不能直投", "no direct delivery on this system"),
         "send.why_hold" => ("它跳过了权限确认，直投会被扣下", "it bypasses permission checks, so a direct delivery would be held"),
         "send.why_refuse" => ("它拒收其他程序的消息", "it refuses messages from other programs"),
         "send.failed_nohook" => ("没送到：{why}，又没装 hook，没人能递。装上 hook 后它下次说话仍会收到；或 `dispatch retry` 再试", "Not delivered: {why}, and no hook to hand it over. Once the hook is installed it still arrives at its next turn; or `dispatch retry`"),

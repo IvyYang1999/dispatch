@@ -209,8 +209,14 @@ fn deliver_grok(store: &Store, to: &Session, letter: &mut Letter, report: Report
 /// does not; not delivered when there is no hook to fall back on.
 fn deliver_claude(store: &Store, to: &Session, letter: &mut Letter, wait: bool, report: Reporter) -> Result<Report> {
     let hook_on = hook::installed();
-    let Some(inbox) = claude::find_live(&to.id) else {
-        let (why_log, why) = if to.running { ("running without an inbox", t("send.why_noinbox")) } else { ("not running", t("send.why_off")) };
+    let Some(inbox) = claude::find_live(&to.id).filter(|_| claude::inbox_supported()) else {
+        let (why_log, why) = if !claude::inbox_supported() && to.running {
+            ("no inbox sockets on this system", t("send.why_nosocket"))
+        } else if to.running {
+            ("running without an inbox", t("send.why_noinbox"))
+        } else {
+            ("not running", t("send.why_off"))
+        };
         if !hook_on {
             return fail(store, letter, "inbox", why_log, t("send.failed_nohook").replace("{why}", why), report);
         }

@@ -178,19 +178,25 @@ async fn open_session(id: String) -> Result<Value, String> {
     .await
 }
 
+/// Where `dispatch install` puts the command line.
+fn installed_cli() -> PathBuf {
+    model::home_dir().join(".dispatch").join("bin").join(if cfg!(windows) { "dispatch.exe" } else { "dispatch" })
+}
+
 /// The `dispatch` command line: the sidecar inside this app bundle, else an installed copy.
 fn cli_path() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            for name in ["dispatch", "dispatch-aarch64-apple-darwin", "dispatch-x86_64-apple-darwin"] {
-                let p = dir.join(name);
+            let ext = if cfg!(windows) { ".exe" } else { "" };
+            for name in ["dispatch", "dispatch-aarch64-apple-darwin", "dispatch-x86_64-apple-darwin", "dispatch-x86_64-unknown-linux-gnu", "dispatch-aarch64-unknown-linux-gnu", "dispatch-x86_64-pc-windows-msvc", "dispatch-aarch64-pc-windows-msvc"] {
+                let p = dir.join(format!("{name}{ext}"));
                 if p.is_file() {
                     return Some(p);
                 }
             }
         }
     }
-    let installed = model::home_dir().join(".dispatch").join("bin").join("dispatch");
+    let installed = installed_cli();
     installed.is_file().then_some(installed)
 }
 
@@ -198,7 +204,7 @@ fn cli_path() -> Option<PathBuf> {
 async fn setup_status() -> Result<Value, String> {
     blocking(|| {
         let home = model::home_dir();
-        let bin = home.join(".dispatch").join("bin").join("dispatch");
+        let bin = installed_cli();
         let plugins = home.join(".claude").join("plugins");
         let plugin_installed = std::fs::read_to_string(plugins.join("installed_plugins.json")).map(|t| t.contains("dispatch@")).unwrap_or(false)
             || std::fs::read_dir(&plugins).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().contains("dispatch"))).unwrap_or(false);
@@ -246,7 +252,7 @@ async fn install_cli() -> Result<String, String> {
 #[tauri::command]
 async fn install_hook() -> Result<String, String> {
     blocking(|| {
-        let bin = model::home_dir().join(".dispatch").join("bin").join("dispatch");
+        let bin = installed_cli();
         if !bin.is_file() {
             return Err(t("app.cli_missing").into());
         }

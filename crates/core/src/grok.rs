@@ -27,11 +27,10 @@ pub struct Bot {
 /// The `gbot` command: `DISPATCH_GBOT` (tests and odd installs), then PATH and the usual npm
 /// global folders, since the app is launched by Finder without the terminal's PATH.
 pub fn executable() -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
     if let Ok(p) = std::env::var("DISPATCH_GBOT") {
         return Some(PathBuf::from(p));
     }
-    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH").map(|paths| std::env::split_paths(&paths).map(|dir| dir.join("gbot")).collect()).unwrap_or_default();
+    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH").map(|paths| std::env::split_paths(&paths).flat_map(|dir| crate::codex::command_names("gbot").into_iter().map(move |n| dir.join(n))).collect()).unwrap_or_default();
     let home = home_dir();
     candidates.extend([
         home.join(".local/bin/gbot"),
@@ -41,7 +40,7 @@ pub fn executable() -> Option<PathBuf> {
         PathBuf::from("/opt/homebrew/bin/gbot"),
         PathBuf::from("/usr/local/bin/gbot"),
     ]);
-    candidates.into_iter().find(|p| std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false))
+    candidates.into_iter().find(|p| crate::codex::is_executable(p))
 }
 
 /// The desktop app, in /Applications or ~/Applications.
