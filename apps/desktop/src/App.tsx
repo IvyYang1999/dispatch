@@ -56,7 +56,7 @@ function useOpen() {
     try {
       const r: OpenResult = await api.openSession(id)
       if (r.kind === 'command') setNotice(`${r.note ?? ''}: ${r.command}`)
-      else if (r.kind === 'app' && r.note) setNotice(r.note)
+      else if ((r.kind === 'app' || r.kind === 'note') && r.note) setNotice(r.note)
       else setNotice(null)
     } catch (e) {
       setNotice(String(e))
@@ -276,6 +276,7 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
 // ---- Compose ----
 
 const URGENCIES = ['normal', 'urgent'] as const
+const DEADLINES = ['default', '30m', '2h', '1d'] as const
 
 function reasonText(c: Session): string {
   if (c.reason === 'name') return t('reason.name')
@@ -291,6 +292,7 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
   const [to, setTo] = useState<Session[]>([])
   const [text, setText] = useState('')
   const [urgency, setUrgency] = useState<(typeof URGENCIES)[number]>('normal')
+  const [deadline, setDeadline] = useState<(typeof DEADLINES)[number]>('default')
   const [result, setResult] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -314,7 +316,7 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
     if (to.length === 0 || !text.trim()) return
     setBusy(true)
     try {
-      const r = await api.send(to.map((x) => x.id), text, urgency)
+      const r = await api.send(to.map((x) => x.id), text, urgency, deadline === 'default' ? undefined : deadline)
       setResult(r.recipients.map((x) => `${x.to.name}: ${x.detail}`).join('\n'))
       setText('')
       setTimeout(onSent, 1200)
@@ -366,6 +368,12 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
           <span className="seg">
             {URGENCIES.map((u) => (
               <button key={u} data-active={urgency === u || undefined} onClick={() => setUrgency(u)}>{t(`urgency.${u}` as const)}</button>
+            ))}
+          </span>
+          <span className="label">{t('compose.deadline')}</span>
+          <span className="seg" title={t('compose.deadlineHint')}>
+            {DEADLINES.map((d) => (
+              <button key={d} data-active={deadline === d || undefined} onClick={() => setDeadline(d)}>{t(`deadline.${d}` as const)}</button>
             ))}
           </span>
         </div>
@@ -470,6 +478,22 @@ function Settings() {
             <span className="seg">
               {LANGS.map((l) => (
                 <button key={l.key} data-active={lang === l.key || undefined} onClick={() => setLang(l.key)}>{l.label}</button>
+              ))}
+            </span>
+          </div>
+        </div>
+        <div className="section-head">
+          <div className="section-head__title">{t('settings.theme')}</div>
+        </div>
+        <div className="card">
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">{t(`theme.${st?.theme ?? 'system'}` as const)}</span>
+              <span className="host__found">{t('settings.themeSub')}</span>
+            </div>
+            <span className="seg">
+              {(['system', 'light', 'dark'] as const).map((th) => (
+                <button key={th} data-active={(st?.theme ?? 'system') === th || undefined} onClick={() => run('theme', async () => { await api.setTheme(th) })}>{t(`theme.${th}` as const)}</button>
               ))}
             </span>
           </div>

@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, Theme};
 use tauri_plugin_notification::NotificationExt;
 
 const TRAY_ID: &str = "main";
@@ -71,9 +71,9 @@ async fn dispatch_status(id: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn send(app: AppHandle, to: Vec<String>, text: String, urgency: Option<String>, allow_resume: Option<bool>) -> Result<Value, String> {
+async fn send(app: AppHandle, to: Vec<String>, text: String, urgency: Option<String>, allow_resume: Option<bool>, deadline: Option<String>) -> Result<Value, String> {
     let urgency = urgency.unwrap_or_else(|| "normal".into());
-    let r = blocking(move || ops::send_many_opts(&Store::open(), &to, &text, &urgency, Some(("app".into(), t("me").into())), allow_resume.unwrap_or(false), None).map_err(err)).await;
+    let r = blocking(move || ops::send_many_opts(&Store::open(), &to, &text, &urgency, Some(("app".into(), t("me").into())), allow_resume.unwrap_or(false), deadline.as_deref()).map_err(err)).await;
     forget_feed(&app);
     r
 }
@@ -95,6 +95,33 @@ async fn set_lang(app: AppHandle, lang: String) -> Result<String, String> {
     // Stage texts in the cached feed are in the old language; the tray follows on its next tick.
     forget_feed(&app);
     r
+}
+
+/// `system`, `light` or `dark`, from the settings file.
+fn theme_setting() -> String {
+    settings::get("theme").and_then(|v| v.as_str().map(str::to_string)).unwrap_or_else(|| "system".into())
+}
+
+/// Put the saved appearance on the window; the page's dark styles follow `prefers-color-scheme`.
+fn apply_theme(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let theme = match theme_setting().as_str() {
+            "dark" => Some(Theme::Dark),
+            "light" => Some(Theme::Light),
+            _ => None,
+        };
+        let _ = w.set_theme(theme);
+    }
+}
+
+#[tauri::command]
+async fn set_theme(app: AppHandle, theme: String) -> Result<String, String> {
+    if !matches!(theme.as_str(), "system" | "light" | "dark") {
+        return Err(format!("unknown theme {theme}"));
+    }
+    settings::set("theme", Value::String(theme.clone())).map_err(|e| e.to_string())?;
+    apply_theme(&app);
+    Ok(theme)
 }
 
 /// System notifications on or off (replies and failed deliveries).
@@ -162,16 +189,48 @@ fn open_app(name: &str) -> Result<(), String> {
     }
 }
 
-/// Open the session: a claude:// or codex:// link goes to the system; a Grok bot brings its
-/// app forward; a terminal session comes back as a command for the user to run.
+/// A closed terminal session: open Terminal in its folder and resume it there (macOS).
+#[cfg(target_os = "macos")]
+fn open_in_terminal(command: &str, cwd: Option<&str>) -> Result<(), String> {
+    let sh_quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
+    let shell = match cwd {
+        Some(d) if !d.is_empty() => format!("cd {} && {}", sh_quote(d), command),
+        _ => command.to_string(),
+    };
+    let as_quote = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!("tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell", as_quote(&shell));
+    let status = std::process::Command::new("osascript").args(["-e", &script]).status().map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(t("app.open_failed_status").replace("{url}", "Terminal").replace("{s}", &status.to_string()))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn open_in_terminal(_command: &str, _cwd: Option<&str>) -> Result<(), String> {
+    Err("no terminal launcher on this system".into())
+}
+
+/// Open the session: a claude:// or codex:// link goes to the system; a Grok bot brings its app
+/// forward; a closed terminal session is resumed in a new Terminal window; a running terminal
+/// session comes back as a note (Dispatch cannot tell which window it is in).
 #[tauri::command]
 async fn open_session(id: String) -> Result<Value, String> {
     blocking(move || {
-        let v = ops::open_session(&id).map_err(err)?;
+        let mut v = ops::open_session(&id).map_err(err)?;
         if v["kind"] == "url" {
             open_url(v["url"].as_str().unwrap_or(""))?;
         } else if v["kind"] == "app" {
             open_app(v["app"].as_str().unwrap_or(""))?;
+        } else if v["kind"] == "command" {
+            if v["running"] == true {
+                v["kind"] = json!("note");
+                v["note"] = json!(t("open.terminal_running"));
+            } else if open_in_terminal(v["command"].as_str().unwrap_or(""), v["cwd"].as_str()).is_ok() {
+                v["kind"] = json!("note");
+                v["note"] = json!(t("open.terminal_opened"));
+            }
         }
         Ok(v)
     })
@@ -225,6 +284,7 @@ async fn setup_status() -> Result<Value, String> {
             "store_root": Store::open().root().to_string_lossy(),
             "claude_plugin": plugin_installed,
             "notify": settings::notify_enabled(),
+            "theme": theme_setting(),
             "version": env!("CARGO_PKG_VERSION"),
         }))
     })
@@ -420,8 +480,9 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Cache::default())
-        .invoke_handler(tauri::generate_handler![sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, retry, cancel])
+        .invoke_handler(tauri::generate_handler![sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel])
         .setup(|app| {
+            apply_theme(app.handle());
             build_tray(app.handle())?;
             start_watcher(app.handle().clone());
             Ok(())

@@ -77,7 +77,8 @@ pub fn clean_title(s: &str) -> Option<String> {
 fn parse_head(text: &str) -> (Option<String>, Option<String>) {
     let cwd = Regex::new(r#""cwd":"((?:[^"\\]|\\.)*)""#).ok().and_then(|re| re.captures(text).and_then(|c| unescape(&c[1]).or_else(|| Some(c[1].to_string()))));
     let mut title = None;
-    if let Ok(re) = Regex::new(r#""(?:text|content)":"((?:[^"\\]|\\.){2,6000})""#) {
+    // No closing quote required: a first message longer than the cap still yields its opening words.
+    if let Ok(re) = Regex::new(r#""(?:text|content)":"((?:[^"\\]|\\.){2,400})"#) {
         for c in re.captures_iter(text) {
             if let Some(raw) = unescape(&c[1]) {
                 if let Some(t) = clean_title(&raw) {

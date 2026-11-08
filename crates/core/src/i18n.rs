@@ -209,6 +209,8 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "open.terminal_note" => ("终端会话：在它的目录里运行这条命令就回到它", "A terminal session: run this command in its folder to get back to it"),
         "open.unknown" => ("这种会话还不知道怎么打开", "Dispatch does not know how to open this kind of session yet"),
         "open.grok_note" => ("已打开 Grok Bot，在左侧选「{name}」", "Grok Bot is open; pick “{name}” in its sidebar"),
+        "open.terminal_opened" => ("已在「终端」里恢复这个会话", "Resumed in Terminal"),
+        "open.terminal_running" => ("它正在某个终端窗口里运行；切到那个窗口即可（Dispatch 分不出是哪个）", "It is running in a terminal window; switch to that window (Dispatch cannot tell which)"),
         "cli.grok_app" => ("Grok Bot App：{v}", "Grok Bot app: {v}"),
         "cli.grok_login" => ("登录状态：{v}", "signed in: {v}"),
         "cli.grok_cli" => ("gbot 命令：{v}", "gbot command: {v}"),

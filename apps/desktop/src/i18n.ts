@@ -52,6 +52,12 @@ const zh = {
   'compose.urgency': '紧急度',
   'urgency.normal': '普通',
   'urgency.urgent': '紧急',
+  'compose.deadline': '截止',
+  'deadline.default': '默认',
+  'deadline.30m': '30 分钟',
+  'deadline.2h': '2 小时',
+  'deadline.1d': '1 天',
+  'compose.deadlineHint': '到点还没送到就算没送到。默认紧急 1 小时、普通 24 小时。',
   'compose.send': '发送',
   'settings.agents': '这台 Mac 上的 Agent',
   'settings.agentsSub': '一键安装：把命令行放到 ~/.dispatch/bin，装 Claude Code 的 hook，把 MCP 注册给 Codex。',
@@ -93,6 +99,11 @@ const zh = {
   'settings.notifySub': '只在两种情况下通知：收到回信，或者没送到。菜单栏图标常驻，关掉窗口 App 还在。',
   'settings.notifyOn': '开',
   'settings.notifyOff': '关',
+  'settings.theme': '外观',
+  'settings.themeSub': '跟随系统，或固定浅色 / 深色',
+  'theme.system': '跟随系统',
+  'theme.light': '浅色',
+  'theme.dark': '深色',
 }
 
 const en: Record<Key, string> = {
@@ -142,6 +153,12 @@ const en: Record<Key, string> = {
   'compose.urgency': 'Urgency',
   'urgency.normal': 'Normal',
   'urgency.urgent': 'Urgent',
+  'compose.deadline': 'Deadline',
+  'deadline.default': 'Default',
+  'deadline.30m': '30 min',
+  'deadline.2h': '2 h',
+  'deadline.1d': '1 day',
+  'compose.deadlineHint': 'Not delivered by then counts as failed. Default: 1 h urgent, 24 h normal.',
   'compose.send': 'Send',
   'settings.agents': 'Agents on this Mac',
   'settings.agentsSub': 'One click: puts the command line at ~/.dispatch/bin, installs the Claude Code hook and registers the MCP server with Codex.',
@@ -183,6 +200,11 @@ const en: Record<Key, string> = {
   'settings.notifySub': 'Only two things notify: a reply came in, or a delivery failed. The menu bar item stays; closing the window keeps the app running.',
   'settings.notifyOn': 'On',
   'settings.notifyOff': 'Off',
+  'settings.theme': 'Appearance',
+  'settings.themeSub': 'Follow the system, or fix light or dark',
+  'theme.system': 'System',
+  'theme.light': 'Light',
+  'theme.dark': 'Dark',
 }
 
 export type Key = keyof typeof zh

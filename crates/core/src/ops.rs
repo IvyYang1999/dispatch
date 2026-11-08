@@ -347,7 +347,7 @@ pub fn open_session(session_id: &str) -> Result<Value> {
             if let Some(host) = s.host_session_id.as_deref().filter(|_| s.desktop) {
                 return Ok(json!({ "kind": "url", "url": format!("claude://code/continue?session={host}"), "exact": true }));
             }
-            Ok(json!({ "kind": "command", "command": format!("claude --resume {}", s.id), "cwd": s.cwd, "exact": false, "note": t("open.terminal_note") }))
+            Ok(json!({ "kind": "command", "command": format!("claude --resume {}", s.id), "cwd": s.cwd, "running": s.running, "exact": false, "note": t("open.terminal_note") }))
         }
         crate::model::Harness::Codex => Ok(json!({ "kind": "url", "url": format!("codex://threads/{}", s.id), "exact": true })),
         crate::model::Harness::Grok => Ok(json!({ "kind": "app", "app": "Grok Bot", "exact": false, "note": t("open.grok_note").replace("{name}", &s.display_name()) })),

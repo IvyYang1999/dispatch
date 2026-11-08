@@ -2,7 +2,7 @@
 //! command line and the hook read it, so one switch covers all three.
 //!
 //! Keys: `lang` (`en` / `zh`), `notify` (system notifications for replies and failed
-//! deliveries; default on).
+//! deliveries; default on), `theme` (`system` / `light` / `dark`; the app's appearance).
 
 use serde_json::{Map, Value};
 use std::path::PathBuf;
