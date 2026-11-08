@@ -113,6 +113,18 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
     [items],
   )
   const current = shown.find((d) => d.dispatch_id === selected) ?? shown[0] ?? null
+  const act = async (f: () => Promise<{ text: string }>) => {
+    try {
+      const r = await f()
+      setErr(null)
+      if (r.text) {
+        /* the feed shows the outcome */
+      }
+    } catch (e) {
+      setErr(String(e))
+    }
+    load()
+  }
 
   return (
     <>
@@ -174,6 +186,12 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                     <span className="rcpt__name">{r.to_name}</span>
                     <Badge kind={r.kind} />
                     <span className="rcpt__time">{(r.reply?.created ?? r.created).slice(11)}</span>
+                    {(r.kind === 'queued' || r.kind === 'failed') && (
+                      <span className="rcpt__acts">
+                        <button className="btn btn--ghost btn--small" onClick={() => act(() => api.retry(r.letter_id))}>{t('action.retry')}</button>
+                        <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.cancel')}</button>
+                      </span>
+                    )}
                     <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(r.to)}>↗</button>
                   </div>
                   {r.reply ? <p className="rcpt__reply">{r.reply.body}</p> : <p className="rcpt__note">{r.stage}</p>}

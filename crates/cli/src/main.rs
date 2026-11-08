@@ -37,9 +37,29 @@ enum Cmd {
         /// Codex only: let `codex queue --resume` load a thread the daemon has not loaded
         #[arg(long)]
         allow_resume: bool,
+        /// How long it may wait before it counts as not delivered: 30m, 2h, 1d (default: 1h urgent, 24h normal)
+        #[arg(long)]
+        deadline: Option<String>,
         #[arg(long)]
         json: bool,
         text: Vec<String>,
+    },
+    /// Try a queued or failed message again now (by letter id or dispatch id)
+    Retry {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Withdraw a queued or failed message: nothing delivers it any more
+    Cancel {
+        id: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// The postman's round: expire overdue messages, retry queued ones whose route is open now
+    Sweep {
+        #[arg(long)]
+        json: bool,
     },
     /// Reply to a message (by its id) back to its sender
     Reply {
@@ -226,18 +246,19 @@ fn run() -> Result<i32> {
                 }
             }
         }
-        Cmd::Send { to, from, urgency, no_wait, allow_resume, json, text } => {
+        Cmd::Send { to, from, urgency, no_wait, allow_resume, deadline, json, text } => {
             if to.is_empty() {
                 return Err(anyhow!("{}", t("cli.to_required")));
             }
             let body = read_text(text)?;
+            let deadline = dispatch_core::ops::parse_deadline(deadline.as_deref())?;
             let (from_id, from_name) = sender_identity(from);
             let dispatch_id = uuid_v4();
             let urgency = store::urgency_stored(&urgency).to_string();
             let mut reports = vec![];
             for who in &to {
                 let target = send::resolve(who)?;
-                let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume })?;
+                let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume, deadline })?;
                 if !json {
                     println!("→ {} ({}): {} [{}]", target.display_name(), target.short_id, rep.detail, model::short_id(&rep.letter_id));
                 }
@@ -254,7 +275,7 @@ fn run() -> Result<i32> {
                 return Err(anyhow!("{}", t("cli.not_a_session").replace("{from}", &orig.from)));
             }
             let target = send::resolve(&orig.from)?;
-            let rep = send::send(&st, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: body, urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false })?;
+            let rep = send::send(&st, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: body, urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false, deadline: None })?;
             st.set_status(&mut orig, store::REPLIED)?;
             st.append_run(&orig.id, "reply", "sent", &rep.letter_id)?;
             if json {
@@ -273,6 +294,36 @@ fn run() -> Result<i32> {
             } else {
                 for l in &letters {
                     println!("{}\n    {}", t("cli.inbox_line").replace("{id}", &model::short_id(&l.id)).replace("{status}", status_label(&l.status)).replace("{from}", &l.from_name).replace("{created}", &l.created), first_line(&l.body));
+                }
+            }
+        }
+        Cmd::Retry { id, json } => {
+            let v = dispatch_core::ops::retry(&st, &id)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                for c in v["copies"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                    println!("↻ {} ({}): {}", c["to_name"].as_str().unwrap_or(""), model::short_id(c["to"].as_str().unwrap_or("")), c["detail"].as_str().unwrap_or(""));
+                }
+            }
+        }
+        Cmd::Cancel { id, json } => {
+            let v = dispatch_core::ops::cancel(&st, &id, "cli")?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                println!("{}", v["text"].as_str().unwrap_or(""));
+            }
+        }
+        Cmd::Sweep { json } => {
+            let v = dispatch_core::ops::sweep(&st)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                let retried = v["retried"].as_array().map(|a| a.len()).unwrap_or(0);
+                println!("{}", t("cli.sweep").replace("{failed}", &v["failed"].to_string()).replace("{retried}", &retried.to_string()));
+                for c in v["retried"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                    println!("{}", t("cli.sweep_retry").replace("{to}", c["to_name"].as_str().unwrap_or("")).replace("{detail}", c["detail"].as_str().unwrap_or("")));
                 }
             }
         }

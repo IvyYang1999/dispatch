@@ -1,15 +1,21 @@
 //! The delivery ladder: store the message, then get it in the fastest way that works.
 //!
-//! 1. Write the recipient's copy to the store (so nothing is ever lost).
+//! 1. Write the recipient's copy to the store (so nothing is ever lost), with a deadline.
 //! 2. If the recipient is a running Claude Code session with an inbox that would
 //!    take it, write it to the socket and wait for the transcript to show it queued.
-//! 3. Otherwise leave it unread: the hook hands it over the next time the session speaks.
+//!    Codex threads loaded on the daemon get `codex queue`; Grok bots get a direct message.
+//! 3. Otherwise leave it queued: the hook hands it over the next time the session speaks,
+//!    or the sweep retries it when its route opens.
+//! 4. When nobody could ever deliver it as things stand (no hook and the session is closed,
+//!    no codex command, no Grok Bot app), it is marked not delivered right away, with the fix.
+//!    Past its deadline a queued copy is marked not delivered too (`ops::reconcile`).
 
 use crate::claude::{self, Gate, SendOutcome};
 use crate::discover;
+use crate::hook;
 use crate::i18n::t;
-use crate::model::{is_uuid, Session};
-use crate::store::{self, Letter, Store, DELIVERED_INBOX, UNREAD};
+use crate::model::{is_uuid, Harness, Session};
+use crate::store::{self, Letter, Store, DELIVERED_INBOX, FAILED, UNREAD};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -27,6 +33,8 @@ pub struct Request {
     /// Codex only: let `codex queue --resume` load a thread the daemon has not loaded. Off by
     /// default, because it may start a second instance of a thread that is open elsewhere.
     pub allow_resume: bool,
+    /// How long the copy may wait before it counts as not delivered; the urgency's default when None.
+    pub deadline: Option<chrono::Duration>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,7 +42,7 @@ pub struct Report {
     pub letter_id: String,
     pub dispatch_id: String,
     pub path: String,
-    /// `inbox` (written to the socket and queued), `stored` (waiting for the hook).
+    /// `inbox` (delivered), `stored` (queued, waiting), `failed` (marked not delivered, with the fix in `detail`).
     pub route: String,
     pub detail: String,
 }
@@ -51,20 +59,7 @@ pub fn resolve(query: &str) -> Result<Session> {
         if let Some(s) = all.iter().find(|s| s.id.eq_ignore_ascii_case(q)) {
             return Ok(s.clone());
         }
-        return Ok(Session {
-            harness: crate::model::Harness::Claude,
-            id: q.to_lowercase(),
-            short_id: crate::model::short_id(q),
-            name: None,
-            cwd: None,
-            title: None,
-            last_active: 0,
-            running: claude::is_running(q),
-            desktop: false,
-            host_session_id: None,
-            status: None,
-            transcript: None,
-        });
+        return Ok(bare_session(Harness::Claude, q, None));
     }
     let ql = q.to_lowercase();
     let mut hits: Vec<&Session> = all.iter().filter(|s| s.id.to_lowercase().starts_with(&ql)).collect();
@@ -84,6 +79,50 @@ pub fn resolve(query: &str) -> Result<Session> {
     }
 }
 
+/// A session discovery did not list, known only by id (and name, from a stored copy).
+fn bare_session(harness: Harness, id: &str, name: Option<String>) -> Session {
+    Session {
+        harness,
+        id: id.to_lowercase(),
+        short_id: crate::model::short_id(id),
+        name,
+        cwd: None,
+        title: None,
+        last_active: 0,
+        running: harness == Harness::Claude && claude::is_running(id),
+        desktop: false,
+        host_session_id: None,
+        status: None,
+        transcript: None,
+    }
+}
+
+fn harness_code(h: Harness) -> &'static str {
+    match h {
+        Harness::Claude => "claude",
+        Harness::Codex => "codex",
+        Harness::Grok => "grok",
+        Harness::Human => "human",
+    }
+}
+
+fn harness_of(code: Option<&str>) -> Harness {
+    match code {
+        Some("codex") => Harness::Codex,
+        Some("grok") => Harness::Grok,
+        Some("human") => Harness::Human,
+        _ => Harness::Claude,
+    }
+}
+
+/// The recipient of a stored copy: the live session when discovery lists it, else what the copy says.
+pub fn target_of(letter: &Letter) -> Session {
+    if let Some(s) = discover::sessions().into_iter().find(|s| s.id.eq_ignore_ascii_case(&letter.to)) {
+        return s;
+    }
+    bare_session(harness_of(letter.to_harness.as_deref()), &letter.to, Some(letter.to_name.clone()))
+}
+
 /// The text the session sees: who sent it, when, the body, and how to answer.
 pub fn envelope(l: &Letter) -> String {
     t("send.envelope")
@@ -94,25 +133,34 @@ pub fn envelope(l: &Letter) -> String {
         .replace("{cmd}", &crate::model::self_cmd())
 }
 
+type Reporter<'a> = &'a dyn Fn(&str, String) -> Report;
+
+/// Mark the copy not delivered: the attempt is logged, then a `reach failed` line with the reason.
+fn fail(store: &Store, letter: &mut Letter, action: &str, why_log: &str, text: String, report: Reporter) -> Result<Report> {
+    store.append_run(&letter.id, action, "skipped", why_log)?;
+    store.set_status(letter, FAILED)?;
+    store.append_run(&letter.id, "reach", "failed", why_log)?;
+    Ok(report("failed", text))
+}
+
 /// The Codex branch: only a thread the shared daemon has loaded gets `codex queue`; anything
-/// else waits as 待接通 unless the caller allowed `--resume`.
-fn send_codex(store: &Store, req: &Request, letter: &mut Letter, report: impl Fn(&str, String) -> Report) -> Result<Report> {
+/// else waits as 待接通 unless the caller allowed `--resume`. No codex command at all: not delivered.
+fn deliver_codex(store: &Store, to: &Session, letter: &mut Letter, allow_resume: bool, report: Reporter) -> Result<Report> {
     let st = crate::codex::state();
     if !st.cli {
-        store.append_run(&letter.id, "codex", "skipped", "codex not installed")?;
-        return Ok(report("stored", t("send.codex_nocli").into()));
+        return fail(store, letter, "codex", "codex not installed", t("send.failed_codex_nocli").into(), report);
     }
     if !st.daemon {
         store.append_run(&letter.id, "codex", "skipped", "no app-server daemon")?;
         return Ok(report("stored", t("send.codex_nodaemon").into()));
     }
-    let loaded = st.loaded.contains(&req.to.id);
-    if !loaded && !req.allow_resume {
+    let loaded = st.loaded.contains(&to.id);
+    if !loaded && !allow_resume {
         store.append_run(&letter.id, "codex", "skipped", "thread not loaded on the daemon; resume not allowed")?;
         return Ok(report("stored", t("send.codex_notloaded").into()));
     }
     let text = envelope(letter);
-    match crate::codex::queue(&req.to.id, &text, !loaded) {
+    match crate::codex::queue(&to.id, &text, !loaded) {
         Ok(out) => {
             store.set_status(letter, store::DELIVERED_CODEX)?;
             store.append_run(&letter.id, "codex", "queued", &format!("{}{}", if out.resumed { "resumed; " } else { "" }, out.detail))?;
@@ -126,8 +174,9 @@ fn send_codex(store: &Store, req: &Request, letter: &mut Letter, report: impl Fn
 }
 
 /// The Grok Bot branch: a direct message through the app's gateway, driven by `gbot`. There is
-/// no hook to fall back on, so anything short of a confirmed send stays in the store as queued.
-fn send_grok(store: &Store, req: &Request, letter: &mut Letter, report: impl Fn(&str, String) -> Report) -> Result<Report> {
+/// no hook to fall back on: missing app, sign-in or gbot means not delivered; a gateway error
+/// keeps it queued for the sweep to retry.
+fn deliver_grok(store: &Store, to: &Session, letter: &mut Letter, report: Reporter) -> Result<Report> {
     let st = crate::grok::state();
     let blocked = if !st.app {
         Some(("no Grok Bot app", t("reach.grok_noapp")))
@@ -139,10 +188,9 @@ fn send_grok(store: &Store, req: &Request, letter: &mut Letter, report: impl Fn(
         None
     };
     if let Some((why, text)) = blocked {
-        store.append_run(&letter.id, "grok", "skipped", why)?;
-        return Ok(report("stored", t("send.grok_blocked").replace("{why}", text)));
+        return fail(store, letter, "grok", why, t("send.failed_grok").replace("{why}", text), report);
     }
-    let target = st.bot(&req.to.id).map(|b| b.name.clone()).unwrap_or_else(|| req.to.display_name());
+    let target = st.bot(&to.id).map(|b| b.name.clone()).unwrap_or_else(|| to.display_name());
     let text = envelope(letter);
     match crate::grok::send(&target, &text) {
         Ok(out) => {
@@ -157,7 +205,74 @@ fn send_grok(store: &Store, req: &Request, letter: &mut Letter, report: impl Fn(
     }
 }
 
+/// The Claude Code branch: the socket when the session takes it; the store and the hook when it
+/// does not; not delivered when there is no hook to fall back on.
+fn deliver_claude(store: &Store, to: &Session, letter: &mut Letter, wait: bool, report: Reporter) -> Result<Report> {
+    let hook_on = hook::installed();
+    let Some(inbox) = claude::find_live(&to.id) else {
+        let (why_log, why) = if to.running { ("running without an inbox", t("send.why_noinbox")) } else { ("not running", t("send.why_off")) };
+        if !hook_on {
+            return fail(store, letter, "inbox", why_log, t("send.failed_nohook").replace("{why}", why), report);
+        }
+        store.append_run(&letter.id, "inbox", "skipped", why_log)?;
+        return Ok(report("stored", t("send.stored_hook").replace("{why}", why)));
+    };
+    match claude::gate(&to.id, inbox.cwd.as_deref()) {
+        Gate::Accept => {}
+        Gate::Hold => {
+            if !hook_on {
+                return fail(store, letter, "inbox", "bypassPermissions would hold it", t("send.failed_nohook").replace("{why}", t("send.why_hold")), report);
+            }
+            store.append_run(&letter.id, "inbox", "skipped", "bypassPermissions would hold it")?;
+            return Ok(report("stored", t("send.hold").into()));
+        }
+        Gate::Refuse => {
+            if !hook_on {
+                return fail(store, letter, "inbox", "crossSessionInbound=refuse", t("send.failed_nohook").replace("{why}", t("send.why_refuse")), report);
+            }
+            store.append_run(&letter.id, "inbox", "skipped", "crossSessionInbound=refuse")?;
+            return Ok(report("stored", t("send.refuse").into()));
+        }
+    }
+    let text = envelope(letter);
+    match claude::send(&inbox, &text, &letter.id, Duration::from_secs(5)) {
+        SendOutcome::Unreachable => {
+            store.append_run(&letter.id, "inbox", "unreachable", &inbox.socket.to_string_lossy())?;
+            Ok(report("stored", t("send.unreachable").into()))
+        }
+        SendOutcome::Sent => {
+            store.append_run(&letter.id, "inbox", "written", &inbox.socket.to_string_lossy())?;
+            if !wait {
+                return Ok(report("inbox", t("send.written_nowait").into()));
+            }
+            if claude::queued(&to.id, inbox.cwd.as_deref(), &letter.id, &text, Duration::from_secs(10)) {
+                store.set_status(letter, DELIVERED_INBOX)?;
+                store.append_run(&letter.id, "inbox", "queued", "transcript shows it")?;
+                Ok(report("inbox", t("send.queued").into()))
+            } else {
+                store.append_run(&letter.id, "inbox", "unconfirmed", "no trace in transcript within 10s")?;
+                Ok(report("stored", t("send.unconfirmed").into()))
+            }
+        }
+    }
+}
+
+/// Try to get a stored copy into its session now. The copy's status and run log record the outcome.
+pub fn deliver(store: &Store, to: &Session, letter: &mut Letter, wait: bool, allow_resume: bool) -> Result<Report> {
+    let (letter_id, dispatch_id, path) = (letter.id.clone(), letter.dispatch_id.clone(), letter.path.clone());
+    let report = move |route: &str, detail: String| Report { letter_id: letter_id.clone(), dispatch_id: dispatch_id.clone(), path: path.clone(), route: route.into(), detail };
+    match to.harness {
+        Harness::Codex => deliver_codex(store, to, letter, allow_resume, &report),
+        Harness::Grok => deliver_grok(store, to, letter, &report),
+        Harness::Human => fail(store, letter, "reach", "a person", t("reach.human").into(), &report),
+        Harness::Claude => deliver_claude(store, to, letter, wait, &report),
+    }
+}
+
+/// Store the copy, then deliver it.
 pub fn send(store: &Store, req: Request) -> Result<Report> {
+    let created = store::now_text();
+    let wait_for = req.deadline.unwrap_or_else(|| store::default_wait(&req.urgency));
     let mut letter = Letter {
         id: uuid::Uuid::new_v4().to_string(),
         dispatch_id: req.dispatch_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
@@ -168,57 +283,27 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
         urgency: req.urgency.clone(),
         wake: true,
         status: UNREAD.into(),
-        created: store::now_text(),
+        deadline: Some(store::deadline_text(&created, wait_for)),
+        to_harness: Some(harness_code(req.to.harness).into()),
+        created,
         body: req.text.clone(),
         path: String::new(),
     };
     let path = store.write_letter(&mut letter)?;
     store.append_run(&letter.id, "store", "written", &path.to_string_lossy())?;
-    let (letter_id, dispatch_id, path_s) = (letter.id.clone(), letter.dispatch_id.clone(), path.to_string_lossy().to_string());
-    let report = move |route: &str, detail: String| Report { letter_id: letter_id.clone(), dispatch_id: dispatch_id.clone(), path: path_s.clone(), route: route.into(), detail };
+    deliver(store, &req.to, &mut letter, req.wait, req.allow_resume)
+}
 
-    if req.to.harness == crate::model::Harness::Codex {
-        return send_codex(store, &req, &mut letter, report);
+/// Deliver a stored, still pending copy again (a retry, or the sweep when its route opened).
+/// A copy marked not delivered goes back to queued first, so the outcome speaks for itself.
+pub fn redeliver(store: &Store, letter: &mut Letter) -> Result<Report> {
+    if !store::pending(&letter.status) {
+        return Err(anyhow!("{}", t("ops.not_pending").replace("{status}", crate::i18n::status_label(&letter.status))));
     }
-    if req.to.harness == crate::model::Harness::Grok {
-        return send_grok(store, &req, &mut letter, report);
+    if letter.status == FAILED {
+        store.set_status(letter, UNREAD)?;
     }
-
-    let Some(inbox) = claude::find_live(&req.to.id) else {
-        let (why_log, why) = if req.to.running { ("running without an inbox", t("send.why_noinbox")) } else { ("not running", t("send.why_off")) };
-        store.append_run(&letter.id, "inbox", "skipped", why_log)?;
-        return Ok(report("stored", t("send.stored_hook").replace("{why}", why)));
-    };
-    match claude::gate(&req.to.id, inbox.cwd.as_deref()) {
-        Gate::Accept => {}
-        Gate::Hold => {
-            store.append_run(&letter.id, "inbox", "skipped", "bypassPermissions would hold it")?;
-            return Ok(report("stored", t("send.hold").into()));
-        }
-        Gate::Refuse => {
-            store.append_run(&letter.id, "inbox", "skipped", "crossSessionInbound=refuse")?;
-            return Ok(report("stored", t("send.refuse").into()));
-        }
-    }
-    let text = envelope(&letter);
-    match claude::send(&inbox, &text, &letter.id, Duration::from_secs(5)) {
-        SendOutcome::Unreachable => {
-            store.append_run(&letter.id, "inbox", "unreachable", &inbox.socket.to_string_lossy())?;
-            Ok(report("stored", t("send.unreachable").into()))
-        }
-        SendOutcome::Sent => {
-            store.append_run(&letter.id, "inbox", "written", &inbox.socket.to_string_lossy())?;
-            if !req.wait {
-                return Ok(report("inbox", t("send.written_nowait").into()));
-            }
-            if claude::queued(&req.to.id, inbox.cwd.as_deref(), &letter.id, &text, Duration::from_secs(10)) {
-                store.set_status(&mut letter, DELIVERED_INBOX)?;
-                store.append_run(&letter.id, "inbox", "queued", "transcript shows it")?;
-                Ok(report("inbox", t("send.queued").into()))
-            } else {
-                store.append_run(&letter.id, "inbox", "unconfirmed", "no trace in transcript within 10s")?;
-                Ok(report("stored", t("send.unconfirmed").into()))
-            }
-        }
-    }
+    store.append_run(&letter.id, "retry", "started", "")?;
+    let to = target_of(letter);
+    deliver(store, &to, letter, true, false)
 }

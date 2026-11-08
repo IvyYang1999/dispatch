@@ -22,6 +22,54 @@ pub const DELIVERED_CODEX: &str = "已送达（Codex 已入队）";
 pub const DELIVERED_GROK: &str = "已送达（Grok 直投）";
 pub const READ_BY_HOOK: &str = "已读（hook代标）";
 pub const REPLIED: &str = "已回复";
+/// Nothing could deliver it, or its deadline passed. Still pending: a late hook pass or a retry delivers it.
+pub const FAILED: &str = "没送到";
+/// Withdrawn by the sender or the user; nothing delivers it any more.
+pub const CANCELLED: &str = "已取消";
+
+/// Still waiting to be delivered (the hook hands these over, the sweep retries them).
+pub fn pending(status: &str) -> bool {
+    status == UNREAD || status == FAILED
+}
+
+/// `30m`, `2h`, `1d`, or plain minutes.
+pub fn parse_duration(s: &str) -> Option<chrono::Duration> {
+    let s = s.trim().to_ascii_lowercase();
+    let (num, unit) = match s.char_indices().find(|(_, c)| !c.is_ascii_digit()) {
+        Some((i, _)) => (&s[..i], &s[i..]),
+        None => (s.as_str(), "m"),
+    };
+    let n: i64 = num.parse().ok()?;
+    match unit.trim() {
+        "m" | "min" | "mins" | "minute" | "minutes" | "分" | "分钟" => Some(chrono::Duration::minutes(n)),
+        "h" | "hr" | "hour" | "hours" | "小时" => Some(chrono::Duration::hours(n)),
+        "d" | "day" | "days" | "天" => Some(chrono::Duration::days(n)),
+        _ => None,
+    }
+}
+
+/// How long a copy may wait before it counts as not delivered: an hour when urgent, a day otherwise.
+pub fn default_wait(urgency: &str) -> chrono::Duration {
+    if urgency_stored(urgency) == URGENCY_URGENT {
+        chrono::Duration::hours(1)
+    } else {
+        chrono::Duration::hours(24)
+    }
+}
+
+pub fn parse_time(s: &str) -> Option<chrono::NaiveDateTime> {
+    chrono::NaiveDateTime::parse_from_str(s.trim(), "%Y-%m-%d %H:%M").ok()
+}
+
+pub fn time_text(t: chrono::NaiveDateTime) -> String {
+    t.format("%Y-%m-%d %H:%M").to_string()
+}
+
+/// The deadline text for a copy created at `created`, after `wait`.
+pub fn deadline_text(created: &str, wait: chrono::Duration) -> String {
+    let base = parse_time(created).unwrap_or_else(|| chrono::Local::now().naive_local());
+    time_text(base + wait)
+}
 pub const URGENCY_NORMAL: &str = "普通";
 pub const URGENCY_URGENT: &str = "紧急";
 
@@ -45,9 +93,27 @@ pub struct Letter {
     pub wake: bool,
     pub status: String,
     pub created: String,
+    /// `YYYY-MM-DD HH:MM`: past it, an undelivered copy counts as not delivered. Absent in old files.
+    #[serde(default)]
+    pub deadline: Option<String>,
+    /// `claude` / `codex` / `grok`: what the recipient runs on, so a retry needs no discovery.
+    #[serde(default)]
+    pub to_harness: Option<String>,
     pub body: String,
     #[serde(default)]
     pub path: String,
+}
+
+impl Letter {
+    /// The deadline: the stored one, else the default wait after creation.
+    pub fn deadline_at(&self) -> chrono::NaiveDateTime {
+        self.deadline.as_deref().and_then(parse_time).unwrap_or_else(|| parse_time(&self.created).unwrap_or_else(|| chrono::Local::now().naive_local()) + default_wait(&self.urgency))
+    }
+
+    /// Still undelivered and past its deadline.
+    pub fn overdue(&self, now: chrono::NaiveDateTime) -> bool {
+        self.status == UNREAD && now > self.deadline_at()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,7 +214,7 @@ impl Store {
                         continue;
                     }
                 }
-                if unread_only && l.status != UNREAD {
+                if unread_only && !pending(&l.status) {
                     continue;
                 }
                 l.path = p.to_string_lossy().to_string();
@@ -171,26 +237,49 @@ impl Store {
 
     /// Rewrite the `status:` line in place.
     pub fn set_status(&self, l: &mut Letter, status: &str) -> Result<()> {
-        let text = fs::read_to_string(&l.path).with_context(|| format!("read {}", l.path))?;
-        let mut done = false;
-        let out: Vec<String> = text
-            .lines()
-            .map(|line| {
-                if !done && line.starts_with("status:") {
-                    done = true;
-                    format!("status: {status}")
-                } else {
-                    line.to_string()
-                }
-            })
-            .collect();
-        if !done {
-            return Err(anyhow!("no status line in {}", l.path));
-        }
-        let tmp = format!("{}.tmp", l.path);
-        fs::write(&tmp, out.join("\n") + "\n")?;
-        fs::rename(&tmp, &l.path)?;
+        self.set_field(&l.path, "status", status)?;
         l.status = status.to_string();
+        Ok(())
+    }
+
+    /// Rewrite the `deadline:` line (adding it when the file has none).
+    pub fn set_deadline(&self, l: &mut Letter, deadline: &str) -> Result<()> {
+        self.set_field(&l.path, "deadline", deadline)?;
+        l.deadline = Some(deadline.to_string());
+        Ok(())
+    }
+
+    /// Rewrite one front-matter line in place, or add it before the closing `---`.
+    fn set_field(&self, path: &str, key: &str, value: &str) -> Result<()> {
+        let text = fs::read_to_string(path).with_context(|| format!("read {path}"))?;
+        let mut out: Vec<String> = vec![];
+        let mut done = false;
+        let mut in_front = false;
+        for (i, line) in text.lines().enumerate() {
+            if i == 0 && line == "---" {
+                in_front = true;
+                out.push(line.to_string());
+                continue;
+            }
+            if in_front && line == "---" {
+                if !done {
+                    out.push(format!("{key}: {value}"));
+                    done = true;
+                }
+                in_front = false;
+            } else if in_front && !done && line.starts_with(&format!("{key}:")) {
+                out.push(format!("{key}: {value}"));
+                done = true;
+                continue;
+            }
+            out.push(line.to_string());
+        }
+        if !done {
+            return Err(anyhow!("no front matter in {path}"));
+        }
+        let tmp = format!("{path}.tmp");
+        fs::write(&tmp, out.join("\n") + "\n")?;
+        fs::rename(&tmp, path)?;
         Ok(())
     }
 
@@ -210,8 +299,15 @@ impl Store {
 }
 
 pub fn render(l: &Letter) -> String {
+    let mut extra = String::new();
+    if let Some(h) = &l.to_harness {
+        extra.push_str(&format!("to_harness: {h}\n"));
+    }
+    if let Some(d) = &l.deadline {
+        extra.push_str(&format!("deadline: {d}\n"));
+    }
     format!(
-        "---\nid: {}\ndispatch_id: {}\nfrom: {}\nfrom_name: {}\nto: {}\nto_name: {}\nurgency: {}\nwake: {}\nstatus: {}\ncreated: {}\n---\n{}\n",
+        "---\nid: {}\ndispatch_id: {}\nfrom: {}\nfrom_name: {}\nto: {}\nto_name: {}\nurgency: {}\nwake: {}\nstatus: {}\ncreated: {}\n{}---\n{}\n",
         l.id,
         l.dispatch_id,
         l.from,
@@ -222,6 +318,7 @@ pub fn render(l: &Letter) -> String {
         l.wake,
         l.status,
         l.created,
+        extra,
         l.body.trim_end()
     )
 }
@@ -241,6 +338,8 @@ pub fn parse(text: &str) -> Option<Letter> {
         wake: true,
         status: UNREAD.into(),
         created: String::new(),
+        deadline: None,
+        to_harness: None,
         body: body.trim_end().to_string(),
         path: String::new(),
     };
@@ -258,6 +357,8 @@ pub fn parse(text: &str) -> Option<Letter> {
             "wake" => l.wake = v != "false",
             "status" => l.status = v,
             "created" => l.created = v,
+            "deadline" => l.deadline = Some(v).filter(|s| !s.is_empty()),
+            "to_harness" => l.to_harness = Some(v).filter(|s| !s.is_empty()),
             _ => {}
         }
     }
@@ -290,6 +391,8 @@ mod tests {
             wake: true,
             status: UNREAD.into(),
             created: "2026-11-05 14:00".into(),
+            deadline: Some("2026-11-06 14:00".into()),
+            to_harness: Some("codex".into()),
             body: "hello\nworld".into(),
             path: String::new(),
         };
@@ -297,6 +400,24 @@ mod tests {
         assert_eq!(p.body, "hello\nworld");
         assert_eq!(p.to_name, "Y");
         assert!(p.wake);
+        assert_eq!(p.deadline.as_deref(), Some("2026-11-06 14:00"));
+        assert_eq!(p.to_harness.as_deref(), Some("codex"));
+        assert_eq!(time_text(p.deadline_at()), "2026-11-06 14:00");
+        assert!(p.overdue(parse_time("2026-11-06 14:01").unwrap()));
+        assert!(!p.overdue(parse_time("2026-11-06 13:59").unwrap()));
+    }
+
+    #[test]
+    fn deadlines_default_by_urgency() {
+        assert_eq!(deadline_text("2026-11-05 14:00", default_wait("紧急")), "2026-11-05 15:00");
+        assert_eq!(deadline_text("2026-11-05 14:00", default_wait("普通")), "2026-11-06 14:00");
+        assert_eq!(parse_duration("30m"), Some(chrono::Duration::minutes(30)));
+        assert_eq!(parse_duration("2h"), Some(chrono::Duration::hours(2)));
+        assert_eq!(parse_duration("1d"), Some(chrono::Duration::days(1)));
+        assert_eq!(parse_duration("45"), Some(chrono::Duration::minutes(45)));
+        assert_eq!(parse_duration("soon"), None);
+        let old = parse("---\nid: a\ndispatch_id: d\nfrom: x\nto: y\nurgency: 普通\nstatus: 未读\ncreated: 2026-11-05 14:00\n---\nhi\n").unwrap();
+        assert_eq!(time_text(old.deadline_at()), "2026-11-06 14:00");
     }
 
     #[test]
@@ -314,11 +435,19 @@ mod tests {
             wake: true,
             status: UNREAD.into(),
             created: now_text(),
+            deadline: None,
+            to_harness: None,
             body: "hi".into(),
             path: String::new(),
         };
         s.write_letter(&mut l).unwrap();
         assert_eq!(s.list(Some(&l.to), true).unwrap().len(), 1);
+        s.set_deadline(&mut l, "2026-12-01 09:00").unwrap();
+        assert_eq!(s.list(Some(&l.to), true).unwrap()[0].deadline.as_deref(), Some("2026-12-01 09:00"));
+        s.set_status(&mut l, FAILED).unwrap();
+        assert_eq!(s.list(Some(&l.to), true).unwrap().len(), 1, "failed copies are still pending");
+        s.set_status(&mut l, CANCELLED).unwrap();
+        assert_eq!(s.list(Some(&l.to), true).unwrap().len(), 0);
         s.set_status(&mut l, READ_BY_HOOK).unwrap();
         assert_eq!(s.list(Some(&l.to), true).unwrap().len(), 0);
         s.append_run(&l.id, "store", "ok", "").unwrap();

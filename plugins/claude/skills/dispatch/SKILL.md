@@ -10,7 +10,7 @@ has an address (its session id, and the name the user gave it). You can find a
 session, send it a message, and see whether the message arrived and what came
 back. The MCP tools are `dispatch_whoami`, `dispatch_sessions`,
 `dispatch_find`, `dispatch_send`, `dispatch_inbox`, `dispatch_reply`,
-`dispatch_status`. Without MCP, the same verbs exist on the command line:
+`dispatch_status`, `dispatch_retry`, `dispatch_cancel`. Without MCP, the same verbs exist on the command line:
 `dispatch sessions|send|inbox|reply|status`.
 
 ## When to use it

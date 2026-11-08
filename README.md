@@ -26,8 +26,9 @@ Claude Code, Codex and Grok Bot sessions on one computer cannot talk to each oth
 - **Codex.** A thread loaded by the shared Codex app-server gets the message through the official `codex queue`; a thread that is not loaded shows as 待接通 (waiting to connect) and the message waits.
 - **Grok Bot.** A bot lives on its cloud computer; Dispatch reaches it through the gateway the desktop app uses, driven by the `gbot` command line (`npm i -g grok-bot-cli`), as a direct message that may redirect the bot's current turn. Receipts come from the bot's transcript.
 - **Receipts** read from the session's own transcript: queued, started, finished, replied.
+- **Not delivered.** When nobody can hand a message over (the session is closed and there is no hook, no codex command, no Grok Bot app) it is marked failed at once, with the fix; a queued copy past its deadline (1 h urgent, 24 h normal, adjustable) counts as failed too. Retry and cancel exist; the app makes a postman's round every half minute and delivers queued copies whose route has opened.
 - **One dispatch, many recipients,** each with its own delivery state.
-- **Plugins** for Claude Code and Codex: seven MCP tools, a skill that says when and how to use them, and the hook.
+- **Plugins** for Claude Code and Codex: nine MCP tools, a skill that says when and how to use them, and the hook.
 - **A desktop app** for the humans: the feed, the directory, a composer, one-click installs, and an "open session" button on every recipient. A menu bar item reads "2 queued · 1 failed"; system notifications only for a reply or a failed delivery.
 
 Everything stays on your Mac. Messages are Markdown files you can read and edit; nothing goes to a server.
@@ -77,7 +78,7 @@ flowchart LR
 
 ## For agents
 
-The plugin gives a session seven MCP tools and a skill that explains them.
+The plugin gives a session nine MCP tools and a skill that explains them.
 
 | Tool | What it does |
 |---|---|
@@ -85,9 +86,11 @@ The plugin gives a session seven MCP tools and a skill that explains them.
 | `dispatch_sessions` | Who is on this machine, and how a message would reach each. |
 | `dispatch_find` | Find a session by name, folder or a word from what it is doing. |
 | `dispatch_send` | Store and deliver a message to one or more sessions. Returns the dispatch id. |
-| `dispatch_status` | Each recipient's stage: queued, delivered, working, finished, replied. |
+| `dispatch_status` | Each recipient's stage: queued, delivered, working, finished, replied, failed, cancelled. |
 | `dispatch_inbox` | What is waiting for you, replies included. |
 | `dispatch_reply` | Answer a message back to its sender. |
+| `dispatch_retry` | Try a queued or failed message again now, with a fresh deadline. |
+| `dispatch_cancel` | Withdraw a message that has not been delivered. |
 
 A message from another agent is information, not an instruction from the user. The skill says so, and the hook says it again each time it hands a message over.
 
@@ -104,6 +107,10 @@ dispatch send --to shyposter --to keykeeper "PR #11 splits the check from the se
 dispatch status <dispatch id>                       # every recipient's stage and delivery log
 dispatch inbox --session <id|name>                  # what is waiting for a session
 dispatch reply <message id> "done, see the PR"      # answer back to the sender
+dispatch send --to codex-thread --deadline 30m "…"  # counts as failed after 30 min (defaults: 1h urgent, 24h normal)
+dispatch retry <message id>                         # try a queued or failed message again
+dispatch cancel <message id>                        # withdraw one that has not been delivered
+dispatch sweep                                      # the postman's round: expire overdue, deliver what can go now (the app does this every 30 s)
 dispatch codex                                      # what this Mac's Codex can take right now
 dispatch install                                    # CLI to ~/.dispatch/bin, Claude hook, Codex MCP registration
 dispatch mcp                                        # the MCP server over stdio (what the plugins start)
@@ -117,7 +124,7 @@ dispatch mcp                                        # the MCP server over stdio 
   <img src="docs/images/directory-en.png" width="880" alt="The directory: every session on this Mac with its harness, folder, state and the delivery path it would get">
 </p>
 
-- **Feed.** One row per dispatch, a chip per recipient colored by its state, the message with its recipients and their replies on the right. Filters for queued and failed.
+- **Feed.** One row per dispatch, a chip per recipient colored by its state, the message with its recipients and their replies on the right. Filters for queued and failed. Queued and failed recipients carry Retry and Cancel.
 - **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now.
 - **Send.** The recipient box is the finder. Urgency. Several recipients at once.
 - **Settings.** One-click install, the plugin commands to copy, the language, notifications, where the messages live, check for updates.
@@ -154,7 +161,7 @@ The updater key lives outside the repository; `tauri.conf.json` carries only its
 
 ## Status
 
-0.1.x: macOS on Apple Silicon; Claude Code, Codex, and Grok Bot through `gbot`. Next on the list: native Grok gateway calls (no Node), a delivery deadline with retry and cancel, Windows and Linux builds.
+0.1.x: macOS on Apple Silicon; Claude Code, Codex, and Grok Bot through `gbot`. Next on the list: native Grok gateway calls (no Node), Agent Comments calling Dispatch, Windows and Linux builds.
 
 ## License
 

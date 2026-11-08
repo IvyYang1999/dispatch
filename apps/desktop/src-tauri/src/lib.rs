@@ -73,7 +73,7 @@ async fn dispatch_status(id: String) -> Result<Value, String> {
 #[tauri::command]
 async fn send(app: AppHandle, to: Vec<String>, text: String, urgency: Option<String>, allow_resume: Option<bool>) -> Result<Value, String> {
     let urgency = urgency.unwrap_or_else(|| "normal".into());
-    let r = blocking(move || ops::send_many_opts(&Store::open(), &to, &text, &urgency, Some(("app".into(), t("me").into())), allow_resume.unwrap_or(false)).map_err(err)).await;
+    let r = blocking(move || ops::send_many_opts(&Store::open(), &to, &text, &urgency, Some(("app".into(), t("me").into())), allow_resume.unwrap_or(false), None).map_err(err)).await;
     forget_feed(&app);
     r
 }
@@ -105,6 +105,22 @@ async fn set_notify(on: bool) -> Result<bool, String> {
         Ok(on)
     })
     .await
+}
+
+/// Try a queued or failed copy again now.
+#[tauri::command]
+async fn retry(app: AppHandle, id: String) -> Result<Value, String> {
+    let r = blocking(move || ops::retry(&Store::open(), &id).map_err(err)).await;
+    forget_feed(&app);
+    r
+}
+
+/// Withdraw a queued or failed copy.
+#[tauri::command]
+async fn cancel(app: AppHandle, id: String) -> Result<Value, String> {
+    let r = blocking(move || ops::cancel(&Store::open(), &id, "app").map_err(err)).await;
+    forget_feed(&app);
+    r
 }
 
 #[tauri::command]
@@ -356,7 +372,13 @@ fn start_watcher(app: AppHandle) {
         .spawn(move || {
             let mut prev: Option<watch::Snapshot> = None;
             let mut shown: Option<(&'static str, watch::Summary)> = None;
+            let mut tick: u32 = 0;
             loop {
+                // the postman's round every half minute: expire overdue copies, retry queued ones whose route opened
+                if tick % 6 == 0 {
+                    let _ = ops::sweep(&Store::open());
+                }
+                tick = tick.wrapping_add(1);
                 if let Ok(feed) = ops::feed(&Store::open(), 200) {
                     let (snap, events) = watch::events(prev.as_ref(), &feed);
                     let changed = prev.as_ref() != Some(&snap);
@@ -392,7 +414,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Cache::default())
-        .invoke_handler(tauri::generate_handler![sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify])
+        .invoke_handler(tauri::generate_handler![sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, retry, cancel])
         .setup(|app| {
             build_tray(app.handle())?;
             start_watcher(app.handle().clone());

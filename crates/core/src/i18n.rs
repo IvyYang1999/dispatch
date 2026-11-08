@@ -91,6 +91,8 @@ pub fn status_label(status: &str) -> &'static str {
         DELIVERED_GROK => t("status.delivered_grok"),
         READ_BY_HOOK => t("status.read_by_hook"),
         REPLIED => t("status.replied"),
+        FAILED => t("status.failed"),
+        CANCELLED => t("status.cancelled"),
         _ => t("status.unknown"),
     }
 }
@@ -127,6 +129,8 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "stage.queued_codex" => ("已入队", "Queued in Codex"),
         "stage.queued" => ("排队中", "Queued"),
         "stage.failed" => ("没送到", "Failed"),
+        "stage.cancelled" => ("已取消", "Cancelled"),
+        "stage.queued_until" => ("排队中 · 截止 {t}", "Queued · until {t}"),
         // the menu bar item and system notifications
         "tray.queued" => ("排队 {n}", "{n} queued"),
         "tray.failed" => ("没送到 {n}", "{n} failed"),
@@ -146,7 +150,16 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "status.delivered_grok" => ("已送达（Grok 直投）", "delivered (Grok Bot)"),
         "status.read_by_hook" => ("已读（hook 代标）", "handed over by the hook"),
         "status.replied" => ("已回复", "replied"),
+        "status.failed" => ("没送到", "not delivered"),
+        "status.cancelled" => ("已取消", "cancelled"),
         "status.unknown" => ("未知", "unknown"),
+        // retry, cancel, sweep
+        "ops.not_pending" => ("这封不在等待投递（{status}），没法再动它", "This copy is not waiting for delivery ({status}), so nothing to do"),
+        "ops.cancelled" => ("已取消：{n} 封", "Cancelled: {n} copy(ies)"),
+        "ops.retried" => ("重试 {n} 封", "Retried {n} copy(ies)"),
+        "ops.bad_deadline" => ("截止时间写法不对：{s}（例：30m、2h、1d）", "Bad deadline \"{s}\" (try 30m, 2h, 1d)"),
+        "cli.sweep" => ("过期标为没送到：{failed}；重试：{retried}", "marked not delivered: {failed}; retried: {retried}"),
+        "cli.sweep_retry" => ("  ↻ {to}: {detail}", "  ↻ {to}: {detail}"),
 
         // resolving and sending
         "send.no_match" => ("没有找到匹配「{q}」的会话；用 `dispatch sessions` 看看有哪些", "No session matches \"{q}\"; `dispatch sessions` lists them"),
@@ -167,6 +180,12 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "send.grok_failed" => ("gbot send 失败：{err}；留在信箱", "gbot send failed: {err}; kept in the store"),
         "send.why_noinbox" => ("开着但没有收信口", "running, but without an inbox"),
         "send.why_off" => ("没开着", "not running"),
+        "send.why_hold" => ("它跳过了权限确认，直投会被扣下", "it bypasses permission checks, so a direct delivery would be held"),
+        "send.why_refuse" => ("它拒收其他程序的消息", "it refuses messages from other programs"),
+        "send.failed_nohook" => ("没送到：{why}，又没装 hook，没人能递。装上 hook 后它下次说话仍会收到；或 `dispatch retry` 再试", "Not delivered: {why}, and no hook to hand it over. Once the hook is installed it still arrives at its next turn; or `dispatch retry`"),
+        "send.failed_codex_nocli" => ("没送到：本机没有 codex 命令", "Not delivered: no codex command on this machine"),
+        "send.failed_grok" => ("{why}", "{why}"),
+        "send.deadline_passed" => ("过了截止时间 {t} 还没送到", "not delivered by its deadline {t}"),
         "send.stored_hook" => ("{why}，留在信箱，等 hook 递", "{why}; kept in the store for the hook"),
         "send.hold" => ("它跳过了权限确认，直投会被扣下；留在信箱，等 hook 递", "It bypasses permission checks, so a direct delivery would be held; kept in the store for the hook"),
         "send.refuse" => ("它拒收其他程序的消息；留在信箱，等 hook 递", "It refuses messages from other programs; kept in the store for the hook"),
@@ -264,7 +283,7 @@ mod tests {
     fn every_key_has_both_languages() {
         for key in [
             "reach.off_later", "reach.now_desktop", "stage.queued", "status.unread", "send.envelope", "send.queued", "hook.header", "hook.item", "hook.footer", "open.unknown", "harness.human", "me", "cli.codex_cmd",
-            "cli.inbox_line", "cli.empty_text", "app.no_update", "stage.failed", "tray.queued", "tray.failed", "tray.clear", "tray.empty", "tray.open", "tray.compose", "tray.quit", "notify.reply_me", "notify.reply", "notify.failed",
+            "cli.inbox_line", "cli.empty_text", "app.no_update", "stage.failed", "stage.cancelled", "stage.queued_until", "status.failed", "status.cancelled", "send.why_hold", "send.failed_nohook", "send.failed_grok", "send.deadline_passed", "ops.not_pending", "ops.cancelled", "ops.retried", "ops.bad_deadline", "cli.sweep", "tray.queued", "tray.failed", "tray.clear", "tray.empty", "tray.open", "tray.compose", "tray.quit", "notify.reply_me", "notify.reply", "notify.failed",
         ] {
             let (zh, en) = pair(key);
             assert!(!zh.is_empty() && !en.is_empty() && zh != "…" && en != "…", "{key}");

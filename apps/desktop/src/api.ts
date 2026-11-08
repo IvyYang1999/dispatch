@@ -21,7 +21,7 @@ export interface Session {
   reach: Reach
   reason?: string
 }
-export type Kind = 'queued' | 'delivered' | 'working' | 'replied' | 'failed'
+export type Kind = 'queued' | 'delivered' | 'working' | 'replied' | 'failed' | 'cancelled'
 export interface Run {
   at: string
   action: string
@@ -39,6 +39,7 @@ export interface Copy {
   stage: string
   kind: Kind
   created: string
+  deadline?: string
   path: string
   body: string
   runs?: Run[]
@@ -94,6 +95,8 @@ export const api = {
   status: (id: string) => invoke<{ dispatch_id: string; copies: Copy[] }>('dispatch_status', { id }),
   send: (to: string[], text: string, urgency: string) => invoke<{ dispatch_id: string; recipients: { to: { name: string }; route: string; detail: string }[] }>('send', { to, text, urgency }),
   reply: (id: string, text: string) => invoke<{ route: string; detail: string }>('reply', { id, text }),
+  retry: (id: string) => invoke<{ retried: number; copies: { to_name: string; detail: string }[]; text: string }>('retry', { id }),
+  cancel: (id: string) => invoke<{ cancelled: number; text: string }>('cancel', { id }),
   openSession: (id: string) => invoke<OpenResult>('open_session', { id }),
   setupStatus: () => invoke<SetupStatus>('setup_status'),
   installHook: () => invoke<string>('install_hook'),
