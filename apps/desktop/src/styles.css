@@ -191,6 +191,30 @@ input, textarea { font: inherit; }
 .input--about { flex: 1; min-width: 160px; }
 .input--search { width: 300px; }
 .hmark { flex: none; display: inline-block; border-radius: 3px; vertical-align: -2px; }
+.agent--link:hover, .agent[data-active] { background: var(--row-hover); }
+.line--link:hover { background: var(--row-hover); }
+.page { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 18px; display: flex; flex-direction: column; gap: 14px; }
+.who { display: flex; align-items: center; gap: 12px; }
+.who__text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.who__line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.who__name { font-size: 15px; font-weight: 600; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.who__about { font-size: 12.5px; color: var(--text); }
+.who__meta { display: flex; gap: 10px; min-width: 0; font-size: 11.5px; color: var(--text-faint); }
+.who__meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page__cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+.page__col { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.page__col .section-title { margin: 2px 0 4px; }
+.page__col .row { padding: 8px 10px; }
+.page__col .empty { padding: 18px 0; }
+.tag--dir[data-dir="in"] { color: var(--accent); background: var(--accent-soft); }
+.turn { padding: 8px 10px; border-radius: 7px; background: var(--row-hover); }
+.turn[data-role="assistant"] { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.turn[data-dispatch] { background: var(--accent-soft); box-shadow: inset 2px 0 0 var(--accent); }
+.turn__head { display: flex; align-items: baseline; gap: 8px; font-size: 11.5px; color: var(--text-faint); }
+.turn__role { font-weight: 500; color: var(--text); }
+.turn[data-dispatch] .turn__role { color: var(--accent); }
+.turn__time { margin-left: auto; font-variant-numeric: tabular-nums; }
+.turn__text { margin: 4px 0 0; font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 168px; overflow: hidden; user-select: text; }
 .hmark--person { color: var(--text-faint); }
 .row__line .hmark, .detail__name .hmark { margin-left: 6px; }
 .rcpt__head .hmark, .cand__line .hmark { flex: none; }

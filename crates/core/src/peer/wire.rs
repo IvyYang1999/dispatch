@@ -38,6 +38,8 @@ pub enum Request {
     Status { dispatch_ids: Vec<String> },
     /// Withdraw a copy I sent you, if it is still waiting.
     Cancel { letter_id: String },
+    /// The last turns of one of your sessions' records, for its page.
+    Transcript { session_id: String, limit: usize },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +50,7 @@ pub enum Response {
     Sessions { hook_installed: bool, sessions: Vec<RemoteSession> },
     Delivered { status: String, route: String, detail: String },
     Status { copies: Vec<RemoteCopy> },
+    Transcript { turns: Vec<crate::transcript::Turn> },
     Ok,
     Error { message: String },
 }

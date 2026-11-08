@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { api, type Copy, type Dispatch, type Kind, type OpenResult, type PeerOverview, type Session, type SetupStatus, type UpdateCheck } from './api'
+import { api, type Copy, type Dispatch, type Kind, type OpenResult, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
-type Screen = 'feed' | 'agents' | 'compose' | 'settings'
+type Screen = 'feed' | 'agents' | 'compose' | 'settings' | 'session'
 
 const kindText = (k: Kind) => t(`kind.${k}` as const)
 
@@ -320,7 +320,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
 
 // ---- Agents ----
 
-function Agents({ onCompose }: { onCompose: (to: string) => void }) {
+function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; onOpenPage: (id: string) => void }) {
   const lang = useLang()
   const [sessions, setSessions] = useState<Session[]>([])
   const [tool, setTool] = useState<string>('all')
@@ -410,7 +410,15 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
           <div key={g.key}>
             {groups.length > 1 && <div className="lines__group">{g.title} <i>{g.items.length}</i></div>}
             {g.items.map((s) => (
-              <div key={s.id} className="line" data-editing={editing?.id === s.id || undefined}>
+              <div
+                key={s.id}
+                className="line line--link"
+                data-editing={editing?.id === s.id || undefined}
+                onClick={(e) => {
+                  if ((e.target as HTMLElement).closest('button, input')) return
+                  onOpenPage(addressOf(s))
+                }}
+              >
                 <Avatar name={s.name} />
                 {editing?.id === s.id ? (
                   <span className="line__edit">
@@ -450,6 +458,98 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
         {shown.length === 0 && <div className="empty">{results ? t('agents.noResults') : t('agents.empty')}</div>}
         {notice && <div className="notice" onClick={clear}>{notice}</div>}
       </div>
+    </>
+  )
+}
+
+// ---- Session page ----
+
+function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onCompose: (to: string) => void; onFeedPick: (dispatchId: string) => void; onBack: () => void }) {
+  const lang = useLang()
+  const [page, setPage] = useState<SessionPageData | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const { open, notice, clear } = useOpen()
+  const load = useCallback(() => api.sessionPage(id).then((p) => { setPage(p); setErr(null) }).catch((e) => setErr(String(e))), [id, lang])
+  useEffect(() => {
+    load()
+    const h = setInterval(load, 8000)
+    return () => clearInterval(h)
+  }, [load])
+  const s = page?.session
+  return (
+    <>
+      <header className="bar" data-tauri-drag-region>
+        <button className="btn btn--ghost btn--small" onClick={onBack}>‹ {t('session.back')}</button>
+        <span className="bar__title" data-tauri-drag-region>{s?.name ?? ''}</span>
+        <span className="bar__spacer" />
+        {s && <button className="btn btn--primary" onClick={() => onCompose(addressOf(s))}>{t('action.message')}</button>}
+      </header>
+      {err && <div className="empty">{err}</div>}
+      {s && page && (
+        <div className="page">
+          <div className="who">
+            <Avatar name={s.name} size={40} />
+            <div className="who__text">
+              <div className="who__line">
+                <span className="who__name">{s.contact && !s.provisional && <span className="line__star">★</span>}{s.name}</span>
+                <HarnessMark harness={s.harness} size={16} />
+                {s.host && <span className="tag">{s.host.name}</span>}
+              </div>
+              {s.about && <div className="who__about">{s.about}</div>}
+              <div className="who__meta">
+                {s.cwd_short && <span title={s.cwd ?? ''}>{s.cwd_short}</span>}
+                <span>{presence(s)}</span>
+                <span className="line__how" data-reach={s.reach.level}>{s.reach.text}</span>
+              </div>
+            </div>
+            <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
+          </div>
+          <div className="page__cols">
+            <section className="page__col">
+              <div className="section-title">{t('session.dispatches')} <i>{page.dispatches.length}</i></div>
+              {page.dispatches.length === 0 && <div className="empty">{t('session.noDispatches')}</div>}
+              {page.dispatches.map((d) => (
+                <div key={d.dispatch_id} className="row" onClick={() => onFeedPick(d.dispatch_id)}>
+                  <Avatar name={d.from_name} />
+                  <div className="row__main">
+                    <div className="row__line">
+                      <span className="tag tag--dir" data-dir={d.direction}>{d.direction === 'in' ? t('session.in') : t('session.out')}</span>
+                      <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
+                      <HarnessMark harness={d.from_harness} />
+                      <span className="row__text">{d.text}</span>
+                      <span className="row__time">{d.created.slice(5)}</span>
+                    </div>
+                    <div className="row__rcpts">
+                      {d.recipients.map((r) => (
+                        <span key={r.letter_id} className="chip" data-kind={r.kind} title={r.to_harness ?? ''}>
+                          <span className="chip__dot" />
+                          {r.to_host_name && <span className="chip__host">{r.to_host_name}/</span>}
+                          {r.to_name}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </section>
+            <section className="page__col">
+              <div className="section-title">{t('session.transcript')}</div>
+              {!page.transcript_available && <div className="empty">{t('session.noTranscript')}</div>}
+              {page.transcript_available && page.turns.length === 0 && <div className="empty">{t('session.emptyTranscript')}</div>}
+              {page.turns.map((u, i) => (
+                <div key={i} className="turn" data-role={u.role} data-dispatch={u.via_dispatch || undefined}>
+                  <div className="turn__head">
+                    <span className="turn__role">{u.role === 'user' ? (u.via_dispatch ? t('session.viaDispatch', { from: u.from_agent ?? '?' }) : t('turn.user')) : t('turn.assistant')}</span>
+                    {u.at && <span className="turn__time">{u.at.slice(5, 16).replace('T', ' ')}</span>}
+                  </div>
+                  <p className="turn__text">{u.text}</p>
+                </div>
+              ))}
+            </section>
+          </div>
+          {notice && <div className="notice" onClick={clear}>{notice}</div>}
+        </div>
+      )}
     </>
   )
 }
@@ -874,6 +974,15 @@ export function App() {
   const [live, setLive] = useState<Session[]>([])
   const [queued, setQueued] = useState(0)
   const [pick, setPick] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const openPage = (id: string) => {
+    setSessionId(id)
+    setScreen('session')
+  }
+  const feedPick = (dispatchId: string) => {
+    setPick(dispatchId)
+    setScreen('feed')
+  }
 
   useEffect(() => {
     loadLang()
@@ -930,7 +1039,7 @@ export function App() {
         <div className="group">
           <div className="section">{t('side.local')}</div>
           {live.filter((s) => !s.host).slice(0, 8).map((s) => (
-            <div key={s.id} className="agent" title={s.cwd ?? ''}>
+            <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
               <Avatar name={s.name} size={16} />
               <span className="agent__name">{s.name}</span>
               <span className="presence" data-on={s.running || undefined} />
@@ -941,7 +1050,7 @@ export function App() {
           <div key={h.id} className="group">
             <div className="section">{h.name}</div>
             {live.filter((s) => s.host?.id === h.id).slice(0, 5).map((s) => (
-              <div key={s.id} className="agent" title={s.cwd ?? ''}>
+              <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
                 <Avatar name={s.name} size={16} />
                 <span className="agent__name">{s.name}</span>
                 <span className="presence" data-on={s.running || undefined} />
@@ -952,7 +1061,8 @@ export function App() {
       </nav>
       <main className="panel">
         {screen === 'feed' && <Feed onCompose={compose} pick={pick} />}
-        {screen === 'agents' && <Agents onCompose={compose} />}
+        {screen === 'agents' && <Agents onCompose={compose} onOpenPage={openPage} />}
+        {screen === 'session' && sessionId && <SessionPage id={sessionId} onCompose={compose} onFeedPick={feedPick} onBack={() => setScreen('agents')} />}
         {screen === 'compose' && <Compose presetTo={composeTo} onSent={() => setScreen('feed')} />}
         {screen === 'settings' && <Settings />}
       </main>

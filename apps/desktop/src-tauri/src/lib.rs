@@ -202,6 +202,12 @@ async fn contact_set(name: String, session: String, about: Option<String>) -> Re
     blocking(move || ops::register(&name, Some(&session), "app", about.as_deref()).map_err(err)).await
 }
 
+/// One session's page: identity, the dispatches it took part in, its last turns.
+#[tauri::command]
+async fn session_page(id: String) -> Result<Value, String> {
+    blocking(move || ops::session_page(&Store::open(), &id).map_err(err)).await
+}
+
 /// Every session with records here (any age) or on a paired machine that matches.
 #[tauri::command]
 async fn search_sessions(query: String) -> Result<Value, String> {
@@ -606,7 +612,7 @@ pub fn run() {
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
-            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons
+            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page
         ])
         .setup(|app| {
             let handle = app.handle().clone();

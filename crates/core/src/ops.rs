@@ -509,6 +509,33 @@ pub fn feed(store: &Store, limit: usize) -> Result<Value> {
     Ok(json!({ "count": out.len(), "dispatches": out }))
 }
 
+/// One session's page: who it is, the dispatches it took part in (each marked as received or
+/// sent from its point of view), and the last turns of its own record, with the messages
+/// Dispatch handed over marked. A session on a peer is asked for over the wire.
+pub fn session_page(store: &Store, query: &str) -> Result<Value> {
+    let s = send::resolve(query)?;
+    let hook_on = hook::installed();
+    let book = crate::contacts::list();
+    let session = session_json_with(&s, hook_on, &book);
+    let all = feed(store, 500)?;
+    let empty = vec![];
+    let mut dispatches = vec![];
+    for d in all["dispatches"].as_array().unwrap_or(&empty) {
+        let from_it = d["from"].as_str().map(|f| f.eq_ignore_ascii_case(&s.id)).unwrap_or(false);
+        let to_it = d["recipients"].as_array().map(|rs| rs.iter().any(|r| r["to"].as_str().map(|t| t.eq_ignore_ascii_case(&s.id)).unwrap_or(false))).unwrap_or(false);
+        if from_it || to_it {
+            let mut v = d.clone();
+            v["direction"] = json!(if from_it { "out" } else { "in" });
+            dispatches.push(v);
+        }
+    }
+    let (turns, readable) = match &s.host {
+        Some(h) => (crate::peer::transcript(h, &s.id, 24).unwrap_or_default(), true),
+        None => (crate::transcript::recent(&s, 24), s.transcript.is_some()),
+    };
+    Ok(json!({ "session": session, "dispatches": dispatches, "turns": turns, "transcript_available": readable }))
+}
+
 /// How to open a session on this machine: a URL the system opens, or a command to copy.
 pub fn open_session(session_id: &str) -> Result<Value> {
     let s = send::resolve(session_id)?;

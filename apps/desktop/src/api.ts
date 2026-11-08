@@ -100,6 +100,19 @@ export interface UpdateCheck {
   notes?: string | null
   date?: string | null
 }
+export interface Turn {
+  role: 'user' | 'assistant'
+  text: string
+  at: string | null
+  via_dispatch: boolean
+  from_agent: string | null
+}
+export interface SessionPageData {
+  session: Session
+  dispatches: (Dispatch & { direction: 'in' | 'out' })[]
+  turns: Turn[]
+  transcript_available: boolean
+}
 export interface PeerRow {
   id: string
   name: string
@@ -157,6 +170,7 @@ export const api = {
   peerRemove: (name: string) => invoke<boolean>('peer_remove', { name }),
   contactSet: (name: string, session: string, about: string | null) => invoke<{ name: string; address: string; text: string }>('contact_set', { name, session, about }),
   searchSessions: (query: string) => invoke<{ sessions: Session[] }>('search_sessions', { query }),
+  sessionPage: (id: string) => invoke<SessionPageData>('session_page', { id }),
   harnessIcons: () => invoke<Record<string, string>>('harness_icons'),
   contactRemove: (name: string) => invoke<{ removed: string }>('contact_remove', { name }),
   peerSetAddress: (name: string, address: string | null) => invoke<{ id: string; name: string; address: string | null }>('peer_set_address', { name, address }),

@@ -420,6 +420,16 @@ pub fn deliver(host: &Host, letter: &Letter) -> Result<(String, String, String),
     }
 }
 
+/// The last turns of a session on a peer, as that machine reads them.
+pub fn transcript(host: &Host, session_id: &str, limit: usize) -> Result<Vec<crate::transcript::Turn>, PeerError> {
+    let Some(p) = peers().into_iter().find(|p| p.id == host.id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
+    match ask(&p, &Request::Transcript { session_id: session_id.to_string(), limit })? {
+        Response::Transcript { turns } => Ok(turns),
+        Response::Error { message } => Err(PeerError::Refused(message)),
+        _ => Err(PeerError::Protocol("unexpected answer".into())),
+    }
+}
+
 /// Withdraw a copy on a peer, best effort.
 pub fn cancel(host: &Host, letter_id: &str) {
     if let Some(p) = peers().into_iter().find(|p| p.id == host.id) {

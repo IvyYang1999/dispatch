@@ -11,6 +11,7 @@
 //! - `watch`: what changed in the feed, for the menu bar item and notifications.
 //! - `peer`: other machines running Dispatch: pairing, the wire, remote sessions, mirroring.
 //! - `contacts`: the address book: stable names for sessions, kept past discovery's window.
+//! - `transcript`: the last turns of a session's own record, for the session page.
 
 pub mod claude;
 pub mod codex;
@@ -27,6 +28,7 @@ pub mod reach;
 pub mod send;
 pub mod settings;
 pub mod store;
+pub mod transcript;
 pub mod watch;
 
 pub use model::*;
