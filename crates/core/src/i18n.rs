@@ -288,6 +288,7 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "app.open_failed" => ("打不开 {url}：{e}", "Could not open {url}: {e}"),
         "app.no_bundled_cli" => ("这个 App 包里没有 dispatch 命令行（开发模式：先 cargo build --release -p dispatch，再把它放到 src-tauri/binaries/）", "This app bundle has no dispatch command line (dev mode: cargo build --release -p dispatch, then put it in src-tauri/binaries/)"),
         "app.cli_missing" => ("命令行还没装，先点「一键安装」。", "The command line is not installed yet; press Install first."),
+        "app.cli_sync_failed" => ("命令行自动更新失败，原文件已保留；请点「重新安装」：{e}", "The command line could not be updated; the original is unchanged. Press Reinstall: {e}"),
         "app.update_check_failed" => ("检查更新失败：{e}", "Update check failed: {e}"),
         "app.no_update" => ("没有可用的更新", "No update available"),
         "app.update_failed" => ("更新失败：{e}", "Update failed: {e}"),
@@ -316,7 +317,7 @@ mod tests {
     fn every_key_has_both_languages() {
         for key in [
             "reach.off_later", "reach.now_desktop", "stage.queued", "status.unread", "send.envelope", "send.queued", "hook.header", "hook.item", "hook.footer", "open.unknown", "harness.human", "me", "cli.codex_cmd",
-            "cli.inbox_line", "cli.empty_text", "app.no_update", "stage.failed", "stage.cancelled", "stage.queued_until", "status.failed", "status.cancelled", "send.why_hold", "send.failed_nohook", "send.failed_grok", "send.deadline_passed", "ops.not_pending", "ops.cancelled", "ops.retried", "ops.bad_deadline", "cli.sweep", "tray.queued", "tray.failed", "tray.clear", "tray.empty", "tray.open", "tray.compose", "tray.quit", "notify.reply_me", "notify.reply", "notify.failed",
+            "cli.inbox_line", "cli.empty_text", "app.no_update", "app.cli_sync_failed", "stage.failed", "stage.cancelled", "stage.queued_until", "status.failed", "status.cancelled", "send.why_hold", "send.failed_nohook", "send.failed_grok", "send.deadline_passed", "ops.not_pending", "ops.cancelled", "ops.retried", "ops.bad_deadline", "cli.sweep", "tray.queued", "tray.failed", "tray.clear", "tray.empty", "tray.open", "tray.compose", "tray.quit", "notify.reply_me", "notify.reply", "notify.failed",
             "reach.peer_offline", "send.peer_offline", "send.peer_refused", "send.peer_route", "send.from_at", "open.remote_note", "cli.peers_me", "cli.peers_none", "cli.peers_code", "cli.serve",
         ] {
             let (zh, en) = pair(key);

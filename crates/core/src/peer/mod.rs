@@ -151,7 +151,8 @@ fn default_name() -> String {
     let name = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
     #[cfg(not(target_os = "macos"))]
     let name = std::process::Command::new("hostname").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    name.filter(|n| !n.is_empty()).unwrap_or_else(|| "Dispatch".into())
+    // the same cap a peer applies when it records us
+    name.filter(|n| !n.is_empty()).unwrap_or_else(|| "Dispatch".into()).chars().take(48).collect()
 }
 
 pub fn me() -> Me {

@@ -82,6 +82,7 @@ export interface SetupStatus {
   notify: boolean
   theme: 'system' | 'light' | 'dark'
   version: string
+  cli_sync_error: string | null
 }
 export interface UpdateCheck {
   available: boolean

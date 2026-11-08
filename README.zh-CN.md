@@ -47,7 +47,7 @@
 codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch   # Codex
 ```
 
-更新：设置 → **检查更新**。App 用内置公钥校验更新包，自己替换、自己重启。
+更新：设置 → **检查更新**。App 用内置公钥校验更新包，自己替换、自己重启。重启后会自动同步已安装的 CLI，保留原有 hook 和 MCP 注册。
 
 ### 从源码
 
@@ -150,7 +150,7 @@ Claude Code 的 hook 写进 `~/.claude/settings.json`（UserPromptSubmit、Stop�
 cargo test
 cargo build --release
 cd apps/desktop && npm install && npm run tauri dev
-scripts/release.sh v0.1.4 "改了什么"    # 命令行、内置命令行的 App、zip、更新包、latest.json；PUBLISH=1 顺手建 GitHub Release
+scripts/release.sh v0.1.4 "改了什么"    # 签名、公证、装订并验证；凭据与 PUBLISH=1 用法见 docs/releasing.md
 ```
 
 ```

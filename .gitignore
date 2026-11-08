@@ -3,5 +3,6 @@ node_modules/
 dist/
 .DS_Store
 *.log
+__pycache__/
 apps/desktop/src-tauri/gen/schemas/
 apps/desktop/src-tauri/binaries/

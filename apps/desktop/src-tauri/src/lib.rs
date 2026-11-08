@@ -21,6 +21,8 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Theme};
 use tauri_plugin_notification::NotificationExt;
 
+mod cli_sync;
+
 const TRAY_ID: &str = "main";
 const RECENT_IN_TRAY: usize = 6;
 
@@ -324,8 +326,8 @@ fn installed_cli() -> PathBuf {
     model::home_dir().join(".dispatch").join("bin").join(if cfg!(windows) { "dispatch.exe" } else { "dispatch" })
 }
 
-/// The `dispatch` command line: the sidecar inside this app bundle, else an installed copy.
-fn cli_path() -> Option<PathBuf> {
+/// Only the sidecar; never use the installed copy as the source of an update.
+fn bundled_cli() -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let ext = if cfg!(windows) { ".exe" } else { "" };
@@ -337,13 +339,20 @@ fn cli_path() -> Option<PathBuf> {
             }
         }
     }
-    let installed = installed_cli();
-    installed.is_file().then_some(installed)
+    None
+}
+
+fn cli_path() -> Option<PathBuf> {
+    bundled_cli().or_else(|| {
+        let installed = installed_cli();
+        installed.is_file().then_some(installed)
+    })
 }
 
 #[tauri::command]
-async fn setup_status() -> Result<Value, String> {
-    blocking(|| {
+async fn setup_status(app: AppHandle) -> Result<Value, String> {
+    blocking(move || {
+        let sync_error = app.state::<cli_sync::State>().ensure(bundled_cli().as_deref(), &installed_cli());
         let home = model::home_dir();
         let bin = installed_cli();
         let plugins = home.join(".claude").join("plugins");
@@ -354,6 +363,7 @@ async fn setup_status() -> Result<Value, String> {
         Ok(json!({
             "hook_installed": hook::installed(),
             "binary": bin.is_file().then(|| bin.to_string_lossy().to_string()),
+            "cli_sync_error": sync_error.map(|e| t("app.cli_sync_failed").replace("{e}", &e)),
             "bundled_cli": cli_path().map(|p| p.to_string_lossy().to_string()),
             "codex": dispatch_core::codex::executable().map(|p| p.to_string_lossy().to_string()),
             "codex_daemon": codex.daemon,
@@ -376,12 +386,14 @@ async fn setup_status() -> Result<Value, String> {
 /// One click: put the bundled CLI at ~/.dispatch/bin, install the Claude Code hook from there,
 /// register the MCP server with Codex. Runs the CLI's own `install`, so the two never drift.
 #[tauri::command]
-async fn install_cli() -> Result<String, String> {
-    blocking(|| {
+async fn install_cli(app: AppHandle) -> Result<String, String> {
+    blocking(move || {
+        app.state::<cli_sync::State>().ensure(bundled_cli().as_deref(), &installed_cli());
         let cli = cli_path().ok_or_else(|| t("app.no_bundled_cli").to_string())?;
         let out = std::process::Command::new(&cli).arg("install").output().map_err(|e| e.to_string())?;
         let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         if out.status.success() {
+            app.state::<cli_sync::State>().installed();
             Ok(text)
         } else {
             Err(text)
@@ -567,11 +579,16 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Cache::default())
+        .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address
         ])
         .setup(|app| {
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                handle.state::<cli_sync::State>().ensure(bundled_cli().as_deref(), &installed_cli());
+            });
             apply_theme(app.handle());
             build_tray(app.handle())?;
             start_listener();
