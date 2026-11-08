@@ -442,7 +442,10 @@ function Settings() {
   const [msg, setMsg] = useState<string | null>(null)
   const [upd, setUpd] = useState<UpdateCheck | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
-  const load = useCallback(() => api.setupStatus().then(setSt).catch((e) => setMsg(String(e))), [])
+  const load = useCallback(() => api.setupStatus().then((s) => {
+    setSt(s)
+    if (s.cli_sync_error) setMsg(s.cli_sync_error)
+  }).catch((e) => setMsg(String(e))), [])
   useEffect(() => {
     load()
   }, [load])

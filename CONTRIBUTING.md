@@ -27,15 +27,16 @@ Add new keys to `every_key_has_both_languages` in the same file.
 
 ## Releases
 
-- macOS: `scripts/release.sh v0.1.5 "what changed"` on a Mac with the Developer ID and the
-  updater key (kept in KeyKeeper, never in the repository). With `PUBLISH=1` it creates the
-  GitHub release with the signed zip, the updater package and `latest.json`.
+- macOS: `scripts/release.sh v0.1.5 "what changed"` signs, notarizes, staples and verifies
+  the App and CLI, then signs the final updater archive. Inject credentials with KeyKeeper;
+  see [Releasing](docs/releasing.md) for the full command and interrupted-run recovery.
+  Only `PUBLISH=1` creates a normal GitHub release marked latest, with five verified assets.
 - Linux and Windows: `.github/workflows/release.yml` builds `.deb`, `.rpm`, `.AppImage`,
   `.msi` and an NSIS installer when a `v*` tag is pushed (or by hand, given a tag), and
   attaches them to that release. They are unsigned and carry no updater artifacts.
 
 The version lives in `Cargo.toml` (workspace) and `apps/desktop/src-tauri/tauri.conf.json`;
-the release script keeps them in step.
+the release script requires both to match the tag and never rewrites them.
 
 ## Plugins
 
