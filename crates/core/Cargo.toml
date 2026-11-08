@@ -22,6 +22,13 @@ sys-locale = "0.3"
 snow = "0.10"
 mdns-sd = "0.21"
 hmac = "0.12"
+iroh = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync"] }
+base64 = "0.22"
+url = "2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

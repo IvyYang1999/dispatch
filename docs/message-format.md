@@ -36,6 +36,7 @@ from_host: 9f1c…               only when the sender is on another machine: tha
 from_host_name: Mac
 to_host: 7503…                 only when the recipient is on another machine
 to_host_name: Mac mini
+signature: 9f2c…               on a copy that came from another machine: that machine's signature, checked on arrival
 ---
 The message body, as the sender wrote it.
 ```
@@ -63,6 +64,7 @@ the UI language; the CLI, the app and the MCP tools translate it.
 | `已回复` | The recipient answered with `dispatch_reply`; the answer is a copy addressed back to the sender, same `dispatch_id`. |
 | `没送到` | Not delivered: nobody could hand it over (no hook and the session is closed, no codex, no Grok Bot app), or its deadline passed. Still pending: a late hook pass or `dispatch retry` delivers it. |
 | `已取消` | Withdrawn with `dispatch cancel`. Nothing delivers it any more. |
+| `待批准` | From another machine and held until someone here approves it (`dispatch retry`) or rejects it (`dispatch cancel`): the machine is not confirmed yet, or its receiving rule says to ask. Not pending: no hook or sweep hands it over. |
 
 "Pending" (what the hook hands over, what `dispatch inbox` lists by default) means `未读` or `没送到`.
 

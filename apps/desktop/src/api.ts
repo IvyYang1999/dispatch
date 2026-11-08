@@ -35,7 +35,7 @@ export interface Session {
   reach: Reach
   reason?: string
 }
-export type Kind = 'queued' | 'delivered' | 'working' | 'replied' | 'failed' | 'cancelled'
+export type Kind = 'queued' | 'delivered' | 'working' | 'replied' | 'failed' | 'cancelled' | 'held'
 export interface Run {
   at: string
   action: string
@@ -128,6 +128,14 @@ export interface PeerRow {
   seen: { addrs: string[]; port: number } | null
   /** Why it is offline, when it is: the last failure in words. */
   problem?: string | null
+  /** How it was last reached: lan, direct (over the internet) or relay. */
+  link?: 'lan' | 'direct' | 'relay' | null
+  /** What both machines show; a person compares them. */
+  fingerprint: string
+  verified: boolean
+  rule: 'all' | 'contacts' | 'ask'
+  /** Its internet key is known, so it can be reached off the local network. */
+  internet: boolean
 }
 export interface SeenRow {
   id: string
@@ -136,7 +144,9 @@ export interface SeenRow {
   port: number
 }
 export interface PeerOverview {
-  me: { id: string; name: string; public_key: string; listening: number | null }
+  me: { id: string; name: string; public_key: string; listening: number | null; iroh_id: string | null; internet_listening: boolean }
+  internet: boolean
+  relay: string | null
   peers: PeerRow[]
   seen: SeenRow[]
   code: { code: string; seconds_left: number } | null
@@ -176,7 +186,12 @@ export const api = {
   peerScan: () => invoke<PeerOverview>('peer_scan'),
   peerSetName: (name: string) => invoke<{ id: string; name: string }>('peer_set_name', { name }),
   peerCode: () => invoke<{ code: string; seconds_left: number }>('peer_code'),
-  peerPair: (target: string, code: string) => invoke<{ id: string; name: string }>('peer_pair', { target, code }),
+  peerPair: (target: string, code: string | null) => invoke<{ id: string; name: string; verified: boolean; fingerprint: string }>('peer_pair', { target, code }),
+  peerLink: () => invoke<{ link: string; seconds_left: number }>('peer_link'),
+  peerVerify: (name: string) => invoke<{ name: string; released: number }>('peer_verify', { name }),
+  peerRule: (name: string, rule: string) => invoke<{ name: string; rule: string }>('peer_rule', { name, rule }),
+  setPeerInternet: (on: boolean) => invoke<boolean>('set_peer_internet', { on }),
+  setPeerRelay: (url: string | null) => invoke<{ relay: string | null }>('set_peer_relay', { url }),
   peerRemove: (name: string) => invoke<boolean>('peer_remove', { name }),
   contactSet: (name: string, session: string, about: string | null) => invoke<{ name: string; address: string; text: string }>('contact_set', { name, session, about }),
   searchSessions: (query: string) => invoke<{ sessions: Session[] }>('search_sessions', { query }),

@@ -151,8 +151,19 @@ enum PeersCmd {
     Scan,
     /// Show a pairing code for two minutes; the other machine pairs with it
     Code,
-    /// Pair with a machine: its name as seen on the network (or host:port), and the code it shows
-    Pair { target: String, code: String },
+    /// Make a pairing link (ten minutes, one use) for a machine on another network
+    Link,
+    /// Pair with a machine: its name as seen on the network (or host:port) and the code it shows,
+    /// or a pairing link from it
+    Pair { target: String, code: Option<String> },
+    /// Mark a machine confirmed after comparing the fingerprints both machines show
+    Verify { name: String },
+    /// What a machine's letters may do here: all, contacts (only to named sessions), ask (each waits for approval)
+    Rule { name: String, rule: String },
+    /// Turn the internet path (iroh) on or off; off means the local network only
+    Internet { state: String },
+    /// Use your own relay server (an iroh-relay URL), or `default` for n0's public relays
+    Relay { url: String },
     /// Give a paired machine a fixed address (host:port) for when the network cannot see it
     Add { name: String, address: String },
     /// Forget a paired machine
@@ -308,9 +319,45 @@ fn run() -> Result<i32> {
                 let me = peer::me();
                 println!("{}", t("cli.peers_code").replace("{code}", &code).replace("{secs}", &secs.to_string()).replace("{name}", &me.name));
             }
+            PeersCmd::Link => {
+                let (link, secs) = peer::new_link()?;
+                println!("{}", t("cli.peers_link").replace("{link}", &link).replace("{secs}", &secs.to_string()));
+            }
             PeersCmd::Pair { target, code } => {
-                let p = peer::pair(&target, &code)?;
+                let p = if peer::is_link(&target) {
+                    peer::pair_link(&target)?
+                } else {
+                    peer::pair(&target, code.as_deref().ok_or_else(|| anyhow!("{}", t("cli.peers_need_code")))?)?
+                };
                 println!("{}", t("cli.peers_paired").replace("{name}", &p.name).replace("{id}", &model::short_id(&p.id)));
+                println!("  {}", peer::fingerprint(&p.public_key));
+                if !p.verified {
+                    println!("{}", t("cli.peers_unverified").replace("{name}", &p.name));
+                }
+            }
+            PeersCmd::Verify { name } => {
+                let (p, n) = peer::verify_peer(&name)?;
+                println!("{}", t("cli.peers_verified").replace("{name}", &p.name).replace("{n}", &n.to_string()));
+            }
+            PeersCmd::Rule { name, rule } => {
+                let p = peer::set_rule(&name, rule.trim())?;
+                println!("{}", t("cli.peers_rule").replace("{name}", &p.name).replace("{rule}", &p.rule));
+            }
+            PeersCmd::Internet { state } => {
+                let on = matches!(state.trim(), "on" | "true" | "1" | "yes");
+                dispatch_core::settings::set("peer_internet", serde_json::Value::Bool(on))?;
+                println!("{}", t("cli.peers_internet").replace("{v}", if on { t("cli.on") } else { t("cli.off") }));
+                println!("{}", t("cli.peers_restart"));
+            }
+            PeersCmd::Relay { url } => {
+                let url = url.trim();
+                if url == "default" || url.is_empty() {
+                    dispatch_core::settings::set("peer_relay", serde_json::Value::Null)?;
+                } else {
+                    dispatch_core::settings::set("peer_relay", serde_json::Value::String(url.to_string()))?;
+                }
+                println!("{}", t("cli.peers_relay").replace("{v}", &peer::net::relay_url().unwrap_or_else(|| t("cli.peers_relay_default").to_string())));
+                println!("{}", t("cli.peers_restart"));
             }
             PeersCmd::Add { name, address } => {
                 let p = peer::set_address(&name, Some(address))?;
@@ -371,6 +418,9 @@ fn run() -> Result<i32> {
             }
             let h = peer::serve(port.unwrap_or(0))?;
             println!("{}", t("cli.serve").replace("{port}", &h.port.to_string()).replace("{mdns}", if h.mdns { t("cli.on") } else { t("cli.off") }));
+            if let Some(id) = &h.internet {
+                println!("{}", t("cli.serve_internet").replace("{id}", id));
+            }
             // the postman's round, as the app's watcher would do it
             loop {
                 std::thread::sleep(Duration::from_secs(30));
@@ -535,13 +585,30 @@ fn print_peers(v: &serde_json::Value) {
     println!("{}", t("cli.peers_me").replace("{name}", me["name"].as_str().unwrap_or("")).replace("{id}", &model::short_id(me["id"].as_str().unwrap_or(""))));
     let listening = me["listening"].as_u64().map(|p| p.to_string()).unwrap_or_else(|| t("cli.peers_not_listening").to_string());
     println!("{}", t("cli.peers_listening").replace("{v}", &listening));
+    println!("{}", t("cli.peers_internet").replace("{v}", if v["internet"].as_bool().unwrap_or(false) { t("cli.on") } else { t("cli.off") }));
+    println!("{}", t("cli.peers_relay").replace("{v}", v["relay"].as_str().unwrap_or(t("cli.peers_relay_default"))));
     let peers = v["peers"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
     if peers.is_empty() {
         println!("{}", t("cli.peers_none"));
     }
     for p in peers {
         let state = if p["online"].as_bool().unwrap_or(false) { t("cli.peers_online") } else { t("cli.peers_offline") };
-        println!("  {:<20} {:<9} {:<6} {}", truncate(p["name"].as_str().unwrap_or(""), 20), model::short_id(p["id"].as_str().unwrap_or("")), state, p["address"].as_str().unwrap_or(""));
+        let link = p["link"].as_str().unwrap_or("-");
+        let confirmed = if p["verified"].as_bool().unwrap_or(false) { "✓" } else { "?" };
+        println!(
+            "  {:<20} {:<9} {:<6} {:<7} {} {}  {}  {}",
+            truncate(p["name"].as_str().unwrap_or(""), 20),
+            model::short_id(p["id"].as_str().unwrap_or("")),
+            state,
+            link,
+            confirmed,
+            p["fingerprint"].as_str().unwrap_or(""),
+            p["rule"].as_str().unwrap_or("all"),
+            p["address"].as_str().unwrap_or("")
+        );
+        if !p["verified"].as_bool().unwrap_or(true) {
+            println!("    {}", t("cli.peers_unverified").replace("{name}", p["name"].as_str().unwrap_or("")));
+        }
     }
     let seen = v["seen"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
     if !seen.is_empty() {

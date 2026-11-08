@@ -28,6 +28,9 @@ pub const REPLIED: &str = "已回复";
 pub const FAILED: &str = "没送到";
 /// Withdrawn by the sender or the user; nothing delivers it any more.
 pub const CANCELLED: &str = "已取消";
+/// From another machine, held until a person here approves it (the machine is not confirmed
+/// yet, or its rule says to ask). Not pending: no hook or sweep hands it over.
+pub const HELD: &str = "待批准";
 
 /// Still waiting to be delivered (the hook hands these over, the sweep retries them).
 pub fn pending(status: &str) -> bool {
@@ -114,6 +117,9 @@ pub struct Letter {
     /// `claude` / `codex` / `grok` / `human`: what the sender runs on, when it was known at send time.
     #[serde(default)]
     pub from_harness: Option<String>,
+    /// The sending machine's signature over the message, kept on letters that crossed over.
+    #[serde(default)]
+    pub signature: Option<String>,
     pub body: String,
     #[serde(default)]
     pub path: String,
@@ -336,7 +342,7 @@ pub fn render(l: &Letter) -> String {
     if let Some(d) = &l.deadline {
         extra.push_str(&format!("deadline: {d}\n"));
     }
-    for (k, v) in [("from_harness", &l.from_harness), ("from_host", &l.from_host), ("from_host_name", &l.from_host_name), ("to_host", &l.to_host), ("to_host_name", &l.to_host_name)] {
+    for (k, v) in [("from_harness", &l.from_harness), ("from_host", &l.from_host), ("from_host_name", &l.from_host_name), ("to_host", &l.to_host), ("to_host_name", &l.to_host_name), ("signature", &l.signature)] {
         if let Some(v) = v {
             extra.push_str(&format!("{k}: {v}\n"));
         }
@@ -380,6 +386,7 @@ pub fn parse(text: &str) -> Option<Letter> {
         to_host: None,
         to_host_name: None,
         from_harness: None,
+        signature: None,
         body: body.trim_end().to_string(),
         path: String::new(),
     };
@@ -404,6 +411,7 @@ pub fn parse(text: &str) -> Option<Letter> {
             "to_host" => l.to_host = Some(v).filter(|s| !s.is_empty()),
             "to_host_name" => l.to_host_name = Some(v).filter(|s| !s.is_empty()),
             "from_harness" => l.from_harness = Some(v).filter(|s| !s.is_empty()),
+            "signature" => l.signature = Some(v).filter(|s| !s.is_empty()),
             _ => {}
         }
     }
@@ -443,6 +451,7 @@ mod tests {
             to_host: None,
             to_host_name: None,
             from_harness: None,
+            signature: None,
             body: "hello\nworld".into(),
             path: String::new(),
         };
@@ -501,6 +510,7 @@ mod tests {
             to_host: None,
             to_host_name: None,
             from_harness: None,
+            signature: None,
             body: "hi".into(),
             path: String::new(),
         };

@@ -118,9 +118,54 @@ pulled by mirroring are the same letter id, so nothing is delivered twice.
 - `dispatch sessions` shows remote sessions with their machine; `send`, `status`, `inbox`,
   `reply`, `retry`, `cancel` take remote addresses and ids like local ones.
 
+## Across networks
+
+Machines on different networks reach each other through [iroh](https://www.iroh.computer):
+each listener also has an iroh endpoint, dialled by its public key. iroh punches a direct path
+through the routers when it can and goes through a relay when it cannot. The connection is
+only a pipe: inside it runs the same Noise handshake, key pinning and pairing proof as on the
+local network, end to end. The local network is always tried first.
+
+- **Pairing across networks** uses a pairing link instead of the six-digit code: `dispatch
+  peers link` (or Settings → Make a pairing link) prints a `dispatch-pair:` link carrying this
+  machine's id, its Noise and iroh keys, where to reach it, and a 64-character one-time
+  secret; it is good for ten minutes and one use. The other machine pastes it (`dispatch peers
+  pair "<link>"`); the machine that answers must hold the Noise key in the link, and the
+  pairing proof is an HMAC of the secret over the handshake hash, as with the code.
+- **Fingerprints.** Both machines show the same four groups of digits, computed from the two
+  machines' keys. A machine paired by link stays unconfirmed until a person compares them on
+  both screens and confirms (`dispatch peers verify <name>`); letters from an unconfirmed
+  machine are held for approval. Pairing by code in the same room confirms at once.
+- **Proxies.** Relay connections follow the HTTP proxy in `HTTPS_PROXY` / `ALL_PROXY`, else the
+  macOS system proxy, the way a browser's would: on networks where only proxied connections get
+  out (a VPN client in TUN mode, a company proxy) the relay is reached through it.
+- **Relays.** By default n0's public relays and n0's address lookup; Settings or `dispatch
+  peers relay <url>` names a relay of your own (`iroh-relay`), and then nothing is published to
+  or looked up from n0. `dispatch peers internet off` keeps a machine on the local network only.
+
+## Security
+
+What a relay (or anyone on the path) can and cannot do:
+
+- It cannot read a message: the QUIC connection is encrypted between the two machines, and our
+  own Noise stream inside it is encrypted again with keys only the two machines hold.
+- It cannot change one: every packet is authenticated, and every letter is also signed with the
+  sending machine's iroh key (ed25519) and checked against the key pinned for that machine before
+  it is stored. A forged, altered or unsigned letter is refused and logged in `peer/errors.log`.
+- It cannot pretend to be your other machine: both keys are pinned at pairing; a different key
+  is refused until the machine is paired again.
+- It can see both machines' IP addresses, when they connect and how much they send, and it can
+  delay or drop traffic. Dropped letters stay queued and the sweep tries again.
+
+What a paired machine can do is send letters, so each machine gets a receiving rule here:
+`all` (deliver), `contacts` (only to sessions in this machine's address book) or `ask` (each
+letter is held until someone here approves it in the feed). At most 30 letters per five
+minutes are taken from one machine. A delivered letter is still framed for the agent as a
+message from another agent, not an instruction from the user, and names the verified sender.
+
 ## What it does not do yet
 
 - Push notifications of replies to a sender that is not listening (the sender pulls).
-- Relaying through a third machine or a server; machines must reach each other directly.
+- Relaying through a third Dispatch machine (relays are iroh's, not Dispatch's).
 - Running the listener as a system service without the app (`dispatch serve` is a
   foreground command; a launchd / systemd unit is the user's).
