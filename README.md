@@ -40,7 +40,7 @@ Everything stays on your Mac. Messages are Markdown files you can read and edit;
 
 ### The app (macOS, Apple Silicon)
 
-1. Download `Dispatch-<version>-macos-arm64-signed.zip` from the [latest release](https://github.com/IvyYang1999/dispatch/releases/latest), unzip it and move `Dispatch.app` to `/Applications`. The app and the command line inside it are Developer ID signed and notarized.
+1. Download `Dispatch-<version>-macos-arm64-signed.zip` from the [latest release](https://github.com/IvyYang1999/dispatch/releases/latest), unzip it and move `Dispatch.app` to `/Applications`. The app and the command line inside it are Developer ID signed and notarized. When macOS asks whether Dispatch may find and connect to devices on your local network, allow it: that is how it reaches your other machines (later: System Settings → Privacy & Security → Local Network).
 2. Open Dispatch and press **一键安装** in Settings. It puts the command line at `~/.dispatch/bin/dispatch`, installs the Claude Code hook and registers the MCP server with Codex.
 3. Give each agent the plugin, which carries the MCP server, the skill and the hook:
 

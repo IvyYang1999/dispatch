@@ -40,7 +40,7 @@
 
 ### App（macOS，Apple Silicon）
 
-1. 到[最新 Release](https://github.com/IvyYang1999/dispatch/releases/latest) 下载 `Dispatch-<版本>-macos-arm64-signed.zip`，解压，把 `Dispatch.app` 拖进 `/Applications`。App 和包里的命令行都用 Developer ID 签名并经过苹果公证。
+1. 到[最新 Release](https://github.com/IvyYang1999/dispatch/releases/latest) 下载 `Dispatch-<版本>-macos-arm64-signed.zip`，解压，把 `Dispatch.app` 拖进 `/Applications`。App 和包里的命令行都用 Developer ID 签名并经过苹果公证。 macOS 问「是否允许 Dispatch 查找并连接本地网络上的设备」时点允许，跨电脑靠的就是它（以后在「系统设置 → 隐私与安全性 → 本地网络」里也能改）。
 2. 打开 Dispatch，在「设置」里点 **一键安装**：命令行装到 `~/.dispatch/bin/dispatch`，装好 Claude Code 的 hook，把 MCP 注册给 Codex。
 3. 给每个 Agent 装插件（MCP 工具、skill、hook 一步到位）：
 
