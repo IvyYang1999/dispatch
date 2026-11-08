@@ -46,7 +46,7 @@ Everything stays on your Mac. Messages are Markdown files you can read and edit;
 codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch   # Codex
 ```
 
-Updates: Settings → **检查更新**. The app verifies the package against its built-in public key, replaces itself and restarts.
+Updates: Settings → **检查更新**. The app verifies the package against its built-in public key, replaces itself and restarts. On startup it refreshes an already-installed CLI, keeping existing hook and MCP registrations.
 
 ### From source
 
@@ -145,7 +145,7 @@ The Claude Code hook goes into `~/.claude/settings.json` (UserPromptSubmit, Stop
 cargo test
 cargo build --release
 cd apps/desktop && npm install && npm run tauri dev
-scripts/release.sh v0.1.4 "what changed"    # CLI, app with the CLI inside, zip, updater package, latest.json; PUBLISH=1 creates the GitHub release
+scripts/release.sh v0.1.4 "what changed"    # signed/notarized Mac artifacts; credentials and PUBLISH=1: docs/releasing.md
 ```
 
 ```

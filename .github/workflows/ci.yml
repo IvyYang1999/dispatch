@@ -37,3 +37,8 @@ jobs:
         run: node scripts/sidecar.mjs
       - name: Tests
         run: cargo test --workspace --locked
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Release safety gates (no credentials or uploads)
+        run: python -m unittest discover -s scripts -p test_release.py -v
