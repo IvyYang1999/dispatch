@@ -11,6 +11,7 @@
 //! - `peer/seen.json`, `peer/serving.json`: what mDNS saw, and the listener's heartbeat.
 
 mod client;
+mod persistence;
 pub mod mdns;
 pub mod net;
 mod server;
@@ -89,9 +90,7 @@ fn rule_all() -> String {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Book {
-    #[serde(default)]
     pub me: Me,
-    #[serde(default)]
     pub peers: Vec<PeerInfo>,
 }
 
@@ -128,49 +127,15 @@ fn new_keypair() -> Result<snow::Keypair> {
 
 /// The private key, made with the book on first use.
 pub(crate) fn private_key() -> Result<Vec<u8>> {
-    load();
-    let text = std::fs::read_to_string(key_path())?;
-    let k = hex::decode(text.trim())?;
-    if k.len() != 32 {
-        anyhow::bail!("peer.key is not a 32-byte key");
-    }
-    Ok(k)
+    let _lock = persistence::lock()?;
+    persistence::load_locked()?;
+    persistence::read_key()
 }
 
-fn load_raw() -> Book {
-    std::fs::read_to_string(book_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
-}
-
-/// Me and the paired peers; an id, a name and a key pair are made the first time.
-pub fn load() -> Book {
-    let mut b = load_raw();
-    let mut dirty = false;
-    if b.me.id.is_empty() {
-        b.me.id = uuid::Uuid::new_v4().to_string();
-        dirty = true;
-    }
-    if b.me.name.trim().is_empty() {
-        b.me.name = default_name();
-        dirty = true;
-    }
-    if b.me.public_key.is_empty() || !key_path().exists() {
-        if let Ok(kp) = new_keypair() {
-            if write_private(&key_path(), &hex::encode(&kp.private)).is_ok() {
-                b.me.public_key = hex::encode(&kp.public);
-                dirty = true;
-            }
-        }
-    }
-    if dirty {
-        let _ = save(&b);
-    }
-    b
-}
-
-pub fn save(b: &Book) -> Result<()> {
-    std::fs::create_dir_all(root())?;
-    std::fs::write(book_path(), serde_json::to_string_pretty(b)? + "\n")?;
-    Ok(())
+/// Me and paired peers. Only a completely new store creates an identity.
+pub fn load() -> Result<Book> {
+    let _lock = persistence::lock()?;
+    persistence::load_locked()
 }
 
 /// The computer's name, as the system shows it.
@@ -183,96 +148,86 @@ fn default_name() -> String {
     name.filter(|n| !n.is_empty()).unwrap_or_else(|| "Dispatch".into()).chars().take(48).collect()
 }
 
-pub fn me() -> Me {
-    load().me
+pub fn me() -> Result<Me> {
+    Ok(load()?.me)
 }
 
-pub fn peers() -> Vec<PeerInfo> {
-    load().peers
+pub fn peers() -> Result<Vec<PeerInfo>> {
+    Ok(load()?.peers)
 }
 
 pub fn set_name(name: &str) -> Result<Me> {
-    let mut b = load();
-    b.me.name = name.trim().chars().take(48).collect();
-    if b.me.name.is_empty() {
-        anyhow::bail!("the name is empty");
-    }
-    save(&b)?;
-    Ok(b.me)
+    let name: String = name.trim().chars().take(48).collect();
+    if name.is_empty() { anyhow::bail!("the name is empty"); }
+    persistence::update(|b| { b.me.name = name; Ok(b.me.clone()) })
 }
 
-/// A paired peer by name (case does not matter) or by a prefix of its id.
-pub fn find_peer(q: &str) -> Option<PeerInfo> {
+fn find_in(b: &Book, q: &str) -> Option<PeerInfo> {
     let q = q.trim();
-    if q.is_empty() {
-        return None;
-    }
-    let peers = peers();
-    peers.iter().find(|p| p.name.eq_ignore_ascii_case(q)).or_else(|| peers.iter().find(|p| q.len() >= 4 && p.id.starts_with(&q.to_lowercase()))).cloned()
+    if q.is_empty() { return None; }
+    b.peers.iter().find(|p| p.name.eq_ignore_ascii_case(q))
+        .or_else(|| b.peers.iter().find(|p| q.len() >= 4 && p.id.starts_with(&q.to_lowercase()))).cloned()
 }
 
-pub(crate) fn peer_by_key(key: &[u8]) -> Option<PeerInfo> {
+/// A paired peer by name or id prefix. Storage errors must not look like an unpaired host.
+pub fn find_peer(q: &str) -> Result<Option<PeerInfo>> { Ok(find_in(&load()?, q)) }
+
+pub(crate) fn peer_by_key(key: &[u8]) -> Result<Option<PeerInfo>> {
     let k = hex::encode(key);
-    peers().into_iter().find(|p| p.public_key.eq_ignore_ascii_case(&k))
+    Ok(peers()?.into_iter().find(|p| p.public_key.eq_ignore_ascii_case(&k)))
 }
 
-/// Add or replace a peer (by id).
+/// Add or replace a peer by id after explicit pairing.
 pub fn remember(p: PeerInfo) -> Result<()> {
-    let mut b = load();
-    b.peers.retain(|x| x.id != p.id);
-    b.peers.push(p);
-    save(&b)
+    persistence::update(|b| { b.peers.retain(|x| x.id != p.id); b.peers.push(p); Ok(()) })
 }
 
 pub fn forget(q: &str) -> Result<Option<PeerInfo>> {
-    let Some(p) = find_peer(q) else { return Ok(None) };
-    let mut b = load();
-    b.peers.retain(|x| x.id != p.id);
-    save(&b)?;
-    Ok(Some(p))
+    persistence::update(|b| {
+        let p = find_in(b, q);
+        if let Some(p) = &p { b.peers.retain(|x| x.id != p.id); }
+        Ok(p)
+    })
 }
 
-/// A hand-set address for a paired peer; None goes back to mDNS.
+fn edit_peer(q: &str, edit: impl FnOnce(&mut PeerInfo) -> Result<()>) -> Result<PeerInfo> {
+    persistence::update(|b| {
+        let p = find_in(b, q).ok_or_else(|| anyhow::anyhow!("{}", t("cli.peers_not_found").replace("{q}", q)))?;
+        let p = b.peers.iter_mut().find(|x| x.id == p.id).expect("found under the same lock");
+        edit(p)?;
+        Ok(p.clone())
+    })
+}
+
 pub fn set_address(q: &str, address: Option<String>) -> Result<PeerInfo> {
-    let Some(p) = find_peer(q) else { anyhow::bail!("{}", t("cli.peers_not_found").replace("{q}", q)) };
-    let mut b = load();
-    let mut out = p.clone();
-    for x in b.peers.iter_mut() {
-        if x.id == p.id {
-            x.address = address.clone().map(|a| a.trim().to_string()).filter(|a| !a.is_empty());
-            out = x.clone();
-        }
-    }
-    save(&b)?;
-    Ok(out)
+    edit_peer(q, |p| { p.address = address.map(|a| a.trim().to_string()).filter(|a| !a.is_empty()); Ok(()) })
 }
 
-/// Pin a peer's signing key and keep its internet address current. A different key than the
-/// one pinned is refused: the machine has to be paired again.
 pub(crate) fn pin_keys(peer_id: &str, iroh: Option<String>, iroh_addr: Option<Value>) -> Result<(), PeerError> {
-    let mut b = load();
-    let Some(p) = b.peers.iter_mut().find(|p| p.id == peer_id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
-    if let Some(new) = iroh.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
-        match &p.iroh_id {
-            Some(old) if old != &new => {
+    persistence::update(|b| {
+        let p = b.peers.iter_mut().find(|p| p.id == peer_id)
+            .ok_or_else(|| anyhow::anyhow!("not paired with that machine"))?;
+        if let Some(new) = iroh.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+            if p.iroh_id.as_ref().is_some_and(|old| old != &new) {
                 log_problem(&p.name, "its signing key changed; refused until it is paired again");
-                return Err(PeerError::Refused("that machine's signing key changed; pair it again".into()));
+                anyhow::bail!("that machine's signing key changed; pair it again");
             }
-            Some(_) => {}
-            None => p.iroh_id = Some(new),
+            p.iroh_id = Some(new);
         }
-    }
-    if iroh_addr.is_some() {
-        p.iroh_addr = iroh_addr;
-    }
-    save(&b).map_err(|e| PeerError::Protocol(format!("{e:#}")))
+        if iroh_addr.is_some() { p.iroh_addr = iroh_addr; }
+        Ok(())
+    }).map_err(|e| PeerError::Refused(format!("{e:#}")))
 }
 
 /// Four groups of four digits that both machines of a pair compute the same way from the two
 /// machines' keys: what a person compares on the two screens.
-pub fn fingerprint(peer_key: &str) -> String {
+pub fn fingerprint(peer_key: &str) -> Result<String> {
+    Ok(fingerprint_with(&me()?.public_key, peer_key))
+}
+
+fn fingerprint_with(my_key: &str, peer_key: &str) -> String {
     use sha2::{Digest, Sha256};
-    let mine = me().public_key.to_lowercase();
+    let mine = my_key.to_lowercase();
     let theirs = peer_key.to_lowercase();
     let (a, b) = if mine <= theirs { (mine, theirs) } else { (theirs, mine) };
     let h = Sha256::digest(format!("dispatch-fingerprint/1:{a}:{b}").as_bytes());
@@ -282,15 +237,7 @@ pub fn fingerprint(peer_key: &str) -> String {
 /// A person compared the fingerprints: the machine is confirmed, and its letters held for
 /// that reason are delivered (unless its rule says to ask). Returns how many were released.
 pub fn verify_peer(q: &str) -> Result<(PeerInfo, usize)> {
-    let Some(p) = find_peer(q) else { anyhow::bail!("{}", t("cli.peers_not_found").replace("{q}", q)) };
-    let mut b = load();
-    for x in b.peers.iter_mut() {
-        if x.id == p.id {
-            x.verified = true;
-        }
-    }
-    save(&b)?;
-    let p = find_peer(&p.id).unwrap_or(p);
+    let p = edit_peer(q, |p| { p.verified = true; Ok(()) })?;
     let mut released = 0;
     if p.rule != "ask" {
         let store = Store::open();
@@ -310,17 +257,7 @@ pub fn set_rule(q: &str, rule: &str) -> Result<PeerInfo> {
     if !matches!(rule, "all" | "contacts" | "ask") {
         anyhow::bail!("the rule must be all, contacts or ask");
     }
-    let Some(p) = find_peer(q) else { anyhow::bail!("{}", t("cli.peers_not_found").replace("{q}", q)) };
-    let mut b = load();
-    let mut out = p.clone();
-    for x in b.peers.iter_mut() {
-        if x.id == p.id {
-            x.rule = rule.to_string();
-            out = x.clone();
-        }
-    }
-    save(&b)?;
-    Ok(out)
+    edit_peer(q, |p| { p.rule = rule.to_string(); Ok(()) })
 }
 
 /// A line for whoever has to find out why a machine is offline or a letter was refused.
@@ -388,7 +325,7 @@ pub fn new_link() -> Result<(String, i64)> {
     }
     let iroh = net::my_id().ok_or_else(|| anyhow::anyhow!("no iroh key"))?;
     let secret = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-    let me = me();
+    let me = me()?;
     let addr = net::my_addr_ready(Duration::from_secs(15));
     if addr.is_none() {
         anyhow::bail!("nothing here listens over the internet yet: open the Dispatch app, or run dispatch serve");
@@ -415,6 +352,7 @@ fn read_pairing() -> Option<Pairing> {
 
 /// A new six-digit code, good for two minutes: (code, seconds left).
 pub fn new_code() -> Result<(String, i64)> {
+    load()?;
     let bytes = uuid::Uuid::new_v4().into_bytes();
     let n = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) % 1_000_000;
     let code = format!("{n:06}");
@@ -449,10 +387,9 @@ pub(crate) fn take_pairing(ok: impl Fn(&str) -> bool) -> Result<Option<String>, 
 // ---------------------------------------------------------------- addressing
 
 /// `<peer>/<session>`: the peer when the part before the slash names one.
-pub fn split_address(q: &str) -> Option<(PeerInfo, String)> {
-    let (h, rest) = q.split_once('/')?;
-    let p = find_peer(h)?;
-    Some((p, rest.trim().to_string()))
+pub fn split_address(q: &str) -> Result<Option<(PeerInfo, String)>> {
+    let Some((h, rest)) = q.split_once('/') else { return Ok(None) };
+    Ok(find_peer(h)?.map(|p| (p, rest.trim().to_string())))
 }
 
 /// A session on a peer known only by id and name (a stored copy's recipient or sender).
@@ -610,7 +547,7 @@ pub fn sessions_of(p: &PeerInfo) -> Option<Vec<Session>> {
 
 /// The sessions on every paired peer that answers.
 pub fn remote_sessions() -> Vec<Session> {
-    let peers = peers();
+    let peers = match peers() { Ok(p) => p, Err(e) => { log_problem("storage", &format!("{e:#}")); return vec![]; } };
     let mut out = vec![];
     for p in &peers {
         if let Some(list) = sessions_of(p) {
@@ -632,7 +569,7 @@ pub fn remote_reach(s: &Session) -> Reach {
 
 /// Hand a letter to the machine its recipient is on: (status there, route, detail).
 pub fn deliver(host: &Host, letter: &Letter) -> Result<(String, String, String), PeerError> {
-    let Some(p) = peers().into_iter().find(|p| p.id == host.id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
+    let Some(p) = peers().map_err(|e| PeerError::Refused(format!("{e:#}")))?.into_iter().find(|p| p.id == host.id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
     let signature = net::secret().ok().map(|k| sign::sign(&k, letter));
     match ask(&p, &Request::Deliver { letter: letter.clone(), signature })? {
         Response::Delivered { status, route, detail } => Ok((status, route, detail)),
@@ -643,7 +580,7 @@ pub fn deliver(host: &Host, letter: &Letter) -> Result<(String, String, String),
 
 /// The last turns of a session on a peer, as that machine reads them.
 pub fn transcript(host: &Host, session_id: &str, limit: usize) -> Result<Vec<crate::transcript::Turn>, PeerError> {
-    let Some(p) = peers().into_iter().find(|p| p.id == host.id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
+    let Some(p) = peers().map_err(|e| PeerError::Refused(format!("{e:#}")))?.into_iter().find(|p| p.id == host.id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
     match ask(&p, &Request::Transcript { session_id: session_id.to_string(), limit })? {
         Response::Transcript { turns } => Ok(turns),
         Response::Error { message } => Err(PeerError::Refused(message)),
@@ -653,7 +590,7 @@ pub fn transcript(host: &Host, session_id: &str, limit: usize) -> Result<Vec<cra
 
 /// Withdraw a copy on a peer, best effort.
 pub fn cancel(host: &Host, letter_id: &str) {
-    if let Some(p) = peers().into_iter().find(|p| p.id == host.id) {
+    if let Some(p) = peers().ok().into_iter().flatten().find(|p| p.id == host.id) {
         let _ = ask(&p, &Request::Cancel { letter_id: letter_id.to_string() });
     }
 }
@@ -667,11 +604,11 @@ pub fn remote_stage(letter_id: &str) -> Option<(String, String)> {
 /// and letters for sessions here (replies) that have not arrived yet. At most once every ten
 /// seconds per peer. Returns how many letters changed or arrived.
 pub fn mirror(store: &Store) -> Result<usize> {
-    let peers = peers();
+    let peers = peers()?;
     if peers.is_empty() {
         return Ok(0);
     }
-    let me = me();
+    let me = me()?;
     let letters = store.list(None, false)?;
     let cutoff = store::time_text(chrono::Local::now().naive_local() - chrono::Duration::days(7));
     let mut by_peer: HashMap<String, BTreeSet<String>> = HashMap::new();
@@ -757,8 +694,8 @@ pub fn mirror(store: &Store) -> Result<usize> {
 
 /// Me, the paired peers (online or not) and the machines seen but not paired, for the
 /// command line and the app.
-pub fn overview() -> Value {
-    let b = load();
+pub fn overview() -> Result<Value> {
+    let b = load()?;
     let seen = mdns::seen_all();
     let listening = mdns::serving();
     let peers: Vec<Value> = b
@@ -775,7 +712,7 @@ pub fn overview() -> Value {
                 "seen": s.map(|s| json!({ "addrs": s.addrs, "port": s.port })),
                 "problem": backoff.or_else(|| probe.err()),
                 "link": link.or(if s.is_some() { Some("lan") } else { None }),
-                "fingerprint": fingerprint(&p.public_key),
+                "fingerprint": fingerprint_with(&b.me.public_key, &p.public_key),
                 "verified": p.verified,
                 "rule": p.rule,
                 "internet": p.iroh_id.is_some(),
@@ -783,7 +720,7 @@ pub fn overview() -> Value {
         })
         .collect();
     let unpaired: Vec<Value> = seen.iter().filter(|s| !b.peers.iter().any(|p| p.id == s.id)).map(|s| json!({ "id": s.id, "name": s.name, "addrs": s.addrs, "port": s.port })).collect();
-    json!({
+    Ok(json!({
         "me": { "id": b.me.id, "name": b.me.name, "public_key": b.me.public_key, "listening": listening, "iroh_id": net::my_id(), "internet_listening": net::my_addr().is_some() },
         "internet": net::enabled(),
         "relay": net::relay_url(),
@@ -791,12 +728,28 @@ pub fn overview() -> Value {
         "peers": peers,
         "seen": unpaired,
         "code": current_code().map(|(c, left)| json!({ "code": c, "seconds_left": left })),
-    })
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn corrupt_book_never_replaces_existing_identity() {
+        let base = std::env::temp_dir().join(format!("dispatch-corrupt-{}", uuid::Uuid::new_v4()));
+        store::set_thread_root(Some(base.clone()));
+        load().unwrap();
+        let key_before = std::fs::read(key_path()).unwrap();
+        std::fs::write(book_path(), b"{\"me\":").unwrap();
+        assert!(load().is_err());
+        let key_unchanged = std::fs::read(key_path()).unwrap() == key_before;
+        let book_unchanged = std::fs::read(book_path()).unwrap() == b"{\"me\":";
+        store::set_thread_root(None);
+        std::fs::remove_dir_all(base).unwrap();
+        assert!(key_unchanged, "a read must never replace an existing private key");
+        assert!(book_unchanged, "preserve the damaged book for recovery");
+    }
 
     /// Two machines in two store folders of one process: pair with a code, list sessions, deliver
     /// a letter, then mirror the status the other machine gives it.
@@ -808,7 +761,7 @@ mod tests {
         let b_root = base.join("b");
         // machine B: its book and key, a code, a listener thread that works out of B's folder
         store::set_thread_root(Some(b_root.clone()));
-        let b_me = load().me;
+        let b_me = load().unwrap().me;
         let b_key = private_key().unwrap();
         let (code, _) = new_code().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -826,7 +779,7 @@ mod tests {
         });
         // machine A pairs with B at that address
         store::set_thread_root(Some(a_root.clone()));
-        let a_me = load().me;
+        let a_me = load().unwrap().me;
         assert_ne!(a_me.id, b_me.id);
         let p = pair(&format!("{addr}"), &code).expect("pairing");
         assert_eq!(p.id, b_me.id);
@@ -834,7 +787,7 @@ mod tests {
         assert!(current_code().is_none() || true, "the code lives on B");
         // B remembered A as well
         store::set_thread_root(Some(b_root.clone()));
-        assert!(peers().iter().any(|x| x.id == a_me.id && x.public_key == a_me.public_key));
+        assert!(peers().unwrap().iter().any(|x| x.id == a_me.id && x.public_key == a_me.public_key));
         store::set_thread_root(Some(a_root.clone()));
         // A lists B's sessions (whatever this host runs) and delivers a letter
         assert!(sessions_of(&p).is_some(), "a paired peer answers");
@@ -882,7 +835,7 @@ mod tests {
         assert_eq!(local.status, store::READ_BY_HOOK);
         assert_eq!(remote_stage(&letter.id), Some(("delivered".into(), "stage.delivered_hook".into())));
         // both sides learned each other's signing key on the way
-        assert!(peers().iter().any(|x| x.id == b_me.id && x.iroh_id.is_some()));
+        assert!(peers().unwrap().iter().any(|x| x.id == b_me.id && x.iroh_id.is_some()));
         // a letter with a forged signature is refused before it is stored
         let mut forged = letter.clone();
         forged.id = uuid::Uuid::new_v4().to_string();
@@ -899,9 +852,7 @@ mod tests {
         assert!(Store::at(b_root.clone()).list(None, false).unwrap().iter().all(|l| l.id != forged.id), "nothing forged was stored");
         // a machine that is not confirmed gets its letters held; confirming it releases them
         store::set_thread_root(Some(b_root.clone()));
-        let mut book = load();
-        book.peers.iter_mut().for_each(|x| x.verified = false);
-        save(&book).unwrap();
+        persistence::update(|book| { book.peers.iter_mut().for_each(|x| x.verified = false); Ok(()) }).unwrap();
         store::set_thread_root(Some(a_root.clone()));
         let mut held = letter.clone();
         held.id = uuid::Uuid::new_v4().to_string();

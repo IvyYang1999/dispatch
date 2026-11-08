@@ -140,23 +140,23 @@ pub(crate) fn request(p: &PeerInfo, req: &Request) -> Result<Response, PeerError
 }
 
 /// A name mDNS saw, a paired peer's name, or `host:port`.
-fn target_addrs(target: &str) -> Vec<SocketAddr> {
+fn target_addrs(target: &str) -> Result<Vec<SocketAddr>, PeerError> {
     if let Some(s) = mdns::seen_by_name(target) {
-        return s.socket_addrs();
+        return Ok(s.socket_addrs());
     }
-    if let Some(p) = find_peer(target) {
+    if let Some(p) = find_peer(target).map_err(protocol)? {
         let a = addresses(&p);
         if !a.is_empty() {
-            return a;
+            return Ok(a);
         }
     }
-    resolve(target)
+    Ok(resolve(target))
 }
 
 /// Who is at `target`: id, name, version and static key, no pairing needed.
 pub fn hello(target: &str) -> Result<(String, String, String, String), PeerError> {
     let key = private_key().map_err(protocol)?;
-    let mut conn = connect(&target_addrs(target), &key)?;
+    let mut conn = connect(&target_addrs(target)?, &key)?;
     conn.send(&Request::Hello).map_err(protocol)?;
     match conn.recv().map_err(protocol)? {
         Response::Welcome { id, name, version, .. } => Ok((id, name, version, hex::encode(&conn.remote_key))),
@@ -169,7 +169,7 @@ pub fn hello(target: &str) -> Result<(String, String, String, String), PeerError
 pub fn pair(target: &str, code: &str) -> Result<PeerInfo, PeerError> {
     let code = code.trim();
     let key = private_key().map_err(protocol)?;
-    let mut conn = connect(&target_addrs(target), &key)?;
+    let mut conn = connect(&target_addrs(target)?, &key)?;
     // a machine mDNS does not see keeps the address it was reached at
     let manual = mdns::seen_by_name(target).is_none();
     finish_pairing(&mut conn, code, true, if manual { Some(target.trim().to_string()) } else { None })
@@ -177,7 +177,7 @@ pub fn pair(target: &str, code: &str) -> Result<PeerInfo, PeerError> {
 
 /// Send the proof and record the machine that accepted it.
 fn finish_pairing(conn: &mut wire::Conn, secret: &str, verified: bool, address: Option<String>) -> Result<PeerInfo, PeerError> {
-    let me = me();
+    let me = me().map_err(protocol)?;
     let proof = wire::proof(secret, &conn.handshake_hash);
     conn.send(&Request::Pair { proof, id: me.id, name: me.name, iroh: net::my_id(), iroh_addr: net::my_addr() }).map_err(protocol)?;
     match conn.recv().map_err(protocol)? {

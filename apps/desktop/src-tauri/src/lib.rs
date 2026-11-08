@@ -153,7 +153,7 @@ async fn set_notify(on: bool) -> Result<bool, String> {
 /// Me, the paired machines (with who answers right now) and the machines seen but not paired.
 #[tauri::command]
 async fn peers_overview() -> Result<Value, String> {
-    blocking(|| Ok(peer::overview())).await
+    blocking(|| peer::overview().map_err(err)).await
 }
 
 /// Browse the network for two seconds, then the overview.
@@ -161,7 +161,7 @@ async fn peers_overview() -> Result<Value, String> {
 async fn peer_scan() -> Result<Value, String> {
     blocking(|| {
         peer::mdns::scan(Duration::from_secs(2));
-        Ok(peer::overview())
+        peer::overview().map_err(err)
     })
     .await
 }
@@ -183,7 +183,9 @@ async fn peer_code() -> Result<Value, String> {
 async fn peer_pair(target: String, code: Option<String>) -> Result<Value, String> {
     blocking(move || {
         let p = if peer::is_link(&target) { peer::pair_link(&target) } else { peer::pair(&target, code.as_deref().unwrap_or("")) };
-        p.map(|p| json!({ "id": p.id, "name": p.name, "verified": p.verified, "fingerprint": peer::fingerprint(&p.public_key) })).map_err(|e| e.to_string())
+        let p = p.map_err(|e| e.to_string())?;
+        let fingerprint = peer::fingerprint(&p.public_key).map_err(err)?;
+        Ok(json!({ "id": p.id, "name": p.name, "verified": p.verified, "fingerprint": fingerprint }))
     })
     .await
 }

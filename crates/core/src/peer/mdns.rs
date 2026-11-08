@@ -108,7 +108,7 @@ fn remove(fullname: &str) {
 
 /// Advertise this machine's listener and keep watching for others, in background threads.
 pub(crate) fn start(port: u16) -> anyhow::Result<()> {
-    let me = me();
+    let me = me()?;
     let daemon = ServiceDaemon::new()?;
     let mut props = HashMap::new();
     props.insert("id".to_string(), me.id.clone());
@@ -140,9 +140,9 @@ pub(crate) fn start(port: u16) -> anyhow::Result<()> {
 
 /// Browse for `wait`, merging what shows up into the seen list.
 pub fn scan(wait: Duration) -> Vec<Seen> {
+    let mine = match me() { Ok(m) => m.id, Err(e) => { super::log_problem("storage", &format!("{e:#}")); return vec![]; } };
     if let Ok(daemon) = ServiceDaemon::new() {
         if let Ok(rx) = daemon.browse(SERVICE) {
-            let mine = me().id;
             let end = Instant::now() + wait;
             loop {
                 let now = Instant::now();

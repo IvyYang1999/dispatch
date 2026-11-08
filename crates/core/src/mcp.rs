@@ -77,7 +77,7 @@ fn call(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
     let s = |k: &str| args.get(k).and_then(|v| v.as_str()).map(str::to_string);
     let b = |k: &str| args.get(k).and_then(|v| v.as_bool());
     match name {
-        "dispatch_whoami" => Ok(ops::whoami()),
+        "dispatch_whoami" => ops::whoami().map_err(|e| format!("{e:#}")),
         "dispatch_sessions" => Ok(ops::sessions(b("running_only").unwrap_or(true))),
         "dispatch_find" => Ok(ops::find(&s("query").unwrap_or_default())),
         "dispatch_send" => {

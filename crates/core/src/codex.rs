@@ -98,7 +98,7 @@ impl Drop for Server {
 impl Server {
     fn initialize(transport: Transport, shared: bool) -> Result<Server> {
         let mut s = Server { transport, next_id: 1, shared };
-        s.call("initialize", json!({ "clientInfo": { "name": "dispatch", "version": env!("CARGO_PKG_VERSION"), "title": "Dispatch" } }), Duration::from_secs(10))?;
+        s.call("initialize", json!({ "clientInfo": { "name": "dispatch", "version": env!("CARGO_PKG_VERSION"), "title": "Dispatch" }, "capabilities": { "experimentalApi": true } }), Duration::from_secs(10))?;
         s.write(json!({ "method": "initialized", "params": {} }), Duration::from_secs(2))?;
         Ok(s)
     }
@@ -402,6 +402,33 @@ fn receipt_text(text: &str, marker: &str) -> Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn initialize_enables_experimental_queue_api() {
+        let (client, socket) = UnixStream::pair().unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut ws = tungstenite::accept(socket).unwrap();
+            let init: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            assert_eq!(init["method"], "initialize");
+            let enabled = init["params"]["capabilities"]["experimentalApi"] == true;
+            let response = if enabled { json!({"id":init["id"],"result":{}}) }
+                else { json!({"id":init["id"],"error":{"code":-32600,"message":"experimentalApi required"}}) };
+            ws.send(Message::Text(response.to_string().into())).unwrap();
+            if enabled {
+                let ready: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(ready["method"], "initialized");
+                let request: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+                assert_eq!(request["method"], "thread/queue/add");
+                ws.send(Message::Text(json!({"id":request["id"],"result":{"queuedSubmission":{"id":"queue-1","clientUserMessageId":"letter-1"}}}).to_string().into())).unwrap();
+            }
+        });
+        let (ws, _) = tungstenite::client("ws://localhost/", client).unwrap();
+        let result = Server::initialize(Transport::Shared(ws), true)
+            .and_then(|mut server| queue_add_on(&mut server, "thread-1", "test", "letter-1"));
+        worker.join().unwrap();
+        assert_eq!(result.unwrap(), "queue-1");
+    }
     #[cfg(unix)]
     #[test]
     fn websocket_handshake_and_call_deadline() {

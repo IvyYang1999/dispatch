@@ -169,3 +169,18 @@ message from another agent, not an instruction from the user, and names the veri
 - Relaying through a third Dispatch machine (relays are iroh's, not Dispatch's).
 - Running the listener as a system service without the app (`dispatch serve` is a
   foreground command; a launchd / systemd unit is the user's).
+
+## Pairing state recovery (0.1.9+)
+
+The app, CLI and MCP share an OS file lock while initializing or changing the pairing book.
+Writes replace a complete snapshot atomically. Invalid, unreadable or incomplete state
+returns an error; it never regenerates an existing identity or replaces a private key.
+Local sessions remain usable when the remote pairing book is unavailable.
+
+If recovery is needed, quit all Dispatch instances first. Keep the existing files intact
+and restore `peers.json` and `peer.key` from the same trusted local backup, together with
+`peer.iroh.key` if it was present. Private keys must not be shared in issues or chat.
+A key overwritten by an older version cannot be reconstructed from its public key.
+Without a matching backup, a person must explicitly arrange a new pairing; this release
+does not reset or silently re-pair machines. Do not run older Dispatch processes alongside
+a repaired installation: older versions do not honor the new lock.
