@@ -221,6 +221,43 @@ mod tests {
         assert_eq!(peer::load().unwrap().me.id, before.me.id);
     }
 
+    const BUSY: &str = "pairing state is busy; no files changed; retry later";
+
+    // Busy is a documented no-write outcome, not a failed atomic commit. Keep the
+    // original overall deadline and retry only that exact outcome, never storage errors.
+    fn retry_busy<T>(deadline: Instant, mut op: impl FnMut() -> Result<T>) -> Result<T> {
+        loop {
+            let error = match op() { Ok(value) => return Ok(value), Err(error) => error };
+            let busy = match error.downcast_ref::<peer::PeerError>() {
+                Some(peer::PeerError::Refused(reason)) => reason == BUSY,
+                Some(_) => false,
+                None => error.to_string() == BUSY,
+            };
+            if !busy || Instant::now() >= deadline { return Err(error); }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn contention_fixture_retries_only_exact_busy_with_one_deadline() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut calls = 0;
+        retry_busy(deadline, || { calls += 1; if calls == 1 { bail!(BUSY) } Ok(()) }).unwrap();
+        assert_eq!(calls, 2);
+        for error in [
+            anyhow::anyhow!("invalid peers.json"),
+            anyhow::anyhow!("cannot read peer.key"),
+            anyhow::anyhow!(peer::PeerError::Refused("signing key changed".into())),
+            anyhow::anyhow!(peer::PeerError::Protocol(BUSY.into())),
+        ] {
+            let mut once = Some(error);
+            assert!(retry_busy(deadline, || Err::<(), _>(once.take().expect("must not retry this error"))).is_err());
+        }
+        let mut calls = 0;
+        assert!(retry_busy(Instant::now(), || { calls += 1; Err::<(), _>(anyhow::anyhow!(peer::PeerError::Refused(BUSY.into()))) }).is_err());
+        assert_eq!(calls, 1, "an elapsed deadline is never reset");
+    }
+
     // Spawn this exact test in separate OS processes; no real store or network is used.
     #[test]
     fn subprocess_writer() {
@@ -228,14 +265,15 @@ mod tests {
         let index = std::env::var("DISPATCH_PERSISTENCE_TEST_INDEX").unwrap();
         let root = PathBuf::from(root);
         store::set_thread_root(Some(root.clone()));
-        let me = peer::load().unwrap().me;
-        let signing = peer::net::secret().unwrap().public().to_string();
+        let deadline = Instant::now() + Duration::from_secs(25);
+        let me = retry_busy(deadline, peer::load).unwrap().me;
+        let signing = retry_busy(deadline, peer::net::secret).unwrap().public().to_string();
         for i in 0..10 {
             let id = format!("peer-{index}-{i}");
-            peer::remember(peer::PeerInfo { id: id.clone(), name: id.clone(), public_key: me.public_key.clone(), address: None, paired_at: String::new(), iroh_id: None, iroh_addr: None, verified: false, rule: "ask".into() }).unwrap();
-            peer::pin_keys(&id, Some(signing.clone()), Some(serde_json::json!({"fixture":i}))).unwrap();
-            peer::set_rule(&id, "contacts").unwrap();
-            peer::set_address(&id, Some("fixture.invalid:1".into())).unwrap();
+            retry_busy(deadline, || peer::remember(peer::PeerInfo { id: id.clone(), name: id.clone(), public_key: me.public_key.clone(), address: None, paired_at: String::new(), iroh_id: None, iroh_addr: None, verified: false, rule: "ask".into() })).unwrap();
+            retry_busy(deadline, || peer::pin_keys(&id, Some(signing.clone()), Some(serde_json::json!({"fixture":i}))).map_err(anyhow::Error::new)).unwrap();
+            retry_busy(deadline, || peer::set_rule(&id, "contacts")).unwrap();
+            retry_busy(deadline, || peer::set_address(&id, Some("fixture.invalid:1".into()))).unwrap();
         }
         fs::write(root.join(format!("identity-{index}")), me.id).unwrap();
     }
