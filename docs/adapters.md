@@ -8,8 +8,11 @@ message would reach one right now, and deliver. Each kind has an adapter in `cra
 | Claude Code | `~/.claude/projects/*/<id>.jsonl` (recent transcripts) + `~/.claude/sessions/<pid>.json` (live records) + the process list | running with an inbox that accepts → **now**; running in bypass-permissions mode or closed → **later** through the hook; no hook → **none** | write the envelope to the session's Unix socket (`claude.rs`), wait up to 10 s for the transcript to show it queued; otherwise leave it for the hook | the transcript: queued → started → turn finished |
 | Codex | the rollout files under `~/.codex/sessions` plus the shared daemon's loaded-thread list | thread loaded on the shared daemon → **now**; daemon off or thread not loaded → waiting (**none** with a fix) | `codex queue --thread <id>` (`codex.rs`); `--allow-resume` lets the daemon load the thread first | the thread's rollout file: queued → started → completed |
 | Grok Bot | `gbot bots list` through the desktop app's gateway (`grok.rs`), cached a minute | app installed, signed in, `gbot` present, gateway answering → **now** | `gbot send <bot> <envelope>`: a direct message, which may redirect the bot's current turn | `gbot thread`: our message in the transcript → delivered; a bot entry after it → answered |
+| Another machine | the paired machine's own list, asked over the wire (`peer/`), cached 20 s; each session carries its `host` | whatever that machine said when it listed the session; **later** ("machine offline") when it does not answer | push the letter to the machine, which stores it and runs its own ladder; its answer becomes the copy's status | mirrored from that machine when the feed or `status` is read |
 
-A person (`Harness::Human`) is never a recipient; people read the app.
+A person (`Harness::Human`: a copy whose sender was `app`, `cli` or `mcp`) gets replies in the
+feed: such a copy is marked `已送达（派发页）` and nothing is handed over. Machines are described in
+[peers.md](peers.md).
 
 ## The ladder
 

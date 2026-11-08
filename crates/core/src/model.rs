@@ -21,6 +21,13 @@ impl Harness {
     }
 }
 
+/// Another machine running Dispatch, as the home of a session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Host {
+    pub id: String,
+    pub name: String,
+}
+
 /// A session Dispatch knows about: live (a process is running it) or recent (a transcript).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
@@ -43,6 +50,9 @@ pub struct Session {
     pub status: Option<String>,
     /// The transcript file, when one was found.
     pub transcript: Option<String>,
+    /// The machine it is on when that is not this one (a paired peer).
+    #[serde(default)]
+    pub host: Option<Host>,
 }
 
 impl Session {
@@ -51,6 +61,21 @@ impl Session {
             .clone()
             .or_else(|| self.title.clone())
             .unwrap_or_else(|| self.short_id.clone())
+    }
+
+    /// `主力/release`: the display name, with its machine in front when it is elsewhere.
+    pub fn address(&self) -> String {
+        match &self.host {
+            Some(h) => format!("{}/{}", h.name, self.display_name()),
+            None => self.display_name(),
+        }
+    }
+
+    pub fn short_address(&self) -> String {
+        match &self.host {
+            Some(h) => format!("{}/{}", h.name, self.short_id),
+            None => self.short_id.clone(),
+        }
     }
 }
 

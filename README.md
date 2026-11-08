@@ -28,6 +28,7 @@ Claude Code, Codex and Grok Bot sessions on one computer cannot talk to each oth
 - **Receipts** read from the session's own transcript: queued, started, finished, replied.
 - **Not delivered.** When nobody can hand a message over (the session is closed and there is no hook, no codex command, no Grok Bot app) it is marked failed at once, with the fix; a queued copy past its deadline (1 h urgent, 24 h normal, adjustable) counts as failed too. Retry and cancel exist; the app makes a postman's round every half minute and delivers queued copies whose route has opened.
 - **One dispatch, many recipients,** each with its own delivery state.
+- **Across machines.** Machines running Dispatch on one network find each other with Bonjour, pair once with a six-digit code, and talk directly over an encrypted connection; no server, no account. A message to `Mac mini/release` is stored on that machine and delivered by its own ladder, and the reply comes back the same way. Machines the network cannot see (over Tailscale, say) take an address by hand. [How it works](docs/peers.md).
 - **Plugins** for Claude Code and Codex: nine MCP tools, a skill that says when and how to use them, and the hook.
 - **A desktop app** for the humans: the feed, the directory, a composer, one-click installs, and an "open session" button on every recipient. A menu bar item reads "2 queued · 1 failed"; system notifications only for a reply or a failed delivery.
 
@@ -111,6 +112,9 @@ dispatch send --to codex-thread --deadline 30m "…"  # counts as failed after 3
 dispatch retry <message id>                         # try a queued or failed message again
 dispatch cancel <message id>                        # withdraw one that has not been delivered
 dispatch sweep                                      # the postman's round: expire overdue, deliver what can go now (the app does this every 30 s)
+dispatch peers                                      # this machine and the paired ones; `peers code` shows a pairing code, `peers pair <name> <code>` pairs, `peers scan` browses
+dispatch send --to "Mac mini/release" "…"           # a session on a paired machine
+dispatch serve                                      # listen for other machines without the app (the app listens while it runs)
 dispatch codex                                      # what this Mac's Codex can take right now
 dispatch install                                    # CLI to ~/.dispatch/bin, Claude hook, Codex MCP registration
 dispatch mcp                                        # the MCP server over stdio (what the plugins start)
@@ -125,9 +129,10 @@ dispatch mcp                                        # the MCP server over stdio 
 </p>
 
 - **Feed.** One row per dispatch, a chip per recipient colored by its state, the message with its recipients and their replies on the right. Filters for queued and failed. Queued and failed recipients carry Retry and Cancel.
-- **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now.
+- **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now. Paired machines' sessions follow, each group under its machine's name.
 - **Send.** The recipient box is the finder. Urgency. Several recipients at once.
-- **Settings.** One-click install, the plugin commands to copy, the language, notifications, where the messages live, check for updates.
+- **Settings.** One-click install, the plugin commands to copy, other machines (pairing), the language, notifications, where the messages live, check for updates.
+- **Other machines.** Machines running Dispatch on your network appear in Settings; press Pair and enter the code the other one shows. Their sessions join the directory and the composer, and a reply from one of them lands in your feed.
 - **Menu bar.** The icon carries "2 queued · 1 failed" and opens a list of the latest dispatches; pick one and the app jumps to it. Closing the window leaves the app in the menu bar; Quit is in the menu and on ⌘Q.
 - **Notifications.** Two kinds only: a session replied ("Researcher replied to you"), or a delivery failed. Nothing else makes a sound.
 
@@ -159,11 +164,11 @@ plugins/skill    the skill, written once; scripts/sync-plugins.sh copies it into
 
 The updater key lives outside the repository; `tauri.conf.json` carries only its public half.
 
-More: [the message format](docs/message-format.md) (files, status words, the run log), [how a message reaches a session](docs/adapters.md) (the adapters, the ladder, adding one), [CONTRIBUTING.md](CONTRIBUTING.md) (build, texts, releases). CI runs the tests on macOS, Linux and Windows; Linux and Windows bundles are built by `.github/workflows/release.yml` on each release tag, unsigned.
+More: [the message format](docs/message-format.md) (files, status words, the run log), [how a message reaches a session](docs/adapters.md) (the adapters, the ladder, adding one), [across machines](docs/peers.md) (discovery, pairing, the wire, mirroring), [CONTRIBUTING.md](CONTRIBUTING.md) (build, texts, releases). CI runs the tests on macOS, Linux and Windows; Linux and Windows bundles are built by `.github/workflows/release.yml` on each release tag, unsigned.
 
 ## Status
 
-0.1.x: macOS on Apple Silicon; Claude Code, Codex, and Grok Bot through `gbot`. Next on the list: native Grok gateway calls (no Node), Agent Comments calling Dispatch, Windows and Linux builds.
+0.1.x: macOS on Apple Silicon, with unsigned Linux and Windows bundles; Claude Code, Codex, and Grok Bot through `gbot`; machines on one network paired directly. Next on the list: native Grok gateway calls (no Node), Agent Comments calling Dispatch, pushing replies to a sender that is not listening, Linux and Windows on real machines.
 
 ## License
 

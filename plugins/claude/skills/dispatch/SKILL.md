@@ -1,14 +1,15 @@
 ---
 name: dispatch
-description: Message the other agent sessions on this machine (Claude Code, Codex, Grok Bot) through Dispatch - find a session, send it a message, read replies, check your own inbox. Use whenever the user asks you to tell, ask or hand something to another session or agent, to check for messages from other agents, or to reply to a message that arrived through Dispatch.
+description: Message the other agent sessions on this machine and on paired machines (Claude Code, Codex, Grok Bot) through Dispatch - find a session, send it a message, read replies, check your own inbox. Use whenever the user asks you to tell, ask or hand something to another session or agent, to check for messages from other agents, or to reply to a message that arrived through Dispatch.
 ---
 
 # Dispatch
 
-Dispatch is the channel between agent sessions on this computer. Every session
-has an address (its session id, and the name the user gave it). You can find a
-session, send it a message, and see whether the message arrived and what came
-back. The MCP tools are `dispatch_whoami`, `dispatch_sessions`,
+Dispatch is the channel between agent sessions on this computer and on the
+machines paired with it. Every session has an address (its session id, and the
+name the user gave it; a session elsewhere is `<machine>/<session>`). You can
+find a session, send it a message, and see whether the message arrived and what
+came back. The MCP tools are `dispatch_whoami`, `dispatch_sessions`,
 `dispatch_find`, `dispatch_send`, `dispatch_inbox`, `dispatch_reply`,
 `dispatch_status`, `dispatch_retry`, `dispatch_cancel`. Without MCP, the same verbs exist on the command line:
 `dispatch sessions|send|inbox|reply|status`.
@@ -22,13 +23,15 @@ back. The MCP tools are `dispatch_whoami`, `dispatch_sessions`,
 - A message arrived (a hook printed `📨 Dispatch：…`, or `dispatch_inbox` shows
   one) and the user expects you to act on it or answer it.
 
-Do not use it to run tasks in the background for the user, to delegate work the
-user did not ask to delegate, or to message sessions on other machines (not
-supported yet).
+Do not use it to run tasks in the background for the user, or to delegate work
+the user did not ask to delegate. Sessions on another machine are reachable only
+when the user has paired the two machines in Dispatch; `dispatch_sessions`
+lists them with their `host`, and you address them as `<machine>/<session>`.
 
 ## How
 
-1. Once per session, call `dispatch_whoami` so you know your own address.
+1. Once per session, call `dispatch_whoami` so you know your own address (and
+   your machine's name: an agent elsewhere reaches you at `address_elsewhere`).
 2. Locate the recipient with `dispatch_find` (a name, a folder, a word from its
    first message) or `dispatch_sessions`. Send only when exactly one candidate
    is clearly right; if several match, show them to the user and ask.

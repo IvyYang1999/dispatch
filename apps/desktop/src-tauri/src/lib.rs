@@ -11,7 +11,7 @@
 //! refresh. Closing the window hides it; the app stays in the menu bar until Quit.
 
 use dispatch_core::i18n::{self, t};
-use dispatch_core::{hook, model, ops, settings, store::Store, watch};
+use dispatch_core::{hook, model, ops, peer, settings, store::Store, watch};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -134,6 +134,65 @@ async fn set_notify(on: bool) -> Result<bool, String> {
         Ok(on)
     })
     .await
+}
+
+// ---- other machines ----
+
+/// Me, the paired machines (with who answers right now) and the machines seen but not paired.
+#[tauri::command]
+async fn peers_overview() -> Result<Value, String> {
+    blocking(|| Ok(peer::overview())).await
+}
+
+/// Browse the network for two seconds, then the overview.
+#[tauri::command]
+async fn peer_scan() -> Result<Value, String> {
+    blocking(|| {
+        peer::mdns::scan(Duration::from_secs(2));
+        Ok(peer::overview())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn peer_set_name(name: String) -> Result<Value, String> {
+    blocking(move || peer::set_name(&name).map(|m| json!({ "id": m.id, "name": m.name })).map_err(err)).await
+}
+
+/// A pairing code for two minutes; the other machine enters it.
+#[tauri::command]
+async fn peer_code() -> Result<Value, String> {
+    blocking(|| peer::new_code().map(|(code, secs)| json!({ "code": code, "seconds_left": secs })).map_err(err)).await
+}
+
+/// Pair with the machine at `target` (a name seen on the network, or host:port) using its code.
+#[tauri::command]
+async fn peer_pair(target: String, code: String) -> Result<Value, String> {
+    blocking(move || peer::pair(&target, &code).map(|p| json!({ "id": p.id, "name": p.name })).map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+async fn peer_remove(name: String) -> Result<bool, String> {
+    blocking(move || peer::forget(&name).map(|p| p.is_some()).map_err(err)).await
+}
+
+#[tauri::command]
+async fn peer_set_address(name: String, address: Option<String>) -> Result<Value, String> {
+    blocking(move || peer::set_address(&name, address).map(|p| json!({ "id": p.id, "name": p.name, "address": p.address })).map_err(err)).await
+}
+
+/// Listen for other machines: the port from settings (`peer_port`), else the default.
+fn start_listener() {
+    std::thread::Builder::new()
+        .name("dispatch-peer-start".into())
+        .spawn(|| {
+            let port = settings::get("peer_port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+            match peer::serve(port) {
+                Ok(h) => eprintln!("dispatch: listening for other machines on port {}{}", h.port, if h.mdns { "" } else { " (mDNS off)" }),
+                Err(e) => eprintln!("dispatch: not listening for other machines: {e:#}"),
+            }
+        })
+        .expect("spawn the listener");
 }
 
 /// Try a queued or failed copy again now.
@@ -521,7 +580,10 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(Cache::default())
         .manage(cli_sync::State::default())
-        .invoke_handler(tauri::generate_handler![sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel])
+        .invoke_handler(tauri::generate_handler![
+            sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
+            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address
+        ])
         .setup(|app| {
             let handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
@@ -529,6 +591,7 @@ pub fn run() {
             });
             apply_theme(app.handle());
             build_tray(app.handle())?;
+            start_listener();
             start_watcher(app.handle().clone());
             Ok(())
         })

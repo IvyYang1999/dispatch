@@ -1,8 +1,9 @@
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use dispatch_core::i18n::{status_label, t};
-use dispatch_core::{claude, discover, hook, model, reach, send, store};
+use dispatch_core::{claude, discover, hook, model, peer, reach, send, store};
 use std::io::{Read, Write};
+use std::time::Duration;
 
 #[derive(Parser)]
 #[command(name = "dispatch", version, about = "Find an agent session on this machine and deliver a message into it")]
@@ -98,8 +99,39 @@ enum Cmd {
     Grok,
     /// Put the binary at ~/.dispatch/bin/dispatch, install the hook from there, register with Codex
     Install,
+    /// Other machines running Dispatch: list them, name this one, pair, scan the network
+    Peers {
+        #[command(subcommand)]
+        cmd: Option<PeersCmd>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Listen for other machines in the foreground (the app does this while it runs)
+    Serve {
+        /// Port to listen on (default 47831)
+        #[arg(long)]
+        port: Option<u16>,
+    },
     /// Print the store folder
     Where,
+}
+
+#[derive(Subcommand)]
+enum PeersCmd {
+    /// This machine and the paired ones, with who is online
+    List,
+    /// Rename this machine (the name other machines see)
+    Name { name: String },
+    /// Browse the network for other machines running Dispatch
+    Scan,
+    /// Show a pairing code for two minutes; the other machine pairs with it
+    Code,
+    /// Pair with a machine: its name as seen on the network (or host:port), and the code it shows
+    Pair { target: String, code: String },
+    /// Give a paired machine a fixed address (host:port) for when the network cannot see it
+    Add { name: String, address: String },
+    /// Forget a paired machine
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -221,6 +253,61 @@ fn run() -> Result<i32> {
             }
             println!("{}", t("cli.claude_plugin").replace("{cmd}", "claude plugin marketplace add IvyYang1999/dispatch && claude plugin install dispatch@dispatch"));
         }
+        Cmd::Peers { cmd, json } => match cmd.unwrap_or(PeersCmd::List) {
+            PeersCmd::List => {
+                let v = peer::overview();
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                } else {
+                    print_peers(&v);
+                }
+            }
+            PeersCmd::Name { name } => {
+                let me = peer::set_name(&name)?;
+                println!("{}", t("cli.peers_named").replace("{name}", &me.name));
+            }
+            PeersCmd::Scan => {
+                peer::mdns::scan(Duration::from_secs(2));
+                let v = peer::overview();
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&v)?);
+                } else {
+                    print_peers(&v);
+                }
+            }
+            PeersCmd::Code => {
+                if peer::mdns::serving().is_none() {
+                    println!("{}", t("cli.peers_code_needs_listener"));
+                }
+                let (code, secs) = peer::new_code()?;
+                let me = peer::me();
+                println!("{}", t("cli.peers_code").replace("{code}", &code).replace("{secs}", &secs.to_string()).replace("{name}", &me.name));
+            }
+            PeersCmd::Pair { target, code } => {
+                let p = peer::pair(&target, &code)?;
+                println!("{}", t("cli.peers_paired").replace("{name}", &p.name).replace("{id}", &model::short_id(&p.id)));
+            }
+            PeersCmd::Add { name, address } => {
+                let p = peer::set_address(&name, Some(address))?;
+                println!("{}", t("cli.peers_address").replace("{name}", &p.name).replace("{addr}", p.address.as_deref().unwrap_or("")));
+            }
+            PeersCmd::Remove { name } => match peer::forget(&name)? {
+                Some(p) => println!("{}", t("cli.peers_removed").replace("{name}", &p.name)),
+                None => return Err(anyhow!("{}", t("cli.peers_not_found").replace("{q}", &name))),
+            },
+        },
+        Cmd::Serve { port } => {
+            if let Some(p) = peer::mdns::serving() {
+                return Err(anyhow!("{}", t("cli.serve_busy").replace("{port}", &p.to_string())));
+            }
+            let h = peer::serve(port.unwrap_or(0))?;
+            println!("{}", t("cli.serve").replace("{port}", &h.port.to_string()).replace("{mdns}", if h.mdns { t("cli.on") } else { t("cli.off") }));
+            // the postman's round, as the app's watcher would do it
+            loop {
+                std::thread::sleep(Duration::from_secs(30));
+                let _ = dispatch_core::ops::sweep(&st);
+            }
+        }
         Cmd::Sessions { json, all } => {
             let hook_on = hook::installed();
             let list: Vec<model::Session> = discover::sessions().into_iter().filter(|s| all || s.running).collect();
@@ -240,8 +327,8 @@ fn run() -> Result<i32> {
                 for s in &list {
                     let r = reach::decide(s, hook_on);
                     println!(
-                        "{:<8} {:<7} {:<4} {:<26} {:<32} {}",
-                        s.short_id,
+                        "{:<18} {:<7} {:<4} {:<26} {:<32} {}",
+                        truncate(&s.short_address(), 18),
                         s.harness.label(),
                         if s.running { t("cli.running_mark") } else { "  " },
                         truncate(&s.display_name(), 26),
@@ -265,7 +352,7 @@ fn run() -> Result<i32> {
                 let target = send::resolve(who)?;
                 let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume, deadline })?;
                 if !json {
-                    println!("→ {} ({}): {} [{}]", target.display_name(), target.short_id, rep.detail, model::short_id(&rep.letter_id));
+                    println!("→ {} ({}): {} [{}]", target.address(), target.short_id, rep.detail, model::short_id(&rep.letter_id));
                 }
                 reports.push(rep);
             }
@@ -275,18 +362,11 @@ fn run() -> Result<i32> {
         }
         Cmd::Reply { id, text, json } => {
             let body = read_text(text)?;
-            let mut orig = st.find(&id)?.ok_or_else(|| anyhow!("{}", t("cli.no_message").replace("{id}", &id)))?;
-            if !model::is_uuid(&orig.from) {
-                return Err(anyhow!("{}", t("cli.not_a_session").replace("{from}", &orig.from)));
-            }
-            let target = send::resolve(&orig.from)?;
-            let rep = send::send(&st, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: body, urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false, deadline: None })?;
-            st.set_status(&mut orig, store::REPLIED)?;
-            st.append_run(&orig.id, "reply", "sent", &rep.letter_id)?;
+            let v = dispatch_core::ops::reply(&st, &id, &body)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&rep)?);
+                println!("{}", serde_json::to_string_pretty(&v)?);
             } else {
-                println!("↩ {} ({}): {}", target.display_name(), target.short_id, rep.detail);
+                println!("↩ {} ({}): {}", v["to"]["name"].as_str().unwrap_or(""), model::short_id(v["to"]["id"].as_str().unwrap_or("")), v["detail"].as_str().unwrap_or(""));
             }
         }
         Cmd::Inbox { session, all, json } => {
@@ -298,7 +378,7 @@ fn run() -> Result<i32> {
                 println!("{}", t("cli.inbox_empty").replace("{who}", &target.display_name()).replace("{unread}", if all { "" } else { t("cli.unread") }));
             } else {
                 for l in &letters {
-                    println!("{}\n    {}", t("cli.inbox_line").replace("{id}", &model::short_id(&l.id)).replace("{status}", status_label(&l.status)).replace("{from}", &l.from_name).replace("{created}", &l.created), first_line(&l.body));
+                    println!("{}\n    {}", t("cli.inbox_line").replace("{id}", &model::short_id(&l.id)).replace("{status}", status_label(&l.status)).replace("{from}", &send::sender_text(l)).replace("{created}", &l.created), first_line(&l.body));
                 }
             }
         }
@@ -374,6 +454,31 @@ fn run() -> Result<i32> {
         },
     }
     Ok(0)
+}
+
+fn print_peers(v: &serde_json::Value) {
+    let me = &v["me"];
+    println!("{}", t("cli.peers_me").replace("{name}", me["name"].as_str().unwrap_or("")).replace("{id}", &model::short_id(me["id"].as_str().unwrap_or(""))));
+    let listening = me["listening"].as_u64().map(|p| p.to_string()).unwrap_or_else(|| t("cli.peers_not_listening").to_string());
+    println!("{}", t("cli.peers_listening").replace("{v}", &listening));
+    let peers = v["peers"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    if peers.is_empty() {
+        println!("{}", t("cli.peers_none"));
+    }
+    for p in peers {
+        let state = if p["online"].as_bool().unwrap_or(false) { t("cli.peers_online") } else { t("cli.peers_offline") };
+        println!("  {:<20} {:<9} {:<6} {}", truncate(p["name"].as_str().unwrap_or(""), 20), model::short_id(p["id"].as_str().unwrap_or("")), state, p["address"].as_str().unwrap_or(""));
+    }
+    let seen = v["seen"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+    if !seen.is_empty() {
+        println!("{}", t("cli.peers_seen"));
+        for s in seen {
+            // IPv4 first: that is the address a person would type
+            let addrs = s["addrs"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+            let addr = addrs.iter().filter_map(|a| a.as_str()).find(|a| !a.contains(':')).or_else(|| addrs.first().and_then(|a| a.as_str())).unwrap_or("?");
+            println!("  {:<20} {:<9} {}:{}", truncate(s["name"].as_str().unwrap_or(""), 20), model::short_id(s["id"].as_str().unwrap_or("")), addr, s["port"]);
+        }
+    }
 }
 
 fn read_text(words: Vec<String>) -> Result<String> {

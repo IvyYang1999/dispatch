@@ -14,8 +14,9 @@ use crate::claude::{self, Gate, SendOutcome};
 use crate::discover;
 use crate::hook;
 use crate::i18n::t;
-use crate::model::{is_uuid, Harness, Session};
-use crate::store::{self, Letter, Store, DELIVERED_INBOX, FAILED, UNREAD};
+use crate::model::{is_uuid, Harness, Host, Session};
+use crate::peer::{self, PeerError};
+use crate::store::{self, Letter, Store, DELIVERED_FEED, DELIVERED_INBOX, FAILED, UNREAD};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -51,15 +52,33 @@ pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-/// Resolve a recipient: a full id, a short id prefix, a desktop name or a title fragment.
+/// Resolve a recipient: a full id, a short id prefix, a desktop name or a title fragment,
+/// with a paired machine's name in front (`主力/release`) to look only there.
 pub fn resolve(query: &str) -> Result<Session> {
-    let q = query.trim();
-    let all = discover::sessions();
+    let (host, q) = match peer::split_address(query.trim()) {
+        Some((p, rest)) => (Some(p), rest),
+        None => (None, query.trim().to_string()),
+    };
+    let q = q.as_str();
+    // the person at the app or the command line: replies to them land in the feed
+    if is_person(q) {
+        return Ok(match &host {
+            Some(p) => peer::remote_target(&p.id, &p.name, q, Some(q.into()), Harness::Human),
+            None => bare_session(Harness::Human, q, Some(q.into())),
+        });
+    }
+    let all: Vec<Session> = discover::sessions().into_iter().filter(|s| match &host {
+        Some(p) => s.host.as_ref().map(|h| h.id == p.id).unwrap_or(false),
+        None => true,
+    }).collect();
     if is_uuid(q) {
         if let Some(s) = all.iter().find(|s| s.id.eq_ignore_ascii_case(q)) {
             return Ok(s.clone());
         }
-        return Ok(bare_session(Harness::Claude, q, None));
+        return Ok(match &host {
+            Some(p) => peer::remote_target(&p.id, &p.name, q, None, Harness::Claude),
+            None => bare_session(Harness::Claude, q, None),
+        });
     }
     let ql = q.to_lowercase();
     let mut hits: Vec<&Session> = all.iter().filter(|s| s.id.to_lowercase().starts_with(&ql)).collect();
@@ -73,10 +92,16 @@ pub fn resolve(query: &str) -> Result<Session> {
         0 => Err(anyhow!("{}", t("send.no_match").replace("{q}", q))),
         1 => Ok(hits[0].clone()),
         _ => {
-            let list: Vec<String> = hits.iter().take(8).map(|s| format!("  {}  {}  {}", s.short_id, s.display_name(), s.cwd.as_deref().map(crate::model::short_cwd).unwrap_or_default())).collect();
+            let list: Vec<String> = hits.iter().take(8).map(|s| format!("  {}  {}  {}", s.short_address(), s.display_name(), s.cwd.as_deref().map(crate::model::short_cwd).unwrap_or_default())).collect();
             Err(anyhow!("{}", t("send.many_match").replace("{q}", q).replace("{n}", &hits.len().to_string()).replace("{list}", &list.join("\n"))))
         }
     }
+}
+
+/// `app`, `cli`, `mcp`: a person (or a process with no session) wrote this; replies to it are
+/// shown in the feed rather than handed to a session.
+pub fn is_person(id: &str) -> bool {
+    matches!(id, "app" | "cli" | "mcp")
 }
 
 /// A session discovery did not list, known only by id (and name, from a stored copy).
@@ -94,6 +119,7 @@ fn bare_session(harness: Harness, id: &str, name: Option<String>) -> Session {
         host_session_id: None,
         status: None,
         transcript: None,
+        host: None,
     }
 }
 
@@ -115,18 +141,31 @@ fn harness_of(code: Option<&str>) -> Harness {
     }
 }
 
-/// The recipient of a stored copy: the live session when discovery lists it, else what the copy says.
+/// The recipient of a stored copy: the live session when discovery lists it, else what the
+/// copy says. A copy for another machine names a session there; that machine resolves it.
 pub fn target_of(letter: &Letter) -> Session {
-    if let Some(s) = discover::sessions().into_iter().find(|s| s.id.eq_ignore_ascii_case(&letter.to)) {
+    if let Some(h) = &letter.to_host {
+        let name = letter.to_host_name.clone().unwrap_or_else(|| crate::model::short_id(h));
+        return peer::remote_target(h, &name, &letter.to, Some(letter.to_name.clone()), harness_of(letter.to_harness.as_deref()));
+    }
+    if let Some(s) = discover::local().into_iter().find(|s| s.id.eq_ignore_ascii_case(&letter.to)) {
         return s;
     }
     bare_session(harness_of(letter.to_harness.as_deref()), &letter.to, Some(letter.to_name.clone()))
 }
 
+/// Who sent it, with the machine when it is another one: `Name @ Machine`.
+pub fn sender_text(l: &Letter) -> String {
+    match &l.from_host_name {
+        Some(h) => t("send.from_at").replace("{from}", &l.from_name).replace("{host}", h),
+        None => l.from_name.clone(),
+    }
+}
+
 /// The text the session sees: who sent it, when, the body, and how to answer.
 pub fn envelope(l: &Letter) -> String {
     t("send.envelope")
-        .replace("{from}", &l.from_name)
+        .replace("{from}", &sender_text(l))
         .replace("{created}", &l.created)
         .replace("{id}", &crate::model::short_id(&l.id))
         .replace("{body}", l.body.trim())
@@ -263,14 +302,45 @@ fn deliver_claude(store: &Store, to: &Session, letter: &mut Letter, wait: bool, 
     }
 }
 
+/// The branch for another machine: hand the copy over; that machine stores it and runs its own
+/// ladder, and its answer becomes this copy's status. A machine that does not answer leaves the
+/// copy queued for the sweep; one that refuses (not paired any more) means not delivered.
+fn deliver_remote(store: &Store, host: &Host, letter: &mut Letter, report: Reporter) -> Result<Report> {
+    match peer::deliver(host, letter) {
+        Ok((status, route, detail)) => {
+            if letter.status != status {
+                store.set_status(letter, &status)?;
+            }
+            store.append_run(&letter.id, "peer", &route, &format!("{}: {}", host.name, detail))?;
+            Ok(report(&route, t("send.peer_route").replace("{host}", &host.name).replace("{detail}", &detail)))
+        }
+        Err(PeerError::Offline(why)) => {
+            store.append_run(&letter.id, "peer", "unreachable", &format!("{}: {}", host.name, why))?;
+            Ok(report("stored", t("send.peer_offline").replace("{host}", &host.name)))
+        }
+        Err(PeerError::Refused(why)) => fail(store, letter, "peer", &format!("{}: {}", host.name, why), t("send.peer_refused").replace("{host}", &host.name).replace("{why}", &why), report),
+        Err(PeerError::Protocol(why)) => {
+            store.append_run(&letter.id, "peer", "error", &format!("{}: {}", host.name, why))?;
+            Ok(report("stored", t("send.peer_error").replace("{host}", &host.name).replace("{why}", &why)))
+        }
+    }
+}
+
 /// Try to get a stored copy into its session now. The copy's status and run log record the outcome.
 pub fn deliver(store: &Store, to: &Session, letter: &mut Letter, wait: bool, allow_resume: bool) -> Result<Report> {
     let (letter_id, dispatch_id, path) = (letter.id.clone(), letter.dispatch_id.clone(), letter.path.clone());
     let report = move |route: &str, detail: String| Report { letter_id: letter_id.clone(), dispatch_id: dispatch_id.clone(), path: path.clone(), route: route.into(), detail };
+    if let Some(h) = &to.host {
+        return deliver_remote(store, h, letter, &report);
+    }
     match to.harness {
         Harness::Codex => deliver_codex(store, to, letter, allow_resume, &report),
         Harness::Grok => deliver_grok(store, to, letter, &report),
-        Harness::Human => fail(store, letter, "reach", "a person", t("reach.human").into(), &report),
+        Harness::Human => {
+            store.set_status(letter, DELIVERED_FEED)?;
+            store.append_run(&letter.id, "feed", "shown", "")?;
+            Ok(report("inbox", t("send.feed_shown").into()))
+        }
         Harness::Claude => deliver_claude(store, to, letter, wait, &report),
     }
 }
@@ -291,6 +361,10 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
         status: UNREAD.into(),
         deadline: Some(store::deadline_text(&created, wait_for)),
         to_harness: Some(harness_code(req.to.harness).into()),
+        from_host: None,
+        from_host_name: None,
+        to_host: req.to.host.as_ref().map(|h| h.id.clone()),
+        to_host_name: req.to.host.as_ref().map(|h| h.name.clone()),
         created,
         body: req.text.clone(),
         path: String::new(),
