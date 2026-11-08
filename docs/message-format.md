@@ -67,8 +67,11 @@ the UI language; the CLI, the app and the MCP tools translate it.
 "Pending" (what the hook hands over, what `dispatch inbox` lists by default) means `未读` or `没送到`.
 
 Beside `messages/` and `runs/`, the store folder holds `peers.json` (this machine's id, name and
-public key, and the paired machines), `peer.key` (its private key, mode 0600) and `peer/` (an
-active pairing code, the machines seen on the network, the listener's heartbeat).
+public key, and the paired machines), `peer.key` (its private key, mode 0600), `peer/` (an
+active pairing code, the machines seen on the network, the listener's heartbeat) and
+`contacts.json` (the address book: `name`, `session_id`, `harness`, optional `host`, `cwd`,
+`set_by`, `updated`). A contact's session is listed and addressable whatever its age; an exact
+contact name wins over any fragment match when a recipient is resolved.
 
 ## Stages and receipts
 

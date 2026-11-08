@@ -10,9 +10,11 @@
 //! - `settings`: the settings file the app writes and the CLI and hook read.
 //! - `watch`: what changed in the feed, for the menu bar item and notifications.
 //! - `peer`: other machines running Dispatch: pairing, the wire, remote sessions, mirroring.
+//! - `contacts`: the address book: stable names for sessions, kept past discovery's window.
 
 pub mod claude;
 pub mod codex;
+pub mod contacts;
 pub mod discover;
 pub mod grok;
 pub mod hook;

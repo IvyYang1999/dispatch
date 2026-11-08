@@ -62,6 +62,7 @@ function presence(s: Session): string {
 
 function useOpen() {
   const [notice, setNotice] = useState<string | null>(null)
+  const say = useCallback((text: string) => setNotice(text || null), [])
   const open = useCallback(async (id: string) => {
     try {
       const r: OpenResult = await api.openSession(id)
@@ -72,7 +73,7 @@ function useOpen() {
       setNotice(String(e))
     }
   }, [])
-  return { open, notice, clear: () => setNotice(null) }
+  return { open, notice, clear: () => setNotice(null), say }
 }
 
 // ---- Feed ----
@@ -278,7 +279,8 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
   const [sessions, setSessions] = useState<Session[]>([])
   const [tool, setTool] = useState<string>('all')
   const [showAll, setShowAll] = useState(false)
-  const { open, notice, clear } = useOpen()
+  const [naming, setNaming] = useState<{ id: string; value: string } | null>(null)
+  const { open, notice, clear, say } = useOpen()
   const load = useCallback(async () => {
     try {
       const r = await api.sessions(!showAll)
@@ -287,6 +289,22 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
       /* keep the last list */
     }
   }, [showAll, lang])
+  const saveName = async (s: Session) => {
+    if (!naming) return
+    const value = naming.value.trim()
+    setNaming(null)
+    try {
+      if (value) {
+        const r = await api.contactSet(value, addressOf(s))
+        say(r.text)
+      } else if (s.contact) {
+        await api.contactRemove(s.contact)
+      }
+    } catch (e) {
+      say(String(e))
+    }
+    load()
+  }
   useEffect(() => {
     load()
     const h = setInterval(load, 10000)
@@ -324,7 +342,26 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
             {g.items.map((s) => (
           <div key={s.id} className="line">
             <Avatar name={s.name} />
-            <span className="line__name" title={s.id}>{s.name}</span>
+            {naming?.id === s.id ? (
+              <input
+                className="input line__input"
+                autoFocus
+                placeholder={t('contact.placeholder')}
+                title={t('contact.hint')}
+                value={naming.value}
+                onChange={(e) => setNaming({ id: s.id, value: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') saveName(s)
+                  if (e.key === 'Escape') setNaming(null)
+                }}
+                onBlur={() => saveName(s)}
+              />
+            ) : (
+              <span className="line__name" title={s.contact ? `${t('contact.hint')}\n${s.id}` : s.id}>
+                {s.contact && <span className="line__star">★</span>}
+                {s.name}
+              </span>
+            )}
             <span className="tag">{s.harness}</span>
             <span className="line__where" title={s.cwd ?? ''}>{s.cwd_short ?? ''}</span>
             <span className="line__presence" data-presence={s.running ? (s.status ?? 'idle') : 'offline'}>
@@ -333,6 +370,7 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
             </span>
             <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
             <span className="line__actions">
+              <button className="btn btn--ghost btn--icon" title={s.contact ? t('action.unname') : t('action.name')} onClick={() => setNaming({ id: s.id, value: s.contact ?? '' })}>{s.contact ? '★' : '☆'}</button>
               <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(addressOf(s))}>✎</button>
               <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
             </span>

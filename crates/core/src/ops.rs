@@ -12,8 +12,15 @@ use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
 fn session_json(s: &Session, hook_on: bool) -> Value {
+    session_json_with(s, hook_on, &crate::contacts::list())
+}
+
+fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Contact]) -> Value {
     let r = reach::decide(s, hook_on);
+    let host_id = s.host.as_ref().map(|h| h.id.as_str());
+    let contact = contacts.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id);
     json!({
+        "contact": contact.map(|c| c.name.clone()),
         "id": s.id,
         "short_id": s.short_id,
         "name": s.display_name(),
@@ -36,7 +43,11 @@ pub fn whoami() -> Value {
     let me = crate::peer::me();
     let machine = json!({ "id": me.id, "name": me.name });
     match claude::caller_session() {
-        Some(i) => json!({ "session_id": i.session_id, "short_id": short_id(&i.session_id), "name": i.name.clone().unwrap_or_else(|| short_id(&i.session_id)), "harness": "Claude", "cwd": i.cwd, "desktop": i.desktop, "machine": machine, "address_elsewhere": format!("{}/{}", me.name, short_id(&i.session_id)) }),
+        Some(i) => {
+            let contact = crate::contacts::for_session(&i.session_id, None).map(|c| c.name);
+            let handle = contact.clone().unwrap_or_else(|| short_id(&i.session_id));
+            json!({ "session_id": i.session_id, "short_id": short_id(&i.session_id), "name": i.name.clone().unwrap_or_else(|| short_id(&i.session_id)), "contact": contact, "harness": "Claude", "cwd": i.cwd, "desktop": i.desktop, "machine": machine, "address_elsewhere": format!("{}/{}", me.name, handle) })
+        }
         None => json!({ "session_id": null, "name": "unknown", "harness": null, "machine": machine }),
     }
 }
@@ -51,8 +62,48 @@ pub fn caller_identity() -> (String, String) {
 
 pub fn sessions(running_only: bool) -> Value {
     let hook_on = hook::installed();
-    let list: Vec<Value> = discover::sessions().iter().filter(|s| !running_only || s.running).map(|s| session_json(s, hook_on)).collect();
+    let contacts = crate::contacts::list();
+    // a named session is listed whether or not it is running: that is what the name is for
+    let list: Vec<Value> = discover::sessions().iter().filter(|s| !running_only || s.running || contacts.iter().any(|c| c.session_id.eq_ignore_ascii_case(&s.id))).map(|s| session_json_with(s, hook_on, &contacts)).collect();
     json!({ "hook_installed": hook_on, "sessions": list })
+}
+
+/// The address book, each name with the session it points at.
+pub fn contacts() -> Value {
+    let all = discover::sessions();
+    let rows: Vec<Value> = crate::contacts::list()
+        .into_iter()
+        .map(|c| {
+            let live = all.iter().find(|s| s.id.eq_ignore_ascii_case(&c.session_id) && s.host.as_ref().map(|h| &h.id) == c.host.as_ref().map(|h| &h.id));
+            json!({ "name": c.name, "session_id": c.session_id, "short_id": short_id(&c.session_id), "harness": c.harness.label(), "host": c.host, "cwd": c.cwd, "set_by": c.set_by, "updated": c.updated, "running": live.map(|s| s.running).unwrap_or(false), "address": match &c.host { Some(h) => format!("{}/{}", h.name, c.name), None => c.name.clone() } })
+        })
+        .collect();
+    json!({ "count": rows.len(), "contacts": rows })
+}
+
+/// Give a session a stable name: the one `session` names, else the calling session.
+pub fn register(name: &str, session: Option<&str>, by: &str) -> Result<Value> {
+    let target = match session.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(q) => send::resolve(q)?,
+        None => {
+            let i = claude::caller_session().ok_or_else(|| anyhow!("no session given and the caller is not a Claude Code session; pass the session's id or name"))?;
+            discover::lookup(&i.session_id).unwrap_or_else(|| {
+                let mut s = crate::peer::remote_target("", "", &i.session_id, i.name.clone(), crate::model::Harness::Claude);
+                s.host = None;
+                s.cwd = i.cwd.clone();
+                s
+            })
+        }
+    };
+    let c = crate::contacts::set(name, &target, by)?;
+    Ok(json!({ "name": c.name, "session_id": c.session_id, "short_id": short_id(&c.session_id), "harness": c.harness.label(), "host": c.host, "address": match &c.host { Some(h) => format!("{}/{}", h.name, c.name), None => c.name.clone() }, "text": t("ops.registered").replace("{name}", &c.name).replace("{who}", &target.display_name()) }))
+}
+
+pub fn unregister(name: &str) -> Result<Value> {
+    match crate::contacts::remove(name)? {
+        Some(c) => Ok(json!({ "removed": c.name })),
+        None => Err(anyhow!("{}", t("ops.no_contact").replace("{name}", name))),
+    }
 }
 
 /// Every session that matches, each with why it matched.

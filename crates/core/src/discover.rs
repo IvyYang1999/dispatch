@@ -301,8 +301,76 @@ pub fn sessions_now() -> Vec<Session> {
         }
     }
     let mut all: Vec<Session> = by_id.into_values().collect();
+    // the address book: names on listed sessions, and the named ones the window left out
+    crate::contacts::apply_local(&mut all);
     all.sort_by(|a, b| b.running.cmp(&a.running).then(b.last_active.cmp(&a.last_active)));
     all
+}
+
+/// One session by id, whatever its age: the recent list first, then its files.
+pub fn lookup(id: &str) -> Option<Session> {
+    if let Some(s) = local().into_iter().find(|s| s.id.eq_ignore_ascii_case(id)) {
+        return Some(s);
+    }
+    lookup_files(id)
+}
+
+/// A session from its files alone: a Claude Code transcript, a Codex rollout, or a Grok bot.
+pub fn lookup_files(id: &str) -> Option<Session> {
+    let id = id.to_lowercase();
+    if crate::model::is_uuid(&id) {
+        if let Some(p) = claude::transcript_path(&id, None) {
+            let mtime = mtime_ms(&p).unwrap_or(0);
+            let (cwd, title) = head_of(&p, mtime);
+            return Some(Session {
+                harness: Harness::Claude,
+                short_id: short_id(&id),
+                running: claude::is_running(&id),
+                id,
+                name: None,
+                cwd,
+                title,
+                last_active: mtime,
+                desktop: false,
+                host_session_id: None,
+                status: None,
+                transcript: Some(p.to_string_lossy().to_string()),
+                host: None,
+            });
+        }
+        if let Some(p) = codex_rollout(&id) {
+            let mtime = mtime_ms(&p).unwrap_or(0);
+            let (cwd, title) = head_of(&p, mtime);
+            let loaded = crate::codex::state().loaded.contains(&id);
+            return Some(Session {
+                harness: Harness::Codex,
+                short_id: short_id(&id),
+                id,
+                name: None,
+                cwd,
+                title,
+                last_active: mtime,
+                running: loaded,
+                desktop: false,
+                host_session_id: None,
+                status: if loaded { Some("loaded".into()) } else { None },
+                transcript: Some(p.to_string_lossy().to_string()),
+                host: None,
+            });
+        }
+    }
+    discover_grok(now_ms()).into_iter().find(|s| s.id.eq_ignore_ascii_case(&id))
+}
+
+/// The rollout file of a Codex thread, by its id, at any age.
+fn codex_rollout(id: &str) -> Option<PathBuf> {
+    let root = home_dir().join(".codex").join("sessions");
+    WalkDir::new(&root)
+        .max_depth(5)
+        .into_iter()
+        .flatten()
+        .find(|e| e.file_type().is_file() && e.file_name().to_string_lossy().to_lowercase().contains(id))
+        .map(|e| e.path().to_path_buf())
 }
 
 #[cfg(test)]

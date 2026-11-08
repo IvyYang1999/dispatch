@@ -11,8 +11,8 @@ name the user gave it; a session elsewhere is `<machine>/<session>`). You can
 find a session, send it a message, and see whether the message arrived and what
 came back. The MCP tools are `dispatch_whoami`, `dispatch_sessions`,
 `dispatch_find`, `dispatch_send`, `dispatch_inbox`, `dispatch_reply`,
-`dispatch_status`, `dispatch_retry`, `dispatch_cancel`. Without MCP, the same verbs exist on the command line:
-`dispatch sessions|send|inbox|reply|status`.
+`dispatch_status`, `dispatch_retry`, `dispatch_cancel`, `dispatch_register`. Without MCP, the same verbs exist on the command line:
+`dispatch sessions|send|inbox|reply|status|contacts`.
 
 ## When to use it
 
@@ -46,6 +46,12 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
    delivered, started, finished, replied). Replies land in your own inbox:
    `dispatch_inbox`.
 6. To answer a message you received, `dispatch_reply` with its id.
+7. Names beat searching. When the user asks you to register or name yourself
+   ("you are in charge of X, register with Dispatch"), call `dispatch_register`
+   with that name; from then on others address you by it (`<machine>/<name>`
+   from another machine), whether or not you are running. When the user names
+   a recipient that is in the address book, send to that name; an exact name
+   always wins over a fragment match, so there is nothing to choose.
 
 ## If you are a Grok Bot
 

@@ -195,6 +195,17 @@ fn start_listener() {
         .expect("spawn the listener");
 }
 
+/// Name a session in the address book (`session`: id or `machine/id`).
+#[tauri::command]
+async fn contact_set(name: String, session: String) -> Result<Value, String> {
+    blocking(move || ops::register(&name, Some(&session), "app").map_err(err)).await
+}
+
+#[tauri::command]
+async fn contact_remove(name: String) -> Result<Value, String> {
+    blocking(move || ops::unregister(&name).map_err(err)).await
+}
+
 /// Try a queued or failed copy again now.
 #[tauri::command]
 async fn retry(app: AppHandle, id: String) -> Result<Value, String> {
@@ -582,7 +593,7 @@ pub fn run() {
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
-            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address
+            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove
         ])
         .setup(|app| {
             let handle = app.handle().clone();

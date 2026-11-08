@@ -375,6 +375,8 @@ pub fn sessions_of(p: &PeerInfo) -> Option<Vec<Session>> {
                 reach.insert(s.id.clone(), rs.reach);
                 list.push(s);
             }
+            // names this machine gave sessions over there
+            crate::contacts::apply_remote(&p.id, &mut list);
             REMOTE.lock().unwrap().insert(p.id.clone(), Remote { at: Instant::now(), sessions: list.clone(), reach });
             Some(list)
         }

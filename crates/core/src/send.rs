@@ -77,8 +77,14 @@ pub fn resolve(query: &str) -> Result<Session> {
         }
         return Ok(match &host {
             Some(p) => peer::remote_target(&p.id, &p.name, q, None, Harness::Claude),
-            None => bare_session(Harness::Claude, q, None),
+            // its files say what it runs on, whatever its age; else a Claude session by default
+            None => discover::lookup_files(q).unwrap_or_else(|| bare_session(Harness::Claude, q, None)),
         });
+    }
+    // an exact name (a contact, or the name the client gave it) wins over any fragment
+    let exact: Vec<&Session> = all.iter().filter(|s| s.name.as_deref().map(|n| n.eq_ignore_ascii_case(q)).unwrap_or(false)).collect();
+    if exact.len() == 1 {
+        return Ok(exact[0].clone());
     }
     let ql = q.to_lowercase();
     let mut hits: Vec<&Session> = all.iter().filter(|s| s.id.to_lowercase().starts_with(&ql)).collect();
