@@ -70,8 +70,12 @@ Beside `messages/` and `runs/`, the store folder holds `peers.json` (this machin
 public key, and the paired machines), `peer.key` (its private key, mode 0600), `peer/` (an
 active pairing code, the machines seen on the network, the listener's heartbeat) and
 `contacts.json` (the address book: `name`, `session_id`, `harness`, optional `host`, `cwd`,
-`set_by`, `updated`). A contact's session is listed and addressable whatever its age; an exact
-contact name wins over any fragment match when a recipient is resolved.
+`description`, `provisional`, `set_by`, `updated`). A contact's session is listed and addressable
+whatever its age; an exact contact name wins over any fragment match when a recipient is
+resolved, and descriptions are searched like names. A `provisional` contact was named
+automatically from the words a sender found the session by (`set_by: auto`); it never replaces
+a confirmed name and only fills in a session that has none. `icons/` beside it caches the
+installed clients' icons for the app.
 
 ## Stages and receipts
 

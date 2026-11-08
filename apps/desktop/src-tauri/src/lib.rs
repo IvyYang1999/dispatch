@@ -22,6 +22,7 @@ use tauri::{AppHandle, Emitter, Manager, Theme};
 use tauri_plugin_notification::NotificationExt;
 
 mod cli_sync;
+mod icons;
 
 const TRAY_ID: &str = "main";
 const RECENT_IN_TRAY: usize = 6;
@@ -195,10 +196,22 @@ fn start_listener() {
         .expect("spawn the listener");
 }
 
-/// Name a session in the address book (`session`: id or `machine/id`).
+/// Name a session in the address book (`session`: id or `machine/id`), with a line on its role.
 #[tauri::command]
-async fn contact_set(name: String, session: String) -> Result<Value, String> {
-    blocking(move || ops::register(&name, Some(&session), "app").map_err(err)).await
+async fn contact_set(name: String, session: String, about: Option<String>) -> Result<Value, String> {
+    blocking(move || ops::register(&name, Some(&session), "app", about.as_deref()).map_err(err)).await
+}
+
+/// Every session with records here (any age) or on a paired machine that matches.
+#[tauri::command]
+async fn search_sessions(query: String) -> Result<Value, String> {
+    blocking(move || Ok(ops::search(&query))).await
+}
+
+/// The installed clients' icons as data URLs, by harness key (claude, codex, grok).
+#[tauri::command]
+async fn harness_icons() -> Result<Value, String> {
+    blocking(|| Ok(icons::harness_icons(Store::open().root()))).await
 }
 
 #[tauri::command]
@@ -593,7 +606,7 @@ pub fn run() {
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
-            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove
+            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons
         ])
         .setup(|app| {
             let handle = app.handle().clone();

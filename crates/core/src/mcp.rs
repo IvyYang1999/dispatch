@@ -32,12 +32,12 @@ fn tools() -> Value {
         },
         {
             "name": "dispatch_find",
-            "description": "Find sessions by a fragment of their id, name, folder, first message or machine name (sessions on paired machines are included). Returns every candidate with the reason it matched. Send only when exactly one candidate is clearly the right one; otherwise ask the user.",
+            "description": "Find sessions by a fragment of their id, name, description in the address book, folder, first message or machine name (sessions on paired machines are included). Returns every candidate with the reason it matched. Send only when exactly one candidate is clearly the right one; otherwise ask the user.",
             "inputSchema": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false }
         },
         {
             "name": "dispatch_send",
-            "description": "Send one message to one or more sessions (by id, id prefix, or desktop name; <machine>/<session> for one on a paired machine, which stores and delivers it there). Each recipient gets its own copy and delivery state: delivered straight into a running session when it will take it, otherwise queued and handed over by its hook the next time it speaks (route 'stored'); when nobody could deliver it as things stand, route 'failed' with the fix in detail. A queued copy past its deadline (1h urgent, 24h normal, or `deadline`) is marked not delivered. Returns per-recipient route and detail plus the dispatch_id for dispatch_status. Write the message as you would brief a colleague: what you need, by when, and that they can reply with dispatch_reply.",
+            "description": "Send one message to one or more sessions (by id, id prefix, or desktop name; <machine>/<session> for one on a paired machine, which stores and delivers it there). Each recipient gets its own copy and delivery state: delivered straight into a running session when it will take it, otherwise queued and handed over by its hook the next time it speaks (route 'stored'); when nobody could deliver it as things stand, route 'failed' with the fix in detail. A queued copy past its deadline (1h urgent, 24h normal, or `deadline`) is marked not delivered. Returns per-recipient route and detail plus the dispatch_id for dispatch_status. A recipient found by a fragment and not yet in the address book is noted under the words you found it by (`named`, provisional); tell the user, who can confirm or rename it. Write the message as you would brief a colleague: what you need, by when, and that they can reply with dispatch_reply.",
             "inputSchema": { "type": "object", "properties": { "to": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "text": { "type": "string" }, "urgency": { "type": "string", "enum": ["normal", "urgent", "普通", "紧急"], "default": "normal" }, "deadline": { "type": "string", "description": "How long it may wait before it counts as not delivered: 30m, 2h, 1d" } }, "required": ["to", "text"], "additionalProperties": false }
         },
         {
@@ -58,7 +58,7 @@ fn tools() -> Value {
         {
             "name": "dispatch_register",
             "description": "Give a session a stable name in Dispatch's address book, so others address it by that name instead of searching (and from another machine as <machine>/<name>). Call it when the user asks you to register or name yourself, for example 'you are in charge of X, register with Dispatch'. Without `session`, it names the calling session; `session` names another one by id or name. A name replaces an older name of the same session and takes the name from any session that had it.",
-            "inputSchema": { "type": "object", "properties": { "name": { "type": "string", "description": "A short stable name, no '/'" }, "session": { "type": "string", "description": "Another session's id or name (default: you)" } }, "required": ["name"], "additionalProperties": false }
+            "inputSchema": { "type": "object", "properties": { "name": { "type": "string", "description": "A short stable name, no '/'" }, "session": { "type": "string", "description": "Another session's id or name (default: you)" }, "description": { "type": "string", "description": "One line on what the session is for, e.g. 'signs and ships Dispatch releases'; other agents match it when they look for a session by role" } }, "required": ["name"], "additionalProperties": false }
         },
         {
             "name": "dispatch_retry",
@@ -88,7 +88,7 @@ fn call(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
         "dispatch_inbox" => ops::inbox(store, s("session").as_deref(), b("all").unwrap_or(false)).map_err(|e| format!("{e:#}")),
         "dispatch_reply" => ops::reply(store, &s("id").ok_or("id is required")?, &s("text").ok_or("text is required")?).map_err(|e| format!("{e:#}")),
         "dispatch_status" => ops::status(store, &s("id").ok_or("id is required")?).map_err(|e| format!("{e:#}")),
-        "dispatch_register" => ops::register(&s("name").ok_or("name is required")?, s("session").as_deref(), "self").map_err(|e| format!("{e:#}")),
+        "dispatch_register" => ops::register(&s("name").ok_or("name is required")?, s("session").as_deref(), "self", s("description").as_deref()).map_err(|e| format!("{e:#}")),
         "dispatch_retry" => ops::retry(store, &s("id").ok_or("id is required")?).map_err(|e| format!("{e:#}")),
         "dispatch_cancel" => ops::cancel(store, &s("id").ok_or("id is required")?, &ops::caller_identity().1).map_err(|e| format!("{e:#}")),
         _ => Err(format!("unknown tool {name}")),

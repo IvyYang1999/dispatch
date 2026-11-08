@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { api, type Copy, type Dispatch, type Kind, type OpenResult, type PeerOverview, type Session, type SetupStatus, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
@@ -51,6 +51,52 @@ function addressOf(s: Session): string {
 /** A name with its machine behind it when the session is elsewhere. */
 function withHost(name: string, host?: string | null): string {
   return host ? `${name} @ ${host}` : name
+}
+
+// The clients' own icons, taken from the installed apps by the backend; a text tag where none is.
+let icons: Record<string, string> = {}
+const iconListeners = new Set<() => void>()
+async function loadIcons(): Promise<void> {
+  try {
+    icons = await api.harnessIcons()
+    iconListeners.forEach((l) => l())
+  } catch {
+    /* text tags stay */
+  }
+}
+function useIcons(): Record<string, string> {
+  return useSyncExternalStore(
+    (cb) => {
+      iconListeners.add(cb)
+      return () => iconListeners.delete(cb)
+    },
+    () => icons,
+    () => icons,
+  )
+}
+function harnessKey(label: string): string {
+  if (label === 'Claude') return 'claude'
+  if (label === 'Codex') return 'codex'
+  if (label === 'Grok Bot') return 'grok'
+  return 'human'
+}
+
+function HarnessMark({ harness, size = 14 }: { harness?: string | null; size?: number }) {
+  const all = useIcons()
+  if (!harness) return null
+  const key = harnessKey(harness)
+  if (key === 'human') {
+    return (
+      <svg className="hmark hmark--person" width={size} height={size} viewBox="0 0 16 16" aria-label={harness}>
+        <title>{harness}</title>
+        <circle cx="8" cy="5" r="3" fill="currentColor" />
+        <path d="M2 14c0-3.3 2.7-5 6-5s6 1.7 6 5z" fill="currentColor" />
+      </svg>
+    )
+  }
+  const src = all[key]
+  if (!src) return <span className="tag">{harness}</span>
+  return <img className="hmark" width={size} height={size} src={src} alt={harness} title={harness} />
 }
 
 function presence(s: Session): string {
@@ -193,7 +239,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
               <div className="row__main">
                 <div className="row__line">
                   <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
-                  {d.from_harness && <span className="tag">{d.from_harness}</span>}
+                  <HarnessMark harness={d.from_harness} />
                   <span className="row__text">{d.text}</span>
                   <span className="row__time">{d.created.slice(11)}</span>
                 </div>
@@ -219,7 +265,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                 <div className="detail__who">
                   <span className="detail__name">
                     {withHost(current.from_name, current.from_host_name)}
-                    {current.from_harness && <span className="tag">{current.from_harness}</span>}
+                    <HarnessMark harness={current.from_harness} />
                   </span>
                   <span className="detail__meta">
                     {current.created} · {current.recipients.length === 1 ? t('feed.sentOne') : t('feed.sentMany', { n: current.recipients.length })}
@@ -234,7 +280,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                   <div className="rcpt__head">
                     <Avatar name={r.to_name} size={20} />
                     <span className="rcpt__name">{r.to_host_name && <span className="rcpt__host">{r.to_host_name}/</span>}{r.to_name}</span>
-                    {r.to_harness && <span className="tag">{r.to_harness}</span>}
+                    <HarnessMark harness={r.to_harness} />
                     <Badge kind={r.kind} />
                     <span className="rcpt__time">{(r.reply?.created ?? r.created).slice(11)}</span>
                     {(r.kind === 'queued' || r.kind === 'failed') && (
@@ -278,40 +324,43 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
   const lang = useLang()
   const [sessions, setSessions] = useState<Session[]>([])
   const [tool, setTool] = useState<string>('all')
-  const [showAll, setShowAll] = useState(false)
-  const [naming, setNaming] = useState<{ id: string; value: string } | null>(null)
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<Session[] | null>(null)
+  const [editing, setEditing] = useState<{ id: string; name: string; about: string } | null>(null)
   const { open, notice, clear, say } = useOpen()
   const load = useCallback(async () => {
     try {
-      const r = await api.sessions(!showAll)
+      const r = await api.sessions(true)
       setSessions(r.sessions)
     } catch {
       /* keep the last list */
     }
-  }, [showAll, lang])
-  const saveName = async (s: Session) => {
-    if (!naming) return
-    const value = naming.value.trim()
-    setNaming(null)
-    try {
-      if (value) {
-        const r = await api.contactSet(value, addressOf(s))
-        say(r.text)
-      } else if (s.contact) {
-        await api.contactRemove(s.contact)
-      }
-    } catch (e) {
-      say(String(e))
-    }
-    load()
-  }
+  }, [lang])
   useEffect(() => {
     load()
     const h = setInterval(load, 10000)
     return () => clearInterval(h)
   }, [load])
-  const tools = useMemo(() => Array.from(new Set(sessions.map((s) => s.harness))), [sessions])
-  const shown = sessions.filter((s) => tool === 'all' || s.harness === tool)
+  // the search box looks through every session with records here, whatever its age
+  const search = useCallback(async (q: string) => {
+    if (!q.trim()) {
+      setResults(null)
+      return
+    }
+    try {
+      const r = await api.searchSessions(q)
+      setResults(r.sessions)
+    } catch {
+      setResults([])
+    }
+  }, [])
+  useEffect(() => {
+    const h = setTimeout(() => search(query), 200)
+    return () => clearTimeout(h)
+  }, [query, search, lang])
+  const base = results ?? sessions
+  const tools = useMemo(() => Array.from(new Set(base.map((s) => s.harness))), [base])
+  const shown = base.filter((s) => tool === 'all' || s.harness === tool)
   // this machine first, then each paired machine under its own name
   const groups = useMemo(() => {
     const m = new Map<string, { key: string; title: string; items: Session[] }>()
@@ -322,63 +371,83 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
     }
     return Array.from(m.values())
   }, [shown, lang])
+  const save = async (s: Session) => {
+    if (!editing) return
+    const { name, about } = editing
+    setEditing(null)
+    try {
+      if (name.trim()) {
+        const r = await api.contactSet(name.trim(), addressOf(s), about.trim() || null)
+        say(r.text)
+      } else if (s.contact) {
+        await api.contactRemove(s.contact)
+      }
+    } catch (e) {
+      say(String(e))
+    }
+    load()
+    if (results) search(query)
+  }
+  const onKey = (s: Session) => (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') save(s)
+    if (e.key === 'Escape') setEditing(null)
+  }
   return (
     <>
       <header className="bar" data-tauri-drag-region>
         <span className="bar__title" data-tauri-drag-region>{t('nav.agents')}</span>
         <span className="tabs">
-          <button className="tab" data-active={tool === 'all' || undefined} onClick={() => setTool('all')}>{t('tabs.all')} <i>{sessions.length}</i></button>
+          <button className="tab" data-active={tool === 'all' || undefined} onClick={() => setTool('all')}>{t('tabs.all')} <i>{base.length}</i></button>
           {tools.map((h) => (
-            <button key={h} className="tab" data-active={tool === h || undefined} onClick={() => setTool(h)}>{h} <i>{sessions.filter((s) => s.harness === h).length}</i></button>
+            <button key={h} className="tab" data-active={tool === h || undefined} onClick={() => setTool(h)}>{h} <i>{base.filter((s) => s.harness === h).length}</i></button>
           ))}
         </span>
         <span className="bar__spacer" />
-        <label className="check"><input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> {t('agents.showAll')}</label>
+        <input className="input input--search" placeholder={t('agents.search')} value={query} onChange={(e) => setQuery(e.target.value)} />
       </header>
       <div className="lines">
         {groups.map((g) => (
           <div key={g.key}>
             {groups.length > 1 && <div className="lines__group">{g.title} <i>{g.items.length}</i></div>}
             {g.items.map((s) => (
-          <div key={s.id} className="line">
-            <Avatar name={s.name} />
-            {naming?.id === s.id ? (
-              <input
-                className="input line__input"
-                autoFocus
-                placeholder={t('contact.placeholder')}
-                title={t('contact.hint')}
-                value={naming.value}
-                onChange={(e) => setNaming({ id: s.id, value: e.target.value })}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') saveName(s)
-                  if (e.key === 'Escape') setNaming(null)
-                }}
-                onBlur={() => saveName(s)}
-              />
-            ) : (
-              <span className="line__name" title={s.contact ? `${t('contact.hint')}\n${s.id}` : s.id}>
-                {s.contact && <span className="line__star">★</span>}
-                {s.name}
-              </span>
-            )}
-            <span className="tag">{s.harness}</span>
-            <span className="line__where" title={s.cwd ?? ''}>{s.cwd_short ?? ''}</span>
-            <span className="line__presence" data-presence={s.running ? (s.status ?? 'idle') : 'offline'}>
-              <span className="line__dot" />
-              {presence(s)}
-            </span>
-            <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
-            <span className="line__actions">
-              <button className="btn btn--ghost btn--icon" title={s.contact ? t('action.unname') : t('action.name')} onClick={() => setNaming({ id: s.id, value: s.contact ?? '' })}>{s.contact ? '★' : '☆'}</button>
-              <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(addressOf(s))}>✎</button>
-              <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
-            </span>
-          </div>
+              <div key={s.id} className="line" data-editing={editing?.id === s.id || undefined}>
+                <Avatar name={s.name} />
+                {editing?.id === s.id ? (
+                  <span className="line__edit">
+                    <input className="input" autoFocus placeholder={t('contact.placeholder')} title={t('contact.hint')} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} onKeyDown={onKey(s)} />
+                    <input className="input input--about" placeholder={t('contact.about')} value={editing.about} onChange={(e) => setEditing({ ...editing, about: e.target.value })} onKeyDown={onKey(s)} />
+                    <button className="btn btn--primary btn--small" onClick={() => save(s)}>{t('action.save')}</button>
+                    <button className="btn btn--ghost btn--small" onClick={() => setEditing(null)}>{t('action.cancel')}</button>
+                  </span>
+                ) : (
+                  <>
+                    <span className="line__who" title={s.id}>
+                      <span className="line__name">
+                        {s.contact && !s.provisional && <span className="line__star">★</span>}
+                        {s.name}
+                        {s.contact && s.provisional && <span className="line__prov" title={t('contact.provisional')}>≈ {s.contact}</span>}
+                      </span>
+                      {s.about && <span className="line__about">{s.about}</span>}
+                    </span>
+                    <HarnessMark harness={s.harness} size={16} />
+                    <span className="line__where" title={s.cwd ?? ''}>{s.cwd_short ?? ''}</span>
+                    <span className="line__presence" data-presence={s.running ? (s.status ?? 'idle') : 'offline'}>
+                      <span className="line__dot" />
+                      {presence(s)}
+                    </span>
+                    <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
+                    <span className="line__actions">
+                      <button className="btn btn--ghost btn--icon" title={s.contact && !s.provisional ? t('action.unname') : t('action.name')} onClick={() => setEditing({ id: s.id, name: s.contact ?? '', about: s.about ?? '' })}>{s.contact && !s.provisional ? '★' : '☆'}</button>
+                      <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(addressOf(s))}>✎</button>
+                      <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
+                    </span>
+                  </>
+                )}
+              </div>
             ))}
           </div>
         ))}
-        {shown.length === 0 && <div className="empty">{t('agents.empty')}</div>}
+        {shown.length === 0 && <div className="empty">{results ? t('agents.noResults') : t('agents.empty')}</div>}
         {notice && <div className="notice" onClick={clear}>{notice}</div>}
       </div>
     </>
@@ -464,7 +533,7 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
                 <div className="cand__who">
                   <div className="cand__line">
                     <span className="cand__name">{c.address}</span>
-                    <span className="tag">{c.harness}</span>
+                    <HarnessMark harness={c.harness} />
                     <span className="cand__presence">{presence(c)}</span>
                   </div>
                   <span className="cand__reason">{reasonText(c)} · {c.reach.text}</span>
@@ -808,6 +877,7 @@ export function App() {
 
   useEffect(() => {
     loadLang()
+    loadIcons()
   }, [])
   // the menu bar item: a dispatch picked from its list, or Send
   useEffect(() => {

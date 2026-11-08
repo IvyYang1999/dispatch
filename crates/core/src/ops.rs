@@ -11,16 +11,14 @@ use crate::store::{self, Store};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
-fn session_json(s: &Session, hook_on: bool) -> Value {
-    session_json_with(s, hook_on, &crate::contacts::list())
-}
-
 fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Contact]) -> Value {
     let r = reach::decide(s, hook_on);
     let host_id = s.host.as_ref().map(|h| h.id.as_str());
     let contact = contacts.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id);
     json!({
         "contact": contact.map(|c| c.name.clone()),
+        "about": contact.and_then(|c| c.description.clone()),
+        "provisional": contact.map(|c| c.provisional).unwrap_or(false),
         "id": s.id,
         "short_id": s.short_id,
         "name": s.display_name(),
@@ -75,14 +73,15 @@ pub fn contacts() -> Value {
         .into_iter()
         .map(|c| {
             let live = all.iter().find(|s| s.id.eq_ignore_ascii_case(&c.session_id) && s.host.as_ref().map(|h| &h.id) == c.host.as_ref().map(|h| &h.id));
-            json!({ "name": c.name, "session_id": c.session_id, "short_id": short_id(&c.session_id), "harness": c.harness.label(), "host": c.host, "cwd": c.cwd, "set_by": c.set_by, "updated": c.updated, "running": live.map(|s| s.running).unwrap_or(false), "address": match &c.host { Some(h) => format!("{}/{}", h.name, c.name), None => c.name.clone() } })
+            json!({ "name": c.name, "session_id": c.session_id, "short_id": short_id(&c.session_id), "harness": c.harness.label(), "host": c.host, "cwd": c.cwd, "set_by": c.set_by, "updated": c.updated, "about": c.description, "provisional": c.provisional, "running": live.map(|s| s.running).unwrap_or(false), "address": match &c.host { Some(h) => format!("{}/{}", h.name, c.name), None => c.name.clone() } })
         })
         .collect();
     json!({ "count": rows.len(), "contacts": rows })
 }
 
-/// Give a session a stable name: the one `session` names, else the calling session.
-pub fn register(name: &str, session: Option<&str>, by: &str) -> Result<Value> {
+/// Give a session a stable name (and a line on what it is for): the one `session` names, else
+/// the calling session.
+pub fn register(name: &str, session: Option<&str>, by: &str, description: Option<&str>) -> Result<Value> {
     let target = match session.map(str::trim).filter(|s| !s.is_empty()) {
         Some(q) => send::resolve(q)?,
         None => {
@@ -95,8 +94,8 @@ pub fn register(name: &str, session: Option<&str>, by: &str) -> Result<Value> {
             })
         }
     };
-    let c = crate::contacts::set(name, &target, by)?;
-    Ok(json!({ "name": c.name, "session_id": c.session_id, "short_id": short_id(&c.session_id), "harness": c.harness.label(), "host": c.host, "address": match &c.host { Some(h) => format!("{}/{}", h.name, c.name), None => c.name.clone() }, "text": t("ops.registered").replace("{name}", &c.name).replace("{who}", &target.display_name()) }))
+    let c = crate::contacts::set(name, &target, by, description, false)?;
+    Ok(json!({ "name": c.name, "about": c.description, "session_id": c.session_id, "short_id": short_id(&c.session_id), "harness": c.harness.label(), "host": c.host, "address": match &c.host { Some(h) => format!("{}/{}", h.name, c.name), None => c.name.clone() }, "text": t("ops.registered").replace("{name}", &c.name).replace("{who}", &target.display_name()) }))
 }
 
 pub fn unregister(name: &str) -> Result<Value> {
@@ -108,24 +107,42 @@ pub fn unregister(name: &str) -> Result<Value> {
 
 /// Every session that matches, each with why it matched.
 pub fn find(query: &str) -> Value {
+    let out = matches(query, discover::sessions());
+    json!({ "query": query, "count": out.len(), "candidates": out, "note": "Send only when exactly one candidate is the right one; otherwise ask the user or refine the query." })
+}
+
+/// Every session this machine has records of (any age) or a paired machine lists, that matches.
+pub fn search(query: &str) -> Value {
+    let mut all = discover::all_local();
+    all.extend(crate::peer::remote_sessions());
+    let out = matches(query, all);
+    json!({ "query": query, "count": out.len(), "sessions": out })
+}
+
+fn matches(query: &str, sessions: Vec<Session>) -> Vec<Value> {
     let (host, q) = match crate::peer::split_address(query.trim()) {
         Some((p, rest)) => (Some(p), rest.to_lowercase()),
         None => (None, query.trim().to_lowercase()),
     };
     let hook_on = hook::installed();
+    let book = crate::contacts::list();
     let mut out = vec![];
-    for s in discover::sessions() {
+    for s in sessions {
         if let Some(p) = &host {
             if s.host.as_ref().map(|h| h.id != p.id).unwrap_or(true) {
                 continue;
             }
         }
-        let reason = if q.is_empty() && host.is_some() {
-            Some("host")
-        } else if !q.is_empty() && s.id.starts_with(&q) {
+        let host_id = s.host.as_ref().map(|h| h.id.as_str());
+        let contact = book.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id);
+        let reason = if q.is_empty() {
+            Some("all")
+        } else if s.id.starts_with(&q) {
             Some("id")
-        } else if s.name.as_deref().map(|n| n.to_lowercase().contains(&q)).unwrap_or(false) {
+        } else if s.name.as_deref().map(|n| n.to_lowercase().contains(&q)).unwrap_or(false) || contact.map(|c| c.name.to_lowercase().contains(&q)).unwrap_or(false) {
             Some("name")
+        } else if contact.and_then(|c| c.description.as_deref()).map(|d| d.to_lowercase().contains(&q)).unwrap_or(false) {
+            Some("about")
         } else if s.cwd.as_deref().map(|c| c.to_lowercase().contains(&q)).unwrap_or(false) {
             Some("cwd")
         } else if s.title.as_deref().map(|t| t.to_lowercase().contains(&q)).unwrap_or(false) {
@@ -136,12 +153,12 @@ pub fn find(query: &str) -> Value {
             None
         };
         if let Some(r) = reason {
-            let mut v = session_json(&s, hook_on);
+            let mut v = session_json_with(&s, hook_on, &book);
             v["reason"] = json!(r);
             out.push(v);
         }
     }
-    json!({ "query": query, "count": out.len(), "candidates": out, "note": "Send only when exactly one candidate is the right one; otherwise ask the user or refine the query." })
+    out
 }
 
 pub fn send_many(store: &Store, to: &[String], text: &str, urgency: &str, from: Option<(String, String)>) -> Result<Value> {
@@ -166,11 +183,25 @@ pub fn send_many_opts(store: &Store, to: &[String], text: &str, urgency: &str, f
     let urgency = store::urgency_stored(urgency);
     let mut reports = vec![];
     for who in to {
-        let target = send::resolve(who)?;
+        let (target, how) = send::resolve_how(who)?;
         let rep = send::send(store, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: text.to_string(), urgency: urgency.to_string(), dispatch_id: Some(dispatch_id.clone()), wait: true, allow_resume, deadline })?;
-        reports.push(json!({ "to": { "id": target.id, "short_id": target.short_id, "name": target.display_name(), "host": target.host, "address": target.address() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail, "path": rep.path }));
+        let named = remember_match(who, &target, how);
+        reports.push(json!({ "to": { "id": target.id, "short_id": target.short_id, "name": target.display_name(), "host": target.host, "address": target.address() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail, "path": rep.path, "named": named }));
     }
     Ok(json!({ "dispatch_id": dispatch_id, "from": { "id": from_id, "name": from_name }, "recipients": reports }))
+}
+
+/// A recipient found by a fragment and not yet in the address book gets the words it was found
+/// by as a provisional name, so the same words hit it directly next time. Returns the name.
+pub fn remember_match(query: &str, target: &Session, how: send::Match) -> Option<Value> {
+    if how != send::Match::Fragment || send::is_person(&target.id) {
+        return None;
+    }
+    let (_, q) = crate::peer::split_address(query.trim()).map(|(p, rest)| (Some(p), rest)).unwrap_or((None, query.trim().to_string()));
+    if q.is_empty() || crate::contacts::for_session(&target.id, target.host.as_ref().map(|h| h.id.as_str())).is_some() {
+        return None;
+    }
+    crate::contacts::set(&q, target, "auto", None, true).ok().map(|c| json!({ "name": c.name, "provisional": true, "note": t("ops.provisional_note").replace("{name}", &c.name) }))
 }
 
 /// Mark every queued copy past its deadline as not delivered. Returns how many changed.

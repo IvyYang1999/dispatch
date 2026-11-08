@@ -25,6 +25,8 @@ const CODEX_RUNNING_WINDOW_MS: i64 = 15 * 60 * 1000;
 const LIST_TTL: Duration = Duration::from_secs(3);
 
 static LIST: Mutex<Option<(Instant, Vec<Session>)>> = Mutex::new(None);
+/// Every session on this machine whatever its age, for searches; remembered ten seconds.
+static ALL: Mutex<Option<(Instant, Vec<Session>)>> = Mutex::new(None);
 /// Parsed transcript heads, keyed by path, valid while the file's mtime and size hold.
 static HEADS: LazyLock<Mutex<HashMap<PathBuf, (i64, u64, Option<String>, Option<String>)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -110,7 +112,7 @@ fn ps_commands() -> String {
         .unwrap_or_default()
 }
 
-fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64) -> Vec<Session> {
+fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64, max_age: Option<i64>) -> Vec<Session> {
     let root = claude::claude_home().join("projects");
     let mut out = vec![];
     let Ok(dirs) = fs::read_dir(&root) else { return out };
@@ -125,7 +127,7 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64) ->
             let path = f.path();
             let Some(mtime) = mtime_ms(&path) else { continue };
             let running = running_ids.contains(&id.to_lowercase());
-            if !running && now - mtime > MAX_AGE_MS {
+            if !running && max_age.map(|m| now - mtime > m).unwrap_or(false) {
                 continue;
             }
             let (cwd, title) = head_of(&path, mtime);
@@ -149,7 +151,7 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64) ->
     out
 }
 
-fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
+fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>) -> Vec<Session> {
     let root = home_dir().join(".codex").join("sessions");
     let uuid_re = Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
     // Threads the shared daemon has loaded are running whatever the file times say.
@@ -163,7 +165,7 @@ fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
         let Some(m) = uuid_re.find(&name) else { continue };
         let id = m.as_str().to_lowercase();
         let Some(mtime) = mtime_ms(e.path()) else { continue };
-        if now - mtime > MAX_AGE_MS {
+        if max_age.map(|m| now - mtime > m).unwrap_or(false) {
             continue;
         }
         let (cwd, title) = head_of(e.path(), mtime);
@@ -236,6 +238,22 @@ pub fn sessions() -> Vec<Session> {
 }
 
 pub fn sessions_now() -> Vec<Session> {
+    gather(Some(MAX_AGE_MS))
+}
+
+/// Every session this machine has records of, however old, from a 10-second cache.
+pub fn all_local() -> Vec<Session> {
+    if let Some((at, list)) = ALL.lock().unwrap().as_ref() {
+        if at.elapsed() < Duration::from_secs(10) {
+            return list.clone();
+        }
+    }
+    let list = gather(None);
+    *ALL.lock().unwrap() = Some((Instant::now(), list.clone()));
+    list
+}
+
+fn gather(max_age: Option<i64>) -> Vec<Session> {
     let now = now_ms();
     let procs = ps_commands();
     let mut running_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -251,7 +269,7 @@ pub fn sessions_now() -> Vec<Session> {
     let codex_running = Regex::new(r"\bcodex\b").map(|re| re.is_match(&procs)).unwrap_or(false);
 
     let mut by_id: HashMap<String, Session> = HashMap::new();
-    for s in discover_claude(&running_ids, now).into_iter().chain(discover_codex(codex_running, now)).chain(discover_grok(now)) {
+    for s in discover_claude(&running_ids, now, max_age).into_iter().chain(discover_codex(codex_running, now, max_age)).chain(discover_grok(now)) {
         match by_id.get_mut(&s.id) {
             Some(prev) => {
                 // a session can appear under several project slugs after a cwd change

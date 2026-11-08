@@ -48,10 +48,14 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
 6. To answer a message you received, `dispatch_reply` with its id.
 7. Names beat searching. When the user asks you to register or name yourself
    ("you are in charge of X, register with Dispatch"), call `dispatch_register`
-   with that name; from then on others address you by it (`<machine>/<name>`
-   from another machine), whether or not you are running. When the user names
-   a recipient that is in the address book, send to that name; an exact name
-   always wins over a fragment match, so there is nothing to choose.
+   with that name and a one-line `description` of your role; from then on
+   others address you by the name (`<machine>/<name>` from another machine),
+   whether or not you are running, and find you by the role. When the user
+   names a recipient that is in the address book, send to that name; an exact
+   name always wins over a fragment match, so there is nothing to choose. A
+   recipient you found by a fragment is noted under those words as a
+   provisional name (`named` in the send result): mention it, so the user can
+   confirm or rename it in the directory.
 
 ## If you are a Grok Bot
 
