@@ -207,9 +207,10 @@ pub fn target_of(letter: &Letter) -> Session {
 
 /// Who sent it, with the machine when it is another one: `Name @ Machine`.
 pub fn sender_text(l: &Letter) -> String {
-    match &l.from_host_name {
-        Some(h) => t("send.from_at").replace("{from}", &l.from_name).replace("{host}", h),
-        None => l.from_name.clone(),
+    match (&l.from_host_name, &l.signature) {
+        (Some(h), Some(_)) => t("send.from_at_verified").replace("{from}", &l.from_name).replace("{host}", h),
+        (Some(h), None) => t("send.from_at").replace("{from}", &l.from_name).replace("{host}", h),
+        _ => l.from_name.clone(),
     }
 }
 
@@ -428,6 +429,7 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
         to_host: req.to.host.as_ref().map(|h| h.id.clone()),
         to_host_name: req.to.host.as_ref().map(|h| h.name.clone()),
         from_harness: sender_harness(&req.from).map(str::to_string),
+        signature: None,
         created,
         body: req.text.clone(),
         path: String::new(),

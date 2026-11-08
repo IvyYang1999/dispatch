@@ -189,6 +189,7 @@ mod tests {
                 to_host: None,
                 to_host_name: None,
                 from_harness: Some("human".into()),
+                signature: None,
                 body: body.into(),
                 path: String::new(),
             };

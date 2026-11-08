@@ -235,7 +235,7 @@ fn copies_named(store: &Store, id: &str) -> Result<Vec<store::Letter>> {
 pub fn cancel(store: &Store, id: &str, by: &str) -> Result<Value> {
     let copies = copies_named(store, id)?;
     let mut done = vec![];
-    for mut l in copies.iter().filter(|l| store::pending(&l.status)).cloned() {
+    for mut l in copies.iter().filter(|l| store::pending(&l.status) || l.status == store::HELD).cloned() {
         store.set_status(&mut l, store::CANCELLED)?;
         store.append_run(&l.id, "cancel", "by", by)?;
         if let Some(h) = &l.to_host {
@@ -254,7 +254,12 @@ pub fn cancel(store: &Store, id: &str, by: &str) -> Result<Value> {
 pub fn retry(store: &Store, id: &str) -> Result<Value> {
     let copies = copies_named(store, id)?;
     let mut reports = vec![];
-    for mut l in copies.iter().filter(|l| store::pending(&l.status)).cloned() {
+    for mut l in copies.iter().filter(|l| store::pending(&l.status) || (l.status == store::HELD && l.from_host.is_some())).cloned() {
+        // a letter held for approval: retrying it is the approval
+        if l.status == store::HELD {
+            store.set_status(&mut l, store::UNREAD)?;
+            store.append_run(&l.id, "approve", "by", "user")?;
+        }
         let fresh = store::deadline_text(&store::now_text(), store::default_wait(&l.urgency));
         store.set_deadline(&mut l, &fresh)?;
         let rep = send::redeliver(store, &mut l)?;
@@ -370,11 +375,12 @@ fn stage_by_status(status: &str) -> (&'static str, &'static str) {
         store::DELIVERED_CODEX => ("stage.queued_codex", "delivered"),
         store::FAILED => ("stage.failed", "failed"),
         store::CANCELLED => ("stage.cancelled", "cancelled"),
+        store::HELD => ("stage.held", "held"),
         _ => ("stage.queued", "queued"),
     }
 }
 
-const STAGE_KEYS: [&str; 16] = ["stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
+const STAGE_KEYS: [&str; 18] = ["stage.held", "stage.held_there", "stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
 
 /// Why a pending copy waits, from the recipient's state right now: the session is closed, busy
 /// (the hook hands it over when the turn ends), idle (its next turn), a Codex thread not on the
@@ -410,7 +416,14 @@ fn waiting_key(c: &store::Letter) -> &'static str {
 /// transcript's receipt. A copy on another machine shows what that machine last said about it.
 pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
     if c.to_host.is_some() {
+        // held over there: waiting for a person on that machine, nothing to approve here
+        if c.status == store::HELD {
+            return ("queued".into(), "stage.held_there".into());
+        }
         if let Some(remote) = crate::peer::remote_stage(&c.id) {
+            if remote.0 == "held" {
+                return ("queued".into(), "stage.held_there".into());
+            }
             return remote;
         }
         let (key, kind) = stage_by_status(&c.status);
@@ -611,6 +624,7 @@ mod tests {
             to_host: None,
             to_host_name: None,
             from_harness: None,
+            signature: None,
             body: "hi".into(),
             path: String::new(),
         };
@@ -642,6 +656,7 @@ mod tests {
                 to_host: None,
                 to_host_name: None,
                 from_harness: Some("claude".into()),
+                signature: None,
                 body: body.into(),
                 path: String::new(),
             };

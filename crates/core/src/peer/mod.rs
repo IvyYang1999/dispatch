@@ -12,10 +12,12 @@
 
 mod client;
 pub mod mdns;
+pub mod net;
 mod server;
+pub mod sign;
 mod wire;
 
-pub use client::{hello, pair, PeerError};
+pub use client::{hello, pair, pair_link, PeerError};
 pub use server::{serve, ServerHandle};
 pub use wire::{RemoteCopy, RemoteSession};
 
@@ -38,7 +40,9 @@ const SESSIONS_TTL: Duration = Duration::from_secs(20);
 const OFFLINE_BACKOFF: Duration = Duration::from_secs(20);
 const MIRROR_EVERY: Duration = Duration::from_secs(10);
 const CODE_SECS: i64 = 120;
+const LINK_SECS: i64 = 600;
 const CODE_ATTEMPTS: u32 = 3;
+const LINK_PREFIX: &str = "dispatch-pair:";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Me {
@@ -57,6 +61,30 @@ pub struct PeerInfo {
     pub address: Option<String>,
     #[serde(default)]
     pub paired_at: String,
+    /// Its iroh endpoint id: how it is dialled over the internet, and the key its letters are
+    /// signed with. Pinned the first time it is learned.
+    #[serde(default)]
+    pub iroh_id: Option<String>,
+    /// Where it said it can be reached over the internet (relay and addresses), for dialling
+    /// without a lookup service.
+    #[serde(default)]
+    pub iroh_addr: Option<Value>,
+    /// A person compared the fingerprints (or it was paired with a code in the same room).
+    /// Letters from a machine that is not confirmed are held for approval.
+    #[serde(default = "yes")]
+    pub verified: bool,
+    /// What its letters may do here: `all`, `contacts` (only to named sessions), `ask` (each
+    /// waits for approval).
+    #[serde(default = "rule_all")]
+    pub rule: String,
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn rule_all() -> String {
+    "all".into()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -67,7 +95,7 @@ pub struct Book {
     pub peers: Vec<PeerInfo>,
 }
 
-fn root() -> PathBuf {
+pub(crate) fn root() -> PathBuf {
     Store::open().root().to_path_buf()
 }
 
@@ -83,7 +111,7 @@ pub(crate) fn state_dir() -> PathBuf {
     root().join("peer")
 }
 
-fn write_private(path: &PathBuf, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_private(path: &PathBuf, text: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(root())?;
     std::fs::write(path, text)?;
     #[cfg(unix)]
@@ -219,6 +247,90 @@ pub fn set_address(q: &str, address: Option<String>) -> Result<PeerInfo> {
     Ok(out)
 }
 
+/// Pin a peer's signing key and keep its internet address current. A different key than the
+/// one pinned is refused: the machine has to be paired again.
+pub(crate) fn pin_keys(peer_id: &str, iroh: Option<String>, iroh_addr: Option<Value>) -> Result<(), PeerError> {
+    let mut b = load();
+    let Some(p) = b.peers.iter_mut().find(|p| p.id == peer_id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
+    if let Some(new) = iroh.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        match &p.iroh_id {
+            Some(old) if old != &new => {
+                log_problem(&p.name, "its signing key changed; refused until it is paired again");
+                return Err(PeerError::Refused("that machine's signing key changed; pair it again".into()));
+            }
+            Some(_) => {}
+            None => p.iroh_id = Some(new),
+        }
+    }
+    if iroh_addr.is_some() {
+        p.iroh_addr = iroh_addr;
+    }
+    save(&b).map_err(|e| PeerError::Protocol(format!("{e:#}")))
+}
+
+/// Four groups of four digits that both machines of a pair compute the same way from the two
+/// machines' keys: what a person compares on the two screens.
+pub fn fingerprint(peer_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mine = me().public_key.to_lowercase();
+    let theirs = peer_key.to_lowercase();
+    let (a, b) = if mine <= theirs { (mine, theirs) } else { (theirs, mine) };
+    let h = Sha256::digest(format!("dispatch-fingerprint/1:{a}:{b}").as_bytes());
+    (0..4).map(|i| format!("{:04}", u16::from_be_bytes([h[2 * i], h[2 * i + 1]]) % 10000)).collect::<Vec<_>>().join(" ")
+}
+
+/// A person compared the fingerprints: the machine is confirmed, and its letters held for
+/// that reason are delivered (unless its rule says to ask). Returns how many were released.
+pub fn verify_peer(q: &str) -> Result<(PeerInfo, usize)> {
+    let Some(p) = find_peer(q) else { anyhow::bail!("{}", t("cli.peers_not_found").replace("{q}", q)) };
+    let mut b = load();
+    for x in b.peers.iter_mut() {
+        if x.id == p.id {
+            x.verified = true;
+        }
+    }
+    save(&b)?;
+    let p = find_peer(&p.id).unwrap_or(p);
+    let mut released = 0;
+    if p.rule != "ask" {
+        let store = Store::open();
+        for mut l in store.list(None, false)?.into_iter().filter(|l| l.status == store::HELD && l.from_host.as_deref() == Some(&p.id)) {
+            store.set_status(&mut l, store::UNREAD)?;
+            store.append_run(&l.id, "peer", "released", "machine confirmed")?;
+            let to = crate::send::target_of(&l);
+            let _ = crate::send::deliver(&store, &to, &mut l, true, false);
+            released += 1;
+        }
+    }
+    Ok((p, released))
+}
+
+/// What a peer's letters may do here: `all`, `contacts` or `ask`.
+pub fn set_rule(q: &str, rule: &str) -> Result<PeerInfo> {
+    if !matches!(rule, "all" | "contacts" | "ask") {
+        anyhow::bail!("the rule must be all, contacts or ask");
+    }
+    let Some(p) = find_peer(q) else { anyhow::bail!("{}", t("cli.peers_not_found").replace("{q}", q)) };
+    let mut b = load();
+    let mut out = p.clone();
+    for x in b.peers.iter_mut() {
+        if x.id == p.id {
+            x.rule = rule.to_string();
+            out = x.clone();
+        }
+    }
+    save(&b)?;
+    Ok(out)
+}
+
+/// A line for whoever has to find out why a machine is offline or a letter was refused.
+pub(crate) fn log_problem(who: &str, what: &str) {
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(state_dir().join("errors.log")) {
+        use std::io::Write as _;
+        let _ = writeln!(f, "{} {} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), who, what);
+    }
+}
+
 // ---------------------------------------------------------------- pairing code
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -226,6 +338,66 @@ struct Pairing {
     code: String,
     expires_at: i64,
     attempts: u32,
+    /// `code` (six digits, shown in the same room) or `link` (a long secret that travels).
+    #[serde(default)]
+    kind: String,
+}
+
+/// What a pairing link carries: who made it, its keys, where to reach it, the one-time secret.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Link {
+    pub v: u8,
+    pub id: String,
+    pub name: String,
+    pub noise: String,
+    pub iroh: String,
+    #[serde(default)]
+    pub addr: Option<Value>,
+    #[serde(rename = "s")]
+    pub secret: String,
+}
+
+impl Link {
+    pub fn encode(&self) -> String {
+        use base64::Engine as _;
+        format!("{LINK_PREFIX}{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(self).unwrap_or_default()))
+    }
+
+    pub fn decode(text: &str) -> Result<Link> {
+        use base64::Engine as _;
+        let body = text.trim().strip_prefix(LINK_PREFIX).ok_or_else(|| anyhow::anyhow!("not a Dispatch pairing link"))?;
+        let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(body.trim()).map_err(|_| anyhow::anyhow!("the pairing link is damaged"))?;
+        let l: Link = serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("the pairing link is damaged"))?;
+        if l.v != 1 || l.secret.len() < 32 {
+            anyhow::bail!("this pairing link is from another version of Dispatch");
+        }
+        Ok(l)
+    }
+}
+
+/// Whether text is a pairing link.
+pub fn is_link(text: &str) -> bool {
+    text.trim().starts_with(LINK_PREFIX)
+}
+
+/// A pairing link good for ten minutes and one use, for a machine on another network: it
+/// carries this machine's keys, where to reach it, and a long one-time secret.
+pub fn new_link() -> Result<(String, i64)> {
+    if !net::enabled() {
+        anyhow::bail!("internet connections are off on this machine (Settings, or dispatch peers internet on)");
+    }
+    let iroh = net::my_id().ok_or_else(|| anyhow::anyhow!("no iroh key"))?;
+    let secret = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let me = me();
+    let addr = net::my_addr_ready(Duration::from_secs(15));
+    if addr.is_none() {
+        anyhow::bail!("nothing here listens over the internet yet: open the Dispatch app, or run dispatch serve");
+    }
+    let link = Link { v: 1, id: me.id, name: me.name, noise: me.public_key, iroh, addr, secret: secret.clone() };
+    let p = Pairing { code: secret, expires_at: chrono::Utc::now().timestamp() + LINK_SECS, attempts: 0, kind: "link".into() };
+    std::fs::create_dir_all(state_dir())?;
+    write_private(&pairing_path(), &serde_json::to_string(&p)?)?;
+    Ok((link.encode(), LINK_SECS))
 }
 
 fn pairing_path() -> PathBuf {
@@ -246,24 +418,24 @@ pub fn new_code() -> Result<(String, i64)> {
     let bytes = uuid::Uuid::new_v4().into_bytes();
     let n = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) % 1_000_000;
     let code = format!("{n:06}");
-    let p = Pairing { code: code.clone(), expires_at: chrono::Utc::now().timestamp() + CODE_SECS, attempts: 0 };
+    let p = Pairing { code: code.clone(), expires_at: chrono::Utc::now().timestamp() + CODE_SECS, attempts: 0, kind: "code".into() };
     std::fs::create_dir_all(state_dir())?;
     write_private(&pairing_path(), &serde_json::to_string(&p)?)?;
     Ok((code, CODE_SECS))
 }
 
-/// The active code and its seconds left, if any.
+/// The active six-digit code and its seconds left, if any (a link's secret is never shown).
 pub fn current_code() -> Option<(String, i64)> {
-    read_pairing().map(|p| (p.code, p.expires_at - chrono::Utc::now().timestamp()))
+    read_pairing().filter(|p| p.kind != "link").map(|p| (p.code, p.expires_at - chrono::Utc::now().timestamp()))
 }
 
-/// Check a pairing attempt against the active code. Ok(true): matched, the code is spent.
-/// Ok(false): wrong; after three wrong attempts the code is spent too. Err: no code active.
-pub(crate) fn take_pairing(ok: impl Fn(&str) -> bool) -> Result<bool, &'static str> {
-    let Some(mut p) = read_pairing() else { return Err("no pairing code is active on this machine") };
+/// Check a pairing attempt against the active code or link. Ok(Some(kind)): matched, spent.
+/// Ok(None): wrong; after three wrong attempts it is spent too. Err: nothing active.
+pub(crate) fn take_pairing(ok: impl Fn(&str) -> bool) -> Result<Option<String>, &'static str> {
+    let Some(mut p) = read_pairing() else { return Err("no pairing code or link is active on that machine: it was used, it expired, or none was made") };
     if ok(&p.code) {
         let _ = std::fs::remove_file(pairing_path());
-        return Ok(true);
+        return Ok(Some(if p.kind.is_empty() { "code".into() } else { p.kind }));
     }
     p.attempts += 1;
     if p.attempts >= CODE_ATTEMPTS {
@@ -271,7 +443,7 @@ pub(crate) fn take_pairing(ok: impl Fn(&str) -> bool) -> Result<bool, &'static s
     } else {
         let _ = write_private(&pairing_path(), &serde_json::to_string(&p).unwrap_or_default());
     }
-    Ok(false)
+    Ok(None)
 }
 
 // ---------------------------------------------------------------- addressing
@@ -316,13 +488,41 @@ static OFFLINE: LazyLock<Mutex<HashMap<String, (Instant, String)>>> = LazyLock::
 /// What a peer last said about a copy on it: (kind, stage key), by letter id.
 static STAGES: LazyLock<Mutex<HashMap<String, (String, String)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 static MIRRORED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// How each peer was last reached: `lan`, `direct` or `relay`, and when.
+static ROUTES: LazyLock<Mutex<HashMap<String, (Instant, &'static str)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn routes_path() -> PathBuf {
+    state_dir().join("routes.json")
+}
+
+/// Remember how a peer was reached, here and in `peer/routes.json` for the other processes
+/// (the command line asks; the app connects).
+pub(crate) fn note_route(peer_id: &str, route: &'static str) {
+    ROUTES.lock().unwrap().insert(peer_id.to_string(), (Instant::now(), route));
+    let mut all: HashMap<String, Value> = std::fs::read_to_string(routes_path()).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    all.insert(peer_id.to_string(), json!({ "route": route, "at": chrono::Utc::now().timestamp() }));
+    let _ = std::fs::create_dir_all(state_dir());
+    let _ = std::fs::write(routes_path(), serde_json::to_string(&all).unwrap_or_default());
+}
+
+/// How a peer was reached within the last minute and a half, by this process or another.
+pub fn route(peer_id: &str) -> Option<&'static str> {
+    if let Some(r) = ROUTES.lock().unwrap().get(peer_id).filter(|(at, _)| at.elapsed() < Duration::from_secs(90)).map(|(_, r)| *r) {
+        return Some(r);
+    }
+    let all: HashMap<String, Value> = std::fs::read_to_string(routes_path()).ok().and_then(|t| serde_json::from_str(&t).ok())?;
+    let v = all.get(peer_id)?;
+    let fresh = v["at"].as_i64().map(|at| chrono::Utc::now().timestamp() - at < 90).unwrap_or(false);
+    match (fresh, v["route"].as_str()) {
+        (true, Some("lan")) => Some("lan"),
+        (true, Some("direct")) => Some("direct"),
+        (true, Some("relay")) => Some("relay"),
+        _ => None,
+    }
+}
 
 fn mark_offline(p: &PeerInfo, why: String) {
-    // a line for whoever has to find out why a machine is "offline"
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(state_dir().join("errors.log")) {
-        use std::io::Write as _;
-        let _ = writeln!(f, "{} {} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), p.name, why);
-    }
+    log_problem(&p.name, &why);
     OFFLINE.lock().unwrap().insert(p.id.clone(), (Instant::now() + OFFLINE_BACKOFF, why));
     REMOTE.lock().unwrap().remove(&p.id);
 }
@@ -338,7 +538,7 @@ fn mark_online(p: &PeerInfo) {
 /// Whether a peer is reachable right now: an address is known, it did not just fail, and its
 /// port answers a connection (which is dropped unused).
 pub fn online(p: &PeerInfo) -> bool {
-    !backing_off(p) && probe(p).is_ok()
+    !backing_off(p) && (route(&p.id).is_some() || probe(p).is_ok())
 }
 
 /// Try the peer's addresses in order; Ok(the address that answered) or Err(why the last one did
@@ -433,7 +633,8 @@ pub fn remote_reach(s: &Session) -> Reach {
 /// Hand a letter to the machine its recipient is on: (status there, route, detail).
 pub fn deliver(host: &Host, letter: &Letter) -> Result<(String, String, String), PeerError> {
     let Some(p) = peers().into_iter().find(|p| p.id == host.id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
-    match ask(&p, &Request::Deliver { letter: letter.clone() })? {
+    let signature = net::secret().ok().map(|k| sign::sign(&k, letter));
+    match ask(&p, &Request::Deliver { letter: letter.clone(), signature })? {
         Response::Delivered { status, route, detail } => Ok((status, route, detail)),
         Response::Error { message } => Err(PeerError::Refused(message)),
         _ => Err(PeerError::Protocol("unexpected answer".into())),
@@ -511,19 +712,40 @@ pub fn mirror(store: &Store) -> Result<usize> {
                     }
                 }
                 None => {
-                    // a letter for a session here that the peer could not push: take it now
+                    // a letter for a session here that the peer could not push: take it now,
+                    // once its signature checks out against the key pinned for that machine
                     if remote.to_host.as_deref() == Some(&me.id) && remote.status != store::CANCELLED {
+                        let signed = match (p.iroh_id.as_deref(), rc.signature.as_deref()) {
+                            (Some(signer), Some(sig)) => sign::verify(signer, &remote, sig),
+                            _ => false,
+                        };
+                        if !signed {
+                            log_problem(&p.name, &format!("pulled letter {} has no valid signature; not taken", crate::model::short_id(&remote.id)));
+                            continue;
+                        }
+                        if p.rule == "contacts" && crate::contacts::for_session(&remote.to, None).is_none() {
+                            log_problem(&p.name, &format!("pulled letter {} is not for a named session; not taken", crate::model::short_id(&remote.id)));
+                            continue;
+                        }
+                        // the same rule as a pushed letter: an unconfirmed machine, or one that
+                        // must ask first, waits for a person here
+                        let hold = !p.verified || p.rule == "ask";
                         let mut l = remote.clone();
+                        l.signature = rc.signature.clone();
                         l.to_host = None;
                         l.to_host_name = None;
                         l.from_host = Some(p.id.clone());
                         l.from_host_name = Some(p.name.clone());
-                        l.status = store::UNREAD.into();
+                        l.status = if hold { store::HELD.into() } else { store::UNREAD.into() };
                         l.path = String::new();
                         store.write_letter(&mut l)?;
-                        store.append_run(&l.id, "peer", "pulled", &p.name)?;
-                        let to = crate::send::target_of(&l);
-                        let _ = crate::send::deliver(store, &to, &mut l, true, false);
+                        store.append_run(&l.id, "peer", "pulled", &format!("{}; signature verified", p.name))?;
+                        if hold {
+                            store.append_run(&l.id, "peer", "held", if !p.verified { "machine not confirmed yet" } else { "rule: ask first" })?;
+                        } else {
+                            let to = crate::send::target_of(&l);
+                            let _ = crate::send::deliver(store, &to, &mut l, true, false);
+                        }
                         changed += 1;
                     }
                 }
@@ -545,13 +767,27 @@ pub fn overview() -> Value {
         .map(|p| {
             let s = seen.iter().find(|s| s.id == p.id);
             let backoff = OFFLINE.lock().unwrap().get(&p.id).filter(|(until, _)| Instant::now() < *until).map(|(_, why)| why.clone());
-            let probe = probe(p);
-            json!({ "id": p.id, "name": p.name, "address": p.address, "paired_at": p.paired_at, "online": backoff.is_none() && probe.is_ok(), "seen": s.map(|s| json!({ "addrs": s.addrs, "port": s.port })), "problem": backoff.or_else(|| probe.err()) })
+            let link = route(&p.id);
+            let probe = if link.is_some() { Ok(String::new()) } else { probe(p) };
+            json!({
+                "id": p.id, "name": p.name, "address": p.address, "paired_at": p.paired_at,
+                "online": backoff.is_none() && probe.is_ok(),
+                "seen": s.map(|s| json!({ "addrs": s.addrs, "port": s.port })),
+                "problem": backoff.or_else(|| probe.err()),
+                "link": link.or(if s.is_some() { Some("lan") } else { None }),
+                "fingerprint": fingerprint(&p.public_key),
+                "verified": p.verified,
+                "rule": p.rule,
+                "internet": p.iroh_id.is_some(),
+            })
         })
         .collect();
     let unpaired: Vec<Value> = seen.iter().filter(|s| !b.peers.iter().any(|p| p.id == s.id)).map(|s| json!({ "id": s.id, "name": s.name, "addrs": s.addrs, "port": s.port })).collect();
     json!({
-        "me": { "id": b.me.id, "name": b.me.name, "public_key": b.me.public_key, "listening": listening },
+        "me": { "id": b.me.id, "name": b.me.name, "public_key": b.me.public_key, "listening": listening, "iroh_id": net::my_id(), "internet_listening": net::my_addr().is_some() },
+        "internet": net::enabled(),
+        "relay": net::relay_url(),
+        "proxy": net::proxy(),
         "peers": peers,
         "seen": unpaired,
         "code": current_code().map(|(c, left)| json!({ "code": c, "seconds_left": left })),
@@ -578,15 +814,14 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         let b_root2 = b_root.clone();
-        let server = std::thread::spawn(move || {
+        std::thread::spawn(move || {
             store::set_thread_root(Some(b_root2));
-            for _ in 0..4 {
-                let (s, _) = listener.accept().unwrap();
+            for s in listener.incoming() {
+                let Ok(s) = s else { continue };
                 let _ = s.set_read_timeout(Some(Duration::from_secs(5)));
-                let mut conn = wire::respond(s, &b_key).unwrap();
-                let req: Request = conn.recv().unwrap();
-                let resp = server::handle(&conn, req);
-                conn.send(&resp).unwrap();
+                if let Ok(mut conn) = wire::respond(s, &b_key) {
+                    let _ = server::serve_conn(&mut conn);
+                }
             }
         });
         // machine A pairs with B at that address
@@ -624,6 +859,7 @@ mod tests {
             to_host: Some(b_me.id.clone()),
             to_host_name: Some(b_me.name.clone()),
             from_harness: None,
+            signature: None,
         };
         let a_store = Store::at(a_root.clone());
         let mut mine = letter.clone();
@@ -645,7 +881,39 @@ mod tests {
         let local = a_store.list(None, false).unwrap().into_iter().find(|l| l.id == letter.id).unwrap();
         assert_eq!(local.status, store::READ_BY_HOOK);
         assert_eq!(remote_stage(&letter.id), Some(("delivered".into(), "stage.delivered_hook".into())));
-        server.join().unwrap();
+        // both sides learned each other's signing key on the way
+        assert!(peers().iter().any(|x| x.id == b_me.id && x.iroh_id.is_some()));
+        // a letter with a forged signature is refused before it is stored
+        let mut forged = letter.clone();
+        forged.id = uuid::Uuid::new_v4().to_string();
+        forged.body = "forged".into();
+        let bad = sign::sign(&iroh::SecretKey::generate(), &forged);
+        match client::request(&p, &Request::Deliver { letter: forged.clone(), signature: Some(bad) }) {
+            Ok(Response::Error { message }) => assert!(message.contains("signature"), "{message}"),
+            other => panic!("a forged letter must be refused: {other:?}"),
+        }
+        match client::request(&p, &Request::Deliver { letter: forged.clone(), signature: None }) {
+            Ok(Response::Error { message }) => assert!(message.contains("not signed"), "{message}"),
+            other => panic!("an unsigned letter must be refused: {other:?}"),
+        }
+        assert!(Store::at(b_root.clone()).list(None, false).unwrap().iter().all(|l| l.id != forged.id), "nothing forged was stored");
+        // a machine that is not confirmed gets its letters held; confirming it releases them
+        store::set_thread_root(Some(b_root.clone()));
+        let mut book = load();
+        book.peers.iter_mut().for_each(|x| x.verified = false);
+        save(&book).unwrap();
+        store::set_thread_root(Some(a_root.clone()));
+        let mut held = letter.clone();
+        held.id = uuid::Uuid::new_v4().to_string();
+        held.body = "wait for me".into();
+        let (status, _, _) = deliver(&Host { id: b_me.id.clone(), name: b_me.name.clone() }, &held).expect("held delivery");
+        assert_eq!(status, store::HELD);
+        store::set_thread_root(Some(b_root.clone()));
+        let (_, released) = verify_peer(&a_me.id).unwrap();
+        assert_eq!(released, 1);
+        let after = Store::at(b_root.clone()).list(None, false).unwrap().into_iter().find(|l| l.id == held.id).unwrap();
+        assert_ne!(after.status, store::HELD);
+        assert!(after.signature.is_some(), "the verified signature is kept with the letter");
         store::set_thread_root(None);
         let _ = std::fs::remove_dir_all(base);
     }

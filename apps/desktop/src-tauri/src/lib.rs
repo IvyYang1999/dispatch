@@ -177,10 +177,54 @@ async fn peer_code() -> Result<Value, String> {
     blocking(|| peer::new_code().map(|(code, secs)| json!({ "code": code, "seconds_left": secs })).map_err(err)).await
 }
 
-/// Pair with the machine at `target` (a name seen on the network, or host:port) using its code.
+/// Pair with the machine at `target` (a name seen on the network, or host:port) using its code,
+/// or with a pairing link (then the code is not needed).
 #[tauri::command]
-async fn peer_pair(target: String, code: String) -> Result<Value, String> {
-    blocking(move || peer::pair(&target, &code).map(|p| json!({ "id": p.id, "name": p.name })).map_err(|e| e.to_string())).await
+async fn peer_pair(target: String, code: Option<String>) -> Result<Value, String> {
+    blocking(move || {
+        let p = if peer::is_link(&target) { peer::pair_link(&target) } else { peer::pair(&target, code.as_deref().unwrap_or("")) };
+        p.map(|p| json!({ "id": p.id, "name": p.name, "verified": p.verified, "fingerprint": peer::fingerprint(&p.public_key) })).map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// A pairing link for a machine on another network: ten minutes, one use.
+#[tauri::command]
+async fn peer_link() -> Result<Value, String> {
+    blocking(|| peer::new_link().map(|(link, secs)| json!({ "link": link, "seconds_left": secs })).map_err(err)).await
+}
+
+/// A person compared the fingerprints: confirm the machine and release its held letters.
+#[tauri::command]
+async fn peer_verify(name: String) -> Result<Value, String> {
+    blocking(move || peer::verify_peer(&name).map(|(p, n)| json!({ "name": p.name, "released": n })).map_err(err)).await
+}
+
+#[tauri::command]
+async fn peer_rule(name: String, rule: String) -> Result<Value, String> {
+    blocking(move || peer::set_rule(&name, &rule).map(|p| json!({ "name": p.name, "rule": p.rule })).map_err(err)).await
+}
+
+/// The internet path on or off; it takes effect when the app restarts.
+#[tauri::command]
+async fn set_peer_internet(on: bool) -> Result<bool, String> {
+    blocking(move || settings::set("peer_internet", Value::Bool(on)).map(|_| on).map_err(|e| e.to_string())).await
+}
+
+/// The user's own relay (an iroh-relay URL), or none for the default; takes effect on restart.
+#[tauri::command]
+async fn set_peer_relay(url: Option<String>) -> Result<Value, String> {
+    blocking(move || {
+        let v = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+        if let Some(u) = &v {
+            if !(u.starts_with("https://") || u.starts_with("http://")) {
+                return Err("the relay address must start with https://".into());
+            }
+        }
+        settings::set("peer_relay", v.clone().map(Value::String).unwrap_or(Value::Null)).map_err(|e| e.to_string())?;
+        Ok(json!({ "relay": v }))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -637,7 +681,8 @@ pub fn run() {
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
-            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings
+            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
+            peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay
         ])
         .setup(|app| {
             let handle = app.handle().clone();

@@ -289,6 +289,12 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                         <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.cancel')}</button>
                       </span>
                     )}
+                    {r.kind === 'held' && (
+                      <span className="rcpt__acts">
+                        <button className="btn btn--primary btn--small" onClick={() => act(() => api.retry(r.letter_id))}>{t('action.approve')}</button>
+                        <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.reject')}</button>
+                      </span>
+                    )}
                     <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(r.to_host_name ? `${r.to_host_name}/${r.to}` : r.to)}>↗</button>
                   </div>
                   {r.reply ? (
@@ -737,6 +743,9 @@ function Peers() {
   const [manual, setManual] = useState('')
   const [manualCode, setManualCode] = useState('')
   const [shown, setShown] = useState<{ code: string; until: number } | null>(null)
+  const [linkShown, setLinkShown] = useState<{ link: string; until: number } | null>(null)
+  const [copied, setCopied] = useState(false)
+  const [relay, setRelay] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now())
   const load = useCallback(() => api.peersOverview().then(setOv).catch((e) => setMsg(String(e))), [])
   useEffect(() => {
@@ -765,16 +774,34 @@ function Peers() {
       setShown({ code: r.code, until: Date.now() + r.seconds_left * 1000 })
       setMsg(null)
     })
-  const pair = (target: string, c: string) =>
+  const makeLink = () =>
+    run(async () => {
+      const r = await api.peerLink()
+      setLinkShown({ link: r.link, until: Date.now() + r.seconds_left * 1000 })
+      setCopied(false)
+      setMsg(null)
+    })
+  const copyLink = async () => {
+    if (!linkShown) return
+    try {
+      await navigator.clipboard.writeText(linkShown.link)
+      setCopied(true)
+    } catch (e) {
+      setMsg(String(e))
+    }
+  }
+  const pair = (target: string, c: string | null) =>
     run(async () => {
       const p = await api.peerPair(target, c)
-      setMsg(t('peers.pairedWith', { name: p.name }))
+      setMsg(p.verified ? t('peers.pairedWith', { name: p.name }) : t('peers.pairedUnconfirmed', { name: p.name, fp: p.fingerprint }))
       setPairing(null)
       setCode('')
       setManual('')
       setManualCode('')
     })
   const left = shown ? Math.max(0, Math.round((shown.until - now) / 1000)) : 0
+  const linkLeft = linkShown ? Math.max(0, Math.round((linkShown.until - now) / 1000)) : 0
+  const isLink = manual.trim().startsWith('dispatch-pair:')
   const addrOf = (s: { addrs: string[]; port: number }) => `${s.addrs.find((a) => !a.includes(':')) ?? s.addrs[0] ?? ''}:${s.port}`
   return (
     <>
@@ -797,7 +824,17 @@ function Peers() {
           </div>
           {renaming === null && <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => setRenaming(ov?.me.name ?? '')}>{t('peers.rename')}</button>}
           <button className="btn btn--small" disabled={busy || !ov?.me.listening} onClick={showCode}>{t('peers.showCode')}</button>
+          <button className="btn btn--small" disabled={busy || !ov?.internet || !ov?.me.internet_listening} onClick={makeLink}>{t('peers.makeLink')}</button>
         </div>
+        {linkShown && linkLeft > 0 && (
+          <div className="host host--code host--link">
+            <code className="cmd cmd--wrap">{linkShown.link}</code>
+            <div className="host__row">
+              <span className="host__found host__found--wrap">{t('peers.linkShown', { s: linkLeft })}</span>
+              <button className="btn btn--primary btn--small" onClick={copyLink}>{copied ? t('peers.copied') : t('peers.copy')}</button>
+            </div>
+          </div>
+        )}
         {shown && left > 0 && (
           <div className="host host--code">
             <span className="code">{shown.code}</span>
@@ -811,14 +848,29 @@ function Peers() {
           </div>
         )}
         {ov?.peers.map((p) => (
-          <div key={p.id} className="host">
+          <div key={p.id} className="host host--peer">
             <div className="host__who">
               <span className="host__name">
                 {p.name} <span className="tag" data-on={p.online || undefined}>{p.online ? t('peers.online') : t('peers.offline')}</span>
+                {p.online && p.link && <span className="tag">{t(`peers.link.${p.link}` as const)}</span>}
               </span>
               <span className="host__found host__found--wrap">
                 {p.address ?? (p.seen ? addrOf(p.seen) : t('peers.pairedAt', { t: p.paired_at }))}
                 {!p.online && p.problem ? ` · ${p.problem}` : ''}
+              </span>
+              <span className="host__found host__found--wrap">
+                <span className="fp">{t('peers.fingerprint', { fp: p.fingerprint })}</span>
+                {' · '}
+                {p.verified ? t('peers.confirmed') : t('peers.unconfirmed')}
+              </span>
+              <span className="host__row">
+                <span className="host__found">{t('peers.rule')}</span>
+                <span className="seg">
+                  {(['all', 'contacts', 'ask'] as const).map((r) => (
+                    <button key={r} data-active={p.rule === r || undefined} onClick={() => run(() => api.peerRule(p.name, r))}>{t(`peers.rule.${r}` as const)}</button>
+                  ))}
+                </span>
+                {!p.verified && <button className="btn btn--primary btn--small" disabled={busy} onClick={() => run(async () => { const r = await api.peerVerify(p.name); setMsg(t('peers.pairedWith', { name: r.name })) })}>{t('peers.confirm')}</button>}
               </span>
             </div>
             <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => run(() => api.peerRemove(p.name))}>{t('peers.remove')}</button>
@@ -847,11 +899,31 @@ function Peers() {
             <span className="host__found host__found--wrap">{t('peers.manualSub')}</span>
           </div>
           <span className="inline">
-            <input className="input" placeholder="host:47831" value={manual} onChange={(e) => setManual(e.target.value)} />
-            <input className="input input--code" placeholder={t('peers.codePlaceholder')} value={manualCode} onChange={(e) => setManualCode(e.target.value)} />
-            <button className="btn btn--small" disabled={busy || !manual.trim() || manualCode.trim().length !== 6} onClick={() => pair(manual.trim(), manualCode)}>{t('peers.pair')}</button>
+            <input className="input" placeholder={t('peers.manualTarget')} value={manual} onChange={(e) => setManual(e.target.value)} />
+            {!isLink && <input className="input input--code" placeholder={t('peers.codePlaceholder')} value={manualCode} onChange={(e) => setManualCode(e.target.value)} />}
+            <button className="btn btn--small" disabled={busy || !manual.trim() || (!isLink && manualCode.trim().length !== 6)} onClick={() => pair(manual.trim(), isLink ? null : manualCode)}>{t('peers.pair')}</button>
           </span>
           <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => run(api.peerScan)}>{t('peers.scan')}</button>
+        </div>
+        <div className="host">
+          <div className="host__who">
+            <span className="host__name">{t('peers.internet')}</span>
+            <span className="host__found host__found--wrap">{t('peers.internetSub')}</span>
+          </div>
+          <span className="seg">
+            <button data-active={ov?.internet || undefined} onClick={() => run(() => api.setPeerInternet(true))}>{t('settings.notifyOn')}</button>
+            <button data-active={!ov?.internet || undefined} onClick={() => run(() => api.setPeerInternet(false))}>{t('settings.notifyOff')}</button>
+          </span>
+        </div>
+        <div className="host">
+          <div className="host__who">
+            <span className="host__name">{t('peers.relay')}</span>
+            <span className="host__found host__found--wrap">{t('peers.relaySub')}</span>
+          </div>
+          <span className="inline">
+            <input className="input input--relay" placeholder={t('peers.relayDefault')} value={relay ?? ov?.relay ?? ''} onChange={(e) => setRelay(e.target.value)} />
+            <button className="btn btn--small" disabled={busy || relay === null} onClick={() => run(async () => { await api.setPeerRelay(relay?.trim() ? relay.trim() : null); setRelay(null) })}>{t('peers.relaySave')}</button>
+          </span>
         </div>
         {msg && <div className="notice" onClick={() => setMsg(null)}>{msg}</div>}
       </div>

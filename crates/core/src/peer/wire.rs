@@ -28,12 +28,35 @@ const CHUNK: usize = 60_000;
 pub enum Request {
     /// Who are you? Open to anyone.
     Hello,
-    /// Pair with me: the proof of the code you show, and who I am.
-    Pair { proof: String, id: String, name: String },
+    /// Pair with me: the proof of the code (or link secret) you show, and who I am, with my
+    /// iroh endpoint id (also my signing key) and where to reach me over the internet.
+    Pair {
+        proof: String,
+        id: String,
+        name: String,
+        #[serde(default)]
+        iroh: Option<String>,
+        #[serde(default)]
+        iroh_addr: Option<serde_json::Value>,
+    },
+    /// First on every connection between paired machines: my signing key and internet
+    /// address; you answer with yours. Each side pins the other's key the first time and
+    /// refuses a different one afterwards.
+    Keys {
+        #[serde(default)]
+        iroh: Option<String>,
+        #[serde(default)]
+        iroh_addr: Option<serde_json::Value>,
+    },
     /// The sessions on your machine, each with how a message would reach it.
     Sessions,
-    /// A letter for a session on your machine; store it and run your ladder.
-    Deliver { letter: Letter },
+    /// A letter for a session on your machine, with my signature over it; store it and run
+    /// your ladder.
+    Deliver {
+        letter: Letter,
+        #[serde(default)]
+        signature: Option<String>,
+    },
     /// Your copies of these dispatches that concern me, with their stage.
     Status { dispatch_ids: Vec<String> },
     /// Withdraw a copy I sent you, if it is still waiting.
@@ -45,8 +68,27 @@ pub enum Request {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
-    Welcome { id: String, name: String, version: String },
-    Paired { id: String, name: String },
+    Welcome {
+        id: String,
+        name: String,
+        version: String,
+        #[serde(default)]
+        iroh: Option<String>,
+    },
+    Paired {
+        id: String,
+        name: String,
+        #[serde(default)]
+        iroh: Option<String>,
+        #[serde(default)]
+        iroh_addr: Option<serde_json::Value>,
+    },
+    Keys {
+        #[serde(default)]
+        iroh: Option<String>,
+        #[serde(default)]
+        iroh_addr: Option<serde_json::Value>,
+    },
     Sessions { hook_installed: bool, sessions: Vec<RemoteSession> },
     Delivered { status: String, route: String, detail: String },
     Status { copies: Vec<RemoteCopy> },
@@ -66,6 +108,9 @@ pub struct RemoteCopy {
     pub letter: Letter,
     pub kind: String,
     pub stage_key: String,
+    /// The answering machine's signature over a letter that started there (a reply).
+    #[serde(default)]
+    pub signature: Option<String>,
 }
 
 /// An encrypted connection after the handshake.
