@@ -142,6 +142,7 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64) ->
                 host_session_id: None,
                 status: None,
                 transcript: Some(path.to_string_lossy().to_string()),
+                host: None,
             });
         }
     }
@@ -181,6 +182,7 @@ fn discover_codex(codex_running: bool, now: i64) -> Vec<Session> {
             desktop: false,
             host_session_id: None,
             transcript: Some(e.path().to_string_lossy().to_string()),
+            host: None,
         });
     }
     out
@@ -206,13 +208,14 @@ fn discover_grok(now: i64) -> Vec<Session> {
             host_session_id: None,
             status: Some("cloud".into()),
             transcript: None,
+            host: None,
         })
         .collect()
 }
 
 /// All recently active sessions on this machine, running ones first, newest first.
 /// Answered from a 3-second cache when one exists; `sessions_now` always looks again.
-pub fn sessions() -> Vec<Session> {
+pub fn local() -> Vec<Session> {
     if let Some((at, list)) = LIST.lock().unwrap().as_ref() {
         if at.elapsed() < LIST_TTL {
             return list.clone();
@@ -221,6 +224,15 @@ pub fn sessions() -> Vec<Session> {
     let list = sessions_now();
     *LIST.lock().unwrap() = Some((Instant::now(), list.clone()));
     list
+}
+
+/// The sessions here, then the sessions on every paired machine that answers (each marked
+/// with its host). Remote lists come from a 20-second cache and never block on a machine
+/// that just failed to answer.
+pub fn sessions() -> Vec<Session> {
+    let mut all = local();
+    all.extend(crate::peer::remote_sessions());
+    all
 }
 
 pub fn sessions_now() -> Vec<Session> {
@@ -269,6 +281,7 @@ pub fn sessions_now() -> Vec<Session> {
             host_session_id: None,
             status: None,
             transcript: None,
+            host: None,
         });
         entry.running = true;
         entry.desktop = r.desktop;

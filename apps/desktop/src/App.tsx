@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { api, type Copy, type Dispatch, type Kind, type OpenResult, type Session, type SetupStatus, type UpdateCheck } from './api'
+import { api, type Copy, type Dispatch, type Kind, type OpenResult, type PeerOverview, type Session, type SetupStatus, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
 type Screen = 'feed' | 'agents' | 'compose' | 'settings'
@@ -41,6 +41,16 @@ function summary(rs: Copy[]): string {
   if (rs.length === 1) return rs[0].stage
   if (replied === rs.length) return t('summary.all')
   return t('summary.some', { n: replied, m: rs.length })
+}
+
+/** `machine/id` for a session elsewhere, so the backend looks there; the id alone here. */
+function addressOf(s: Session): string {
+  return s.host ? `${s.host.name}/${s.id}` : s.id
+}
+
+/** A name with its machine behind it when the session is elsewhere. */
+function withHost(name: string, host?: string | null): string {
+  return host ? `${name} @ ${host}` : name
 }
 
 function presence(s: Session): string {
@@ -181,7 +191,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
               <Avatar name={d.from_name} />
               <div className="row__main">
                 <div className="row__line">
-                  <span className="row__from">{d.from_name}</span>
+                  <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
                   <span className="row__text">{d.text}</span>
                   <span className="row__time">{d.created.slice(11)}</span>
                 </div>
@@ -189,6 +199,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                   {d.recipients.map((r) => (
                     <span key={r.letter_id} className="chip" data-kind={r.kind}>
                       <span className="chip__dot" />
+                      {r.to_host_name && <span className="chip__host">{r.to_host_name}/</span>}
                       {r.to_name}
                     </span>
                   ))}
@@ -204,7 +215,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
               <div className="detail__head">
                 <Avatar name={current.from_name} size={28} />
                 <div className="detail__who">
-                  <span className="detail__name">{current.from_name}</span>
+                  <span className="detail__name">{withHost(current.from_name, current.from_host_name)}</span>
                   <span className="detail__meta">
                     {current.created} · {current.recipients.length === 1 ? t('feed.sentOne') : t('feed.sentMany', { n: current.recipients.length })}
                   </span>
@@ -217,7 +228,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                 <div key={r.letter_id} className="rcpt">
                   <div className="rcpt__head">
                     <Avatar name={r.to_name} size={20} />
-                    <span className="rcpt__name">{r.to_name}</span>
+                    <span className="rcpt__name">{r.to_host_name && <span className="rcpt__host">{r.to_host_name}/</span>}{r.to_name}</span>
                     <Badge kind={r.kind} />
                     <span className="rcpt__time">{(r.reply?.created ?? r.created).slice(11)}</span>
                     {(r.kind === 'queued' || r.kind === 'failed') && (
@@ -226,13 +237,13 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                         <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.cancel')}</button>
                       </span>
                     )}
-                    <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(r.to)}>↗</button>
+                    <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(r.to_host_name ? `${r.to_host_name}/${r.to}` : r.to)}>↗</button>
                   </div>
                   {r.reply ? (
                     <>
                       <p className="rcpt__reply">{r.reply.body}</p>
                       <div className="rcpt__foot">
-                        <button className="btn btn--ghost btn--small" onClick={() => onCompose(r.to)}>{t('action.reply')}</button>
+                        <button className="btn btn--ghost btn--small" onClick={() => onCompose(r.to_host_name ? `${r.to_host_name}/${r.to}` : r.to)}>{t('action.reply')}</button>
                       </div>
                     </>
                   ) : (
@@ -278,6 +289,16 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
   }, [load])
   const tools = useMemo(() => Array.from(new Set(sessions.map((s) => s.harness))), [sessions])
   const shown = sessions.filter((s) => tool === 'all' || s.harness === tool)
+  // this machine first, then each paired machine under its own name
+  const groups = useMemo(() => {
+    const m = new Map<string, { key: string; title: string; items: Session[] }>()
+    for (const s of shown) {
+      const key = s.host?.id ?? 'local'
+      if (!m.has(key)) m.set(key, { key, title: s.host?.name ?? t('side.local'), items: [] })
+      m.get(key)!.items.push(s)
+    }
+    return Array.from(m.values())
+  }, [shown, lang])
   return (
     <>
       <header className="bar" data-tauri-drag-region>
@@ -292,7 +313,10 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
         <label className="check"><input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> {t('agents.showAll')}</label>
       </header>
       <div className="lines">
-        {shown.map((s) => (
+        {groups.map((g) => (
+          <div key={g.key}>
+            {groups.length > 1 && <div className="lines__group">{g.title} <i>{g.items.length}</i></div>}
+            {g.items.map((s) => (
           <div key={s.id} className="line">
             <Avatar name={s.name} />
             <span className="line__name" title={s.id}>{s.name}</span>
@@ -304,9 +328,11 @@ function Agents({ onCompose }: { onCompose: (to: string) => void }) {
             </span>
             <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
             <span className="line__actions">
-              <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(s.id)}>✎</button>
-              <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(s.id)}>↗</button>
+              <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(addressOf(s))}>✎</button>
+              <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
             </span>
+          </div>
+            ))}
           </div>
         ))}
         {shown.length === 0 && <div className="empty">{t('agents.empty')}</div>}
@@ -322,6 +348,7 @@ const URGENCIES = ['normal', 'urgent'] as const
 const DEADLINES = ['default', '30m', '2h', '1d'] as const
 
 function reasonText(c: Session): string {
+  if (c.reason === 'host') return t('reason.host', { host: c.host?.name ?? '' })
   if (c.reason === 'name') return t('reason.name')
   if (c.reason === 'cwd') return t('reason.cwd', { cwd: c.cwd_short ?? '' })
   if (c.reason === 'id') return t('reason.id')
@@ -342,7 +369,7 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
   useEffect(() => {
     if (!presetTo) return
     api.find(presetTo).then((r) => {
-      const hit = r.candidates.find((c) => c.id === presetTo) ?? r.candidates[0]
+      const hit = r.candidates.find((c) => c.id === presetTo || addressOf(c) === presetTo) ?? r.candidates[0]
       if (hit) setTo([hit])
     })
   }, [presetTo])
@@ -359,8 +386,8 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
     if (to.length === 0 || !text.trim()) return
     setBusy(true)
     try {
-      const r = await api.send(to.map((x) => x.id), text, urgency, deadline === 'default' ? undefined : deadline)
-      setResult(r.recipients.map((x) => `${x.to.name}: ${x.detail}`).join('\n'))
+      const r = await api.send(to.map(addressOf), text, urgency, deadline === 'default' ? undefined : deadline)
+      setResult(r.recipients.map((x) => `${x.to.address ?? x.to.name}: ${x.detail}`).join('\n'))
       setText('')
       setTimeout(onSent, 1200)
     } catch (e) {
@@ -380,7 +407,7 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
         <div className="to">
           {to.map((x) => (
             <span key={x.id} className="to__chip">
-              {x.name}
+              {x.address}
               <button onClick={() => setTo(to.filter((y) => y.id !== x.id))}>×</button>
             </span>
           ))}
@@ -393,7 +420,7 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
                 <Avatar name={c.name} size={22} />
                 <div className="cand__who">
                   <div className="cand__line">
-                    <span className="cand__name">{c.name}</span>
+                    <span className="cand__name">{c.address}</span>
                     <span className="tag">{c.harness}</span>
                     <span className="cand__presence">{presence(c)}</span>
                   </div>
@@ -435,6 +462,130 @@ const LANGS: { key: Lang; label: string }[] = [
   { key: 'zh', label: '中文' },
   { key: 'en', label: 'English' },
 ]
+
+function Peers() {
+  const lang = useLang()
+  const [ov, setOv] = useState<PeerOverview | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [pairing, setPairing] = useState<string | null>(null)
+  const [code, setCode] = useState('')
+  const [manual, setManual] = useState('')
+  const [manualCode, setManualCode] = useState('')
+  const [shown, setShown] = useState<{ code: string; until: number } | null>(null)
+  const [now, setNow] = useState(Date.now())
+  const load = useCallback(() => api.peersOverview().then(setOv).catch((e) => setMsg(String(e))), [])
+  useEffect(() => {
+    load()
+    const h = setInterval(load, 10000)
+    return () => clearInterval(h)
+  }, [load, lang])
+  useEffect(() => {
+    const h = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(h)
+  }, [])
+  const run = async (f: () => Promise<unknown>) => {
+    setBusy(true)
+    try {
+      await f()
+    } catch (e) {
+      setMsg(String(e))
+    } finally {
+      setBusy(false)
+      load()
+    }
+  }
+  const showCode = () =>
+    run(async () => {
+      const r = await api.peerCode()
+      setShown({ code: r.code, until: Date.now() + r.seconds_left * 1000 })
+      setMsg(null)
+    })
+  const pair = (target: string, c: string) =>
+    run(async () => {
+      const p = await api.peerPair(target, c)
+      setMsg(t('peers.pairedWith', { name: p.name }))
+      setPairing(null)
+      setCode('')
+      setManual('')
+      setManualCode('')
+    })
+  const left = shown ? Math.max(0, Math.round((shown.until - now) / 1000)) : 0
+  const addrOf = (s: { addrs: string[]; port: number }) => `${s.addrs.find((a) => !a.includes(':')) ?? s.addrs[0] ?? ''}:${s.port}`
+  return (
+    <>
+      <div className="section-head">
+        <div className="section-head__title">{t('settings.peers')}</div>
+        <div className="section-head__sub">{t('settings.peersSub')}</div>
+      </div>
+      <div className="card">
+        <div className="host">
+          <div className="host__who">
+            {renaming !== null ? (
+              <span className="inline">
+                <input className="input" value={renaming} onChange={(e) => setRenaming(e.target.value)} autoFocus />
+                <button className="btn btn--small" disabled={busy || !renaming.trim()} onClick={() => run(async () => { await api.peerSetName(renaming); setRenaming(null) })}>{t('peers.save')}</button>
+              </span>
+            ) : (
+              <span className="host__name">{t('peers.me', { name: ov?.me.name ?? '' })}</span>
+            )}
+            <span className="host__found">{ov?.me.listening ? t('peers.listening', { p: ov.me.listening }) : t('peers.notListening')}</span>
+          </div>
+          {renaming === null && <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => setRenaming(ov?.me.name ?? '')}>{t('peers.rename')}</button>}
+          <button className="btn btn--small" disabled={busy || !ov?.me.listening} onClick={showCode}>{t('peers.showCode')}</button>
+        </div>
+        {shown && left > 0 && (
+          <div className="host host--code">
+            <span className="code">{shown.code}</span>
+            <span className="host__found host__found--wrap">{t('peers.codeShown', { s: left })}</span>
+          </div>
+        )}
+        {ov?.peers.map((p) => (
+          <div key={p.id} className="host">
+            <div className="host__who">
+              <span className="host__name">
+                {p.name} <span className="tag" data-on={p.online || undefined}>{p.online ? t('peers.online') : t('peers.offline')}</span>
+              </span>
+              <span className="host__found">{p.address ?? (p.seen ? addrOf(p.seen) : t('peers.pairedAt', { t: p.paired_at }))}</span>
+            </div>
+            <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => run(() => api.peerRemove(p.name))}>{t('peers.remove')}</button>
+          </div>
+        ))}
+        {ov?.seen.map((s) => (
+          <div key={s.id} className="host">
+            <div className="host__who">
+              <span className="host__name">{s.name || s.id.slice(0, 8)}</span>
+              <span className="host__found">{addrOf(s)} · {t('peers.notPaired')}</span>
+            </div>
+            {pairing === s.id ? (
+              <span className="inline">
+                <input className="input input--code" placeholder={t('peers.codePlaceholder')} value={code} onChange={(e) => setCode(e.target.value)} autoFocus />
+                <button className="btn btn--primary btn--small" disabled={busy || code.trim().length !== 6} onClick={() => pair(addrOf(s), code)}>{t('peers.pair')}</button>
+                <button className="btn btn--ghost btn--small" onClick={() => setPairing(null)}>{t('action.cancel')}</button>
+              </span>
+            ) : (
+              <button className="btn btn--primary btn--small" disabled={busy} onClick={() => { setPairing(s.id); setCode('') }}>{t('peers.pair')}</button>
+            )}
+          </div>
+        ))}
+        <div className="host">
+          <div className="host__who">
+            <span className="host__name">{t('peers.manual')}</span>
+            <span className="host__found host__found--wrap">{t('peers.manualSub')}</span>
+          </div>
+          <span className="inline">
+            <input className="input" placeholder="host:47831" value={manual} onChange={(e) => setManual(e.target.value)} />
+            <input className="input input--code" placeholder={t('peers.codePlaceholder')} value={manualCode} onChange={(e) => setManualCode(e.target.value)} />
+            <button className="btn btn--small" disabled={busy || !manual.trim() || manualCode.trim().length !== 6} onClick={() => pair(manual.trim(), manualCode)}>{t('peers.pair')}</button>
+          </span>
+          <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => run(api.peerScan)}>{t('peers.scan')}</button>
+        </div>
+        {msg && <div className="notice" onClick={() => setMsg(null)}>{msg}</div>}
+      </div>
+    </>
+  )
+}
 
 function Settings() {
   const lang = useLang()
@@ -509,6 +660,7 @@ function Settings() {
             <code className="cmd">{t('settings.grokCmd')}</code>
           </div>
         </div>
+        <Peers />
         <div className="section-head">
           <div className="section-head__title">{t('settings.language')}</div>
         </div>
@@ -661,7 +813,7 @@ export function App() {
         </div>
         <div className="group">
           <div className="section">{t('side.local')}</div>
-          {live.slice(0, 8).map((s) => (
+          {live.filter((s) => !s.host).slice(0, 8).map((s) => (
             <div key={s.id} className="agent" title={s.cwd ?? ''}>
               <Avatar name={s.name} size={16} />
               <span className="agent__name">{s.name}</span>
@@ -669,6 +821,18 @@ export function App() {
             </div>
           ))}
         </div>
+        {Array.from(new Map(live.filter((s) => s.host).map((s) => [s.host!.id, s.host!])).values()).map((h) => (
+          <div key={h.id} className="group">
+            <div className="section">{h.name}</div>
+            {live.filter((s) => s.host?.id === h.id).slice(0, 5).map((s) => (
+              <div key={s.id} className="agent" title={s.cwd ?? ''}>
+                <Avatar name={s.name} size={16} />
+                <span className="agent__name">{s.name}</span>
+                <span className="presence" data-on={s.running || undefined} />
+              </div>
+            ))}
+          </div>
+        ))}
       </nav>
       <main className="panel">
         {screen === 'feed' && <Feed onCompose={compose} pick={pick} />}

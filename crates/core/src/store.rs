@@ -20,6 +20,8 @@ pub const UNREAD: &str = "未读";
 pub const DELIVERED_INBOX: &str = "已送达（直投）";
 pub const DELIVERED_CODEX: &str = "已送达（Codex 已入队）";
 pub const DELIVERED_GROK: &str = "已送达（Grok 直投）";
+/// A reply to a person (who sent from the app or the command line): shown in the feed, nothing to hand over.
+pub const DELIVERED_FEED: &str = "已送达（派发页）";
 pub const READ_BY_HOOK: &str = "已读（hook代标）";
 pub const REPLIED: &str = "已回复";
 /// Nothing could deliver it, or its deadline passed. Still pending: a late hook pass or a retry delivers it.
@@ -99,6 +101,16 @@ pub struct Letter {
     /// `claude` / `codex` / `grok`: what the recipient runs on, so a retry needs no discovery.
     #[serde(default)]
     pub to_harness: Option<String>,
+    /// The machine the sender is on, when it is another one (its peer id and name).
+    #[serde(default)]
+    pub from_host: Option<String>,
+    #[serde(default)]
+    pub from_host_name: Option<String>,
+    /// The machine the recipient is on, when it is another one.
+    #[serde(default)]
+    pub to_host: Option<String>,
+    #[serde(default)]
+    pub to_host_name: Option<String>,
     pub body: String,
     #[serde(default)]
     pub path: String,
@@ -146,9 +158,24 @@ fn safe_name(s: &str) -> String {
     }
 }
 
+thread_local! {
+    /// A store folder for this thread alone, ahead of `DISPATCH_HOME`: how a test runs two
+    /// machines in one process.
+    static THREAD_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Make `Store::open()` on this thread use `root` (None: back to the environment).
+pub fn set_thread_root(root: Option<PathBuf>) {
+    THREAD_ROOT.with(|r| *r.borrow_mut() = root);
+}
+
 impl Store {
-    /// `DISPATCH_HOME`, else the platform data folder (`~/Library/Application Support/Dispatch` on macOS).
+    /// This thread's root when one is set, else `DISPATCH_HOME`, else the platform data folder
+    /// (`~/Library/Application Support/Dispatch` on macOS).
     pub fn open() -> Store {
+        if let Some(r) = THREAD_ROOT.with(|r| r.borrow().clone()) {
+            return Store { root: r };
+        }
         let root = match std::env::var("DISPATCH_HOME") {
             Ok(h) => PathBuf::from(h),
             Err(_) => dirs::data_dir().unwrap_or_else(|| home_dir().join(".local/share")).join("Dispatch"),
@@ -306,6 +333,11 @@ pub fn render(l: &Letter) -> String {
     if let Some(d) = &l.deadline {
         extra.push_str(&format!("deadline: {d}\n"));
     }
+    for (k, v) in [("from_host", &l.from_host), ("from_host_name", &l.from_host_name), ("to_host", &l.to_host), ("to_host_name", &l.to_host_name)] {
+        if let Some(v) = v {
+            extra.push_str(&format!("{k}: {v}\n"));
+        }
+    }
     format!(
         "---\nid: {}\ndispatch_id: {}\nfrom: {}\nfrom_name: {}\nto: {}\nto_name: {}\nurgency: {}\nwake: {}\nstatus: {}\ncreated: {}\n{}---\n{}\n",
         l.id,
@@ -340,6 +372,10 @@ pub fn parse(text: &str) -> Option<Letter> {
         created: String::new(),
         deadline: None,
         to_harness: None,
+        from_host: None,
+        from_host_name: None,
+        to_host: None,
+        to_host_name: None,
         body: body.trim_end().to_string(),
         path: String::new(),
     };
@@ -359,6 +395,10 @@ pub fn parse(text: &str) -> Option<Letter> {
             "created" => l.created = v,
             "deadline" => l.deadline = Some(v).filter(|s| !s.is_empty()),
             "to_harness" => l.to_harness = Some(v).filter(|s| !s.is_empty()),
+            "from_host" => l.from_host = Some(v).filter(|s| !s.is_empty()),
+            "from_host_name" => l.from_host_name = Some(v).filter(|s| !s.is_empty()),
+            "to_host" => l.to_host = Some(v).filter(|s| !s.is_empty()),
+            "to_host_name" => l.to_host_name = Some(v).filter(|s| !s.is_empty()),
             _ => {}
         }
     }
@@ -393,6 +433,10 @@ mod tests {
             created: "2026-11-05 14:00".into(),
             deadline: Some("2026-11-06 14:00".into()),
             to_harness: Some("codex".into()),
+            from_host: None,
+            from_host_name: None,
+            to_host: None,
+            to_host_name: None,
             body: "hello\nworld".into(),
             path: String::new(),
         };
@@ -403,6 +447,13 @@ mod tests {
         assert_eq!(p.deadline.as_deref(), Some("2026-11-06 14:00"));
         assert_eq!(p.to_harness.as_deref(), Some("codex"));
         assert_eq!(time_text(p.deadline_at()), "2026-11-06 14:00");
+        let mut away = l.clone();
+        away.to_host = Some("m-1".into());
+        away.to_host_name = Some("主力".into());
+        let q = parse(&render(&away)).unwrap();
+        assert_eq!(q.to_host.as_deref(), Some("m-1"));
+        assert_eq!(q.to_host_name.as_deref(), Some("主力"));
+        assert!(q.from_host.is_none());
         assert!(p.overdue(parse_time("2026-11-06 14:01").unwrap()));
         assert!(!p.overdue(parse_time("2026-11-06 13:59").unwrap()));
     }
@@ -437,6 +488,10 @@ mod tests {
             created: now_text(),
             deadline: None,
             to_harness: None,
+            from_host: None,
+            from_host_name: None,
+            to_host: None,
+            to_host_name: None,
             body: "hi".into(),
             path: String::new(),
         };

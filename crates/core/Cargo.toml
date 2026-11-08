@@ -19,6 +19,9 @@ walkdir = "2"
 regex = "1"
 tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 sys-locale = "0.3"
+snow = "0.10"
+mdns-sd = "0.21"
+hmac = "0.12"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

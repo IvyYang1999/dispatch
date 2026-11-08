@@ -31,6 +31,10 @@ wake: true
 status: 未读                    see below
 created: 2026-11-08 09:15
 deadline: 2026-11-09 09:15     past it, an undelivered copy counts as not delivered
+from_host: 9f1c…               only when the sender is on another machine: that machine's id
+from_host_name: Mac
+to_host: 7503…                 only when the recipient is on another machine
+to_host_name: Mac mini
 ---
 The message body, as the sender wrote it.
 ```
@@ -38,7 +42,9 @@ The message body, as the sender wrote it.
 The front matter is what the Agent Comments mailbox hook already read, plus `id`,
 `dispatch_id`, `from_name`, `to_harness` and `deadline`. Old files without the last two still
 parse: the harness is looked up, the deadline defaults to a day (an hour when urgent) after
-`created`.
+`created`. The four `*_host` lines appear only on copies that crossed to or from another machine
+(see [peers](peers.md)): the machine that delivers a copy owns its status, and the other machine
+mirrors it.
 
 ## Status words
 
@@ -52,11 +58,16 @@ the UI language; the CLI, the app and the MCP tools translate it.
 | `已送达（Codex 已入队）` | `codex queue` accepted it for a thread the daemon has loaded. |
 | `已送达（Grok 直投）` | Sent to a Grok bot as a direct message through its gateway. |
 | `已读（hook代标）` | The Claude Code hook handed it over at the session's next turn. |
+| `已送达（派发页）` | A reply to a person who wrote from the app or the command line (`from` was `app`, `cli` or `mcp`): shown in the feed, nothing to hand over. |
 | `已回复` | The recipient answered with `dispatch_reply`; the answer is a copy addressed back to the sender, same `dispatch_id`. |
 | `没送到` | Not delivered: nobody could hand it over (no hook and the session is closed, no codex, no Grok Bot app), or its deadline passed. Still pending: a late hook pass or `dispatch retry` delivers it. |
 | `已取消` | Withdrawn with `dispatch cancel`. Nothing delivers it any more. |
 
 "Pending" (what the hook hands over, what `dispatch inbox` lists by default) means `未读` or `没送到`.
+
+Beside `messages/` and `runs/`, the store folder holds `peers.json` (this machine's id, name and
+public key, and the paired machines), `peer.key` (its private key, mode 0600) and `peer/` (an
+active pairing code, the machines seen on the network, the listener's heartbeat).
 
 ## Stages and receipts
 
@@ -99,9 +110,11 @@ ever rewritten, so a retry never erases how the first attempt went.
 ## settings.json
 
 ```json
-{ "lang": "zh", "notify": true }
+{ "lang": "zh", "notify": true, "theme": "system", "peer_port": 47831 }
 ```
 
 `lang` (`zh` / `en`) is the language of everything a person reads, across the app, the CLI and
 the text handed to agents; `DISPATCH_LANG` overrides it per process. `notify` turns the app's
-system notifications (a reply came in, a delivery failed) on or off.
+system notifications (a reply came in, a delivery failed) on or off. `theme` is the app's
+appearance. `peer_port` is the port the listener for other machines binds (default 47831; a
+taken port falls back to a free one).

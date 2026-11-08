@@ -25,15 +25,19 @@ fn session_json(s: &Session, hook_on: bool) -> Value {
         "desktop": s.desktop,
         "host_session_id": s.host_session_id,
         "last_active": s.last_active,
+        "host": s.host,
+        "address": s.address(),
         "reach": { "level": r.level, "text": r.text, "fix": r.fix },
     })
 }
 
 /// Who is calling: the Claude Code session this process was spawned by, if any.
 pub fn whoami() -> Value {
+    let me = crate::peer::me();
+    let machine = json!({ "id": me.id, "name": me.name });
     match claude::caller_session() {
-        Some(i) => json!({ "session_id": i.session_id, "short_id": short_id(&i.session_id), "name": i.name.clone().unwrap_or_else(|| short_id(&i.session_id)), "harness": "Claude", "cwd": i.cwd, "desktop": i.desktop }),
-        None => json!({ "session_id": null, "name": "unknown", "harness": null }),
+        Some(i) => json!({ "session_id": i.session_id, "short_id": short_id(&i.session_id), "name": i.name.clone().unwrap_or_else(|| short_id(&i.session_id)), "harness": "Claude", "cwd": i.cwd, "desktop": i.desktop, "machine": machine, "address_elsewhere": format!("{}/{}", me.name, short_id(&i.session_id)) }),
+        None => json!({ "session_id": null, "name": "unknown", "harness": null, "machine": machine }),
     }
 }
 
@@ -53,11 +57,21 @@ pub fn sessions(running_only: bool) -> Value {
 
 /// Every session that matches, each with why it matched.
 pub fn find(query: &str) -> Value {
-    let q = query.trim().to_lowercase();
+    let (host, q) = match crate::peer::split_address(query.trim()) {
+        Some((p, rest)) => (Some(p), rest.to_lowercase()),
+        None => (None, query.trim().to_lowercase()),
+    };
     let hook_on = hook::installed();
     let mut out = vec![];
     for s in discover::sessions() {
-        let reason = if !q.is_empty() && s.id.starts_with(&q) {
+        if let Some(p) = &host {
+            if s.host.as_ref().map(|h| h.id != p.id).unwrap_or(true) {
+                continue;
+            }
+        }
+        let reason = if q.is_empty() && host.is_some() {
+            Some("host")
+        } else if !q.is_empty() && s.id.starts_with(&q) {
             Some("id")
         } else if s.name.as_deref().map(|n| n.to_lowercase().contains(&q)).unwrap_or(false) {
             Some("name")
@@ -65,6 +79,8 @@ pub fn find(query: &str) -> Value {
             Some("cwd")
         } else if s.title.as_deref().map(|t| t.to_lowercase().contains(&q)).unwrap_or(false) {
             Some("title")
+        } else if s.host.is_some() && s.address().to_lowercase().contains(&q) {
+            Some("host")
         } else {
             None
         };
@@ -101,7 +117,7 @@ pub fn send_many_opts(store: &Store, to: &[String], text: &str, urgency: &str, f
     for who in to {
         let target = send::resolve(who)?;
         let rep = send::send(store, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: text.to_string(), urgency: urgency.to_string(), dispatch_id: Some(dispatch_id.clone()), wait: true, allow_resume, deadline })?;
-        reports.push(json!({ "to": { "id": target.id, "short_id": target.short_id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail, "path": rep.path }));
+        reports.push(json!({ "to": { "id": target.id, "short_id": target.short_id, "name": target.display_name(), "host": target.host, "address": target.address() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail, "path": rep.path }));
     }
     Ok(json!({ "dispatch_id": dispatch_id, "from": { "id": from_id, "name": from_name }, "recipients": reports }))
 }
@@ -140,6 +156,9 @@ pub fn cancel(store: &Store, id: &str, by: &str) -> Result<Value> {
     for mut l in copies.iter().filter(|l| store::pending(&l.status)).cloned() {
         store.set_status(&mut l, store::CANCELLED)?;
         store.append_run(&l.id, "cancel", "by", by)?;
+        if let Some(h) = &l.to_host {
+            crate::peer::cancel(&crate::model::Host { id: h.clone(), name: l.to_host_name.clone().unwrap_or_default() }, &l.id);
+        }
         done.push(json!({ "letter_id": l.id, "to": l.to, "to_name": l.to_name }));
     }
     if done.is_empty() {
@@ -168,7 +187,7 @@ pub fn retry(store: &Store, id: &str) -> Result<Value> {
 
 /// A delivery attempt that reached the session (so a retry could duplicate it).
 fn was_handed(runs: &[store::Run]) -> bool {
-    runs.iter().any(|r| matches!((r.action.as_str(), r.result.as_str()), ("inbox", "written") | ("codex", "queued") | ("grok", "sent") | ("hook", "handed")))
+    runs.iter().any(|r| matches!((r.action.as_str(), r.result.as_str()), ("inbox", "written") | ("codex", "queued") | ("grok", "sent") | ("hook", "handed") | ("peer", "inbox")))
 }
 
 fn last_run_age_secs(runs: &[store::Run]) -> i64 {
@@ -179,6 +198,7 @@ fn last_run_age_secs(runs: &[store::Run]) -> i64 {
 /// (the session came back, the daemon loaded the thread, the gateway answers). Copies marked not
 /// delivered are left for a person to retry; a copy is not tried again within five minutes.
 pub fn sweep(store: &Store) -> Result<Value> {
+    let _ = crate::peer::mirror(store);
     let mut letters = store.list(None, false)?;
     let failed = reconcile(store, &mut letters)?;
     let queued: Vec<&store::Letter> = letters.iter().filter(|l| l.status == store::UNREAD).collect();
@@ -213,7 +233,7 @@ pub fn inbox(store: &Store, session: Option<&str>, all: bool) -> Result<Value> {
     let known: Vec<String> = discover::sessions().into_iter().filter(|s| s.harness == crate::model::Harness::Grok).map(|s| s.id).collect();
     let rows: Vec<Value> = letters
         .iter()
-        .map(|l| json!({ "id": l.id, "short_id": short_id(&l.id), "dispatch_id": l.dispatch_id, "from": l.from, "from_name": l.from_name, "status": l.status, "created": l.created, "urgency": l.urgency, "body": l.body, "path": l.path, "can_reply": is_uuid(&l.from) || known.iter().any(|k| k.eq_ignore_ascii_case(&l.from)) }))
+        .map(|l| json!({ "id": l.id, "short_id": short_id(&l.id), "dispatch_id": l.dispatch_id, "from": l.from, "from_name": l.from_name, "from_host_name": l.from_host_name, "status": l.status, "created": l.created, "urgency": l.urgency, "body": l.body, "path": l.path, "can_reply": is_uuid(&l.from) || l.from_host.is_some() || send::is_person(&l.from) || known.iter().any(|k| k.eq_ignore_ascii_case(&l.from)) }))
         .collect();
     Ok(json!({ "session_id": sid, "unread_only": !all, "count": rows.len(), "messages": rows }))
 }
@@ -221,9 +241,17 @@ pub fn inbox(store: &Store, session: Option<&str>, all: bool) -> Result<Value> {
 pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
     let mut orig = store.find(id)?.ok_or_else(|| anyhow!("no message whose id starts with \"{id}\""))?;
     // A session id (Claude, Codex) or a bot id (Grok) can be answered; "cli", "app" and names cannot.
-    let target = match send::resolve(&orig.from) {
-        Ok(s) if is_uuid(&orig.from) || s.harness == crate::model::Harness::Grok => s,
-        _ => return Err(anyhow!("the sender \"{}\" is not a session, so it cannot be replied to", orig.from)),
+    // A sender on another machine is answered there: that machine resolves the id.
+    // A person who wrote from the app or the command line gets the reply in the feed.
+    let target = match &orig.from_host {
+        Some(h) => {
+            let harness = if send::is_person(&orig.from) { crate::model::Harness::Human } else { crate::model::Harness::Claude };
+            crate::peer::remote_target(h, orig.from_host_name.as_deref().unwrap_or(""), &orig.from, Some(orig.from_name.clone()), harness)
+        }
+        None => match send::resolve(&orig.from) {
+            Ok(s) if is_uuid(&orig.from) || matches!(s.harness, crate::model::Harness::Grok | crate::model::Harness::Human) => s,
+            _ => return Err(anyhow!("the sender \"{}\" is not a session, so it cannot be replied to", orig.from)),
+        },
     };
     let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false, deadline: None })?;
     store.set_status(&mut orig, store::REPLIED)?;
@@ -231,9 +259,32 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
     Ok(json!({ "replied_to": orig.id, "to": { "id": target.id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail }))
 }
 
-/// One recipient copy with its stage: the store's status plus, after a direct delivery, the transcript's receipt.
-/// `kind` is the coarse state the UI colors by: queued, delivered, working, replied, failed.
-fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
+/// The stage of a copy from its status alone: (i18n key, kind).
+fn stage_by_status(status: &str) -> (&'static str, &'static str) {
+    match status {
+        store::REPLIED => ("stage.replied", "replied"),
+        store::READ_BY_HOOK => ("stage.delivered_hook", "delivered"),
+        store::DELIVERED_INBOX | store::DELIVERED_GROK | store::DELIVERED_FEED => ("stage.delivered", "delivered"),
+        store::DELIVERED_CODEX => ("stage.queued_codex", "delivered"),
+        store::FAILED => ("stage.failed", "failed"),
+        store::CANCELLED => ("stage.cancelled", "cancelled"),
+        _ => ("stage.queued", "queued"),
+    }
+}
+
+const STAGE_KEYS: [&str; 10] = ["stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued"];
+
+/// The coarse state of a copy (`kind`: queued, delivered, working, replied, failed, cancelled) and
+/// the i18n key of its stage text, from the store's status and, after a direct delivery here, the
+/// transcript's receipt. A copy on another machine shows what that machine last said about it.
+pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
+    if c.to_host.is_some() {
+        if let Some(remote) = crate::peer::remote_stage(&c.id) {
+            return remote;
+        }
+        let (key, kind) = stage_by_status(&c.status);
+        return (kind.into(), key.into());
+    }
     let runs = store.runs(&c.id);
     let delivered_inbox = runs.iter().any(|r| r.action == "inbox" && r.result == "written");
     let queued_codex = runs.iter().any(|r| r.action == "codex" && r.result == "queued");
@@ -257,24 +308,30 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
     } else {
         None
     };
-    let (stage, kind) = match (&receipt, c.status.as_str()) {
-        (_, store::REPLIED) => (t("stage.replied"), "replied"),
-        (Some(claude::Receipt::Completed { .. }), _) => (t("stage.finished"), "replied"),
-        (Some(claude::Receipt::Started), _) => (t("stage.working"), "working"),
-        (Some(claude::Receipt::Queued), _) => (t("stage.queued_after_turn"), "delivered"),
-        (_, store::READ_BY_HOOK) => (t("stage.delivered_hook"), "delivered"),
-        (_, store::DELIVERED_INBOX) => (t("stage.delivered"), "delivered"),
-        (_, store::DELIVERED_CODEX) => (t("stage.queued_codex"), "delivered"),
-        (_, store::DELIVERED_GROK) => (t("stage.delivered"), "delivered"),
-        (_, store::FAILED) => (t("stage.failed"), "failed"),
-        (_, store::CANCELLED) => (t("stage.cancelled"), "cancelled"),
-        _ => (t("stage.queued"), "queued"),
+    let (key, kind) = match (&receipt, c.status.as_str()) {
+        (_, store::REPLIED) => ("stage.replied", "replied"),
+        (Some(claude::Receipt::Completed { .. }), _) => ("stage.finished", "replied"),
+        (Some(claude::Receipt::Started), _) => ("stage.working", "working"),
+        (Some(claude::Receipt::Queued), _) => ("stage.queued_after_turn", "delivered"),
+        _ => stage_by_status(&c.status),
     };
+    (kind.into(), key.into())
+}
+
+/// One recipient copy with its stage (see `stage_of`), the machines involved, and its run log.
+fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
+    let (kind, key) = stage_of(store, c);
     let deadline = store::time_text(c.deadline_at());
-    let stage = if kind == "queued" { t("stage.queued_until").replace("{t}", short_time(&deadline)) } else { stage.to_string() };
-    let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "to": c.to, "to_name": c.to_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "deadline": deadline, "path": c.path, "body": c.body });
+    let stage = if kind == "queued" {
+        t("stage.queued_until").replace("{t}", short_time(&deadline))
+    } else if STAGE_KEYS.contains(&key.as_str()) {
+        t(&key).to_string()
+    } else {
+        crate::i18n::status_label(&c.status).to_string()
+    };
+    let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "from_host_name": c.from_host_name, "to": c.to, "to_name": c.to_name, "to_host_name": c.to_host_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "deadline": deadline, "path": c.path, "body": c.body });
     if with_runs {
-        v["runs"] = json!(runs);
+        v["runs"] = json!(store.runs(&c.id));
     }
     v
 }
@@ -291,6 +348,7 @@ fn short_time(t: &str) -> &str {
 
 /// Where a message stands: its copies, each with a stage read from the store and the transcript.
 pub fn status(store: &Store, id: &str) -> Result<Value> {
+    let _ = crate::peer::mirror(store);
     let l = store.find(id)?.ok_or_else(|| anyhow!("no message whose id starts with \"{id}\""))?;
     let mut copies = store.copies(&l.dispatch_id)?;
     reconcile(store, &mut copies)?;
@@ -300,6 +358,7 @@ pub fn status(store: &Store, id: &str) -> Result<Value> {
 
 /// The feed: every dispatch (one message, its recipients), newest first.
 pub fn feed(store: &Store, limit: usize) -> Result<Value> {
+    let _ = crate::peer::mirror(store);
     let mut letters = store.list(None, false)?;
     reconcile(store, &mut letters)?;
     let mut order: Vec<String> = vec![];
@@ -343,7 +402,7 @@ pub fn feed(store: &Store, limit: usize) -> Result<Value> {
                 v
             })
             .collect();
-        out.push(json!({ "dispatch_id": did, "from": sender, "from_name": first.from_name, "created": first.created, "urgency": first.urgency, "text": first.body, "recipients": recipients }));
+        out.push(json!({ "dispatch_id": did, "from": sender, "from_name": first.from_name, "from_host_name": first.from_host_name, "created": first.created, "urgency": first.urgency, "text": first.body, "recipients": recipients }));
     }
     Ok(json!({ "count": out.len(), "dispatches": out }))
 }
@@ -351,6 +410,9 @@ pub fn feed(store: &Store, limit: usize) -> Result<Value> {
 /// How to open a session on this machine: a URL the system opens, or a command to copy.
 pub fn open_session(session_id: &str) -> Result<Value> {
     let s = send::resolve(session_id)?;
+    if let Some(h) = &s.host {
+        return Ok(json!({ "kind": "note", "exact": false, "note": t("open.remote_note").replace("{host}", &h.name) }));
+    }
     match s.harness {
         crate::model::Harness::Claude => {
             if let Some(host) = s.host_session_id.as_deref().filter(|_| s.desktop) {
@@ -383,6 +445,10 @@ mod tests {
             created: created.into(),
             deadline: deadline.map(str::to_string),
             to_harness: Some("claude".into()),
+            from_host: None,
+            from_host_name: None,
+            to_host: None,
+            to_host_name: None,
             body: "hi".into(),
             path: String::new(),
         };
@@ -409,6 +475,10 @@ mod tests {
                 created: created.into(),
                 deadline: Some("2999-01-01 00:00".into()),
                 to_harness: Some("claude".into()),
+                from_host: None,
+                from_host_name: None,
+                to_host: None,
+                to_host_name: None,
                 body: body.into(),
                 path: String::new(),
             };

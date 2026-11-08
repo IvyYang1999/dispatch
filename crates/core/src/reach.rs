@@ -27,6 +27,9 @@ pub struct Reach {
 }
 
 pub fn decide(s: &Session, hook_installed: bool) -> Reach {
+    if s.host.is_some() {
+        return crate::peer::remote_reach(s);
+    }
     match s.harness {
         Harness::Claude => {
             if !s.running {
@@ -91,6 +94,6 @@ pub fn decide(s: &Session, hook_installed: bool) -> Reach {
                 Reach { level: Level::Now, text: t("reach.grok_now").into(), fix: None }
             }
         }
-        Harness::Human => Reach { level: Level::None, text: t("reach.human").into(), fix: None },
+        Harness::Human => Reach { level: Level::Now, text: t("reach.human").into(), fix: None },
     }
 }

@@ -28,6 +28,7 @@
 - **回执**从会话自己的对话记录里读：已入队、已开始、已结束、已回复。
 - **没送到。** 没人能递的（会话关着又没装 hook、本机没有 codex、没装 Grok Bot）当场标红并说明怎么修；排队的过了截止时间（紧急 1 小时、普通 24 小时，可改）也算没送到。能重试、能取消；App 后台每半分钟巡一遍，路通了的排队消息自动补投。
 - **一次派发、多个收件人，**每个收件人各有各的送达状态。
+- **跨电脑。** 同一个局域网里开着 Dispatch 的电脑用 Bonjour 互相发现，用一个 6 位配对码配对一次，之后直接加密通信；没有服务器，不用账号。发给 `Mac mini/release` 的消息存到那台电脑上，由它自己的投递阶梯送进会话，回信原路回来。局域网看不到的电脑（比如走 Tailscale）可以手填地址。[原理](docs/peers.md)。
 - **插件**：给 Claude Code 和 Codex 各一个，带九个 MCP 工具、一份说明何时怎么用的 skill，以及 hook。
 - **桌面 App** 给人看：派发、名录、发送、一键安装，每个收件人旁边都有「打开会话」。菜单栏常驻，写着「排队 N · 没送到 M」；系统通知只在收到回信和没送到两种情况下发。
 
@@ -111,6 +112,9 @@ dispatch send --to codex-thread --deadline 30m "…"  # 半小时没送到就算
 dispatch retry <消息 id>                             # 排队中或没送到的再试一次
 dispatch cancel <消息 id>                            # 撤回还没送到的
 dispatch sweep                                      # 邮差巡一圈：过期的标没送到，路通了的补投（App 自己每半分钟做一次）
+dispatch peers                                      # 本机和已配对的电脑；`peers code` 显示配对码，`peers pair <名字> <码>` 配对，`peers scan` 搜网络
+dispatch send --to "Mac mini/release" "…"           # 发给另一台电脑上的会话
+dispatch serve                                      # 没开 App 时监听其他电脑（App 开着时它自己监听）
 dispatch codex                                      # 这台 Mac 的 Codex 现在能收什么
 dispatch install                                    # 命令行装到 ~/.dispatch/bin，Claude hook，Codex MCP 注册
 dispatch mcp                                        # stdio 上的 MCP 服务（插件启动的就是它）
@@ -125,9 +129,10 @@ dispatch mcp                                        # stdio 上的 MCP 服务（
 </p>
 
 - **派发。** 一行一次派发，每个收件人一个按状态上色的标签；右侧是消息、收件人和各自的回复。可按「排队中」「没送到」筛；排队中和没送到的收件人旁边有「重试」「取消」。
-- **名录。** 这台 Mac 上的每个会话：哪家 Agent、哪个目录、空闲还是工作中，以及此刻消息会走哪条路。
+- **名录。** 这台 Mac 上的每个会话：哪家 Agent、哪个目录、空闲还是工作中，以及此刻消息会走哪条路。已配对电脑的会话排在后面，按电脑名分组。
 - **发送。** 收件人框就是查找框；紧急度；一次发给多个人。
-- **设置。** 一键安装、可复制的插件命令、语言、通知开关、消息存在哪、检查更新。
+- **设置。** 一键安装、可复制的插件命令、其他电脑（配对）、语言、通知开关、消息存在哪、检查更新。
+- **其他电脑。** 网络里开着 Dispatch 的电脑会出现在设置里，点「配对」、输入对方显示的码就行。它们的会话进名录和发送页，那边回的信落在你的派发页里。
 - **菜单栏。** 图标旁写着「排队 N · 没送到 M」，点开是最近几条派发，点一条就跳到它。关掉窗口 App 还在菜单栏里；退出在菜单里和 ⌘Q。
 - **通知。** 只有两种：某个会话回了信（「Researcher 回复了你」），或者一条没送到。别的都不吵。
 
@@ -159,11 +164,11 @@ plugins/skill    skill 只写一份；scripts/sync-plugins.sh 同步进两个插
 
 更新签名私钥不在仓库里，`tauri.conf.json` 只带公钥。
 
-更多：[消息格式](docs/message-format.md)（文件、状态字、投递日志）、[消息怎么送到会话](docs/adapters.md)（各适配器、投递阶梯、怎么加一个）、[CONTRIBUTING.md](CONTRIBUTING.md)（构建、文案、发版）。CI 在 macOS、Linux、Windows 三个系统上跑测试；每个发版 tag 由 `.github/workflows/release.yml` 构建 Linux 和 Windows 安装包（未签名）。
+更多：[消息格式](docs/message-format.md)（文件、状态字、投递日志）、[消息怎么送到会话](docs/adapters.md)（各适配器、投递阶梯、怎么加一个）、[跨电脑](docs/peers.md)（发现、配对、通信、镜像）、[CONTRIBUTING.md](CONTRIBUTING.md)（构建、文案、发版）。CI 在 macOS、Linux、Windows 三个系统上跑测试；每个发版 tag 由 `.github/workflows/release.yml` 构建 Linux 和 Windows 安装包（未签名）。
 
 ## 现状
 
-0.1.x：macOS Apple Silicon；Claude Code、Codex，以及走 `gbot` 的 Grok Bot。接下来：Grok 网关的原生实现（去掉 Node 依赖）、Agent Comments 改为调用 Dispatch、Windows 和 Linux 构建。
+0.1.x：macOS Apple Silicon，另有未签名的 Linux / Windows 安装包；Claude Code、Codex，以及走 `gbot` 的 Grok Bot；同一网络里的电脑直接配对。接下来：Grok 网关的原生实现（去掉 Node 依赖）、Agent Comments 改为调用 Dispatch、给没在监听的发件方推送回信、Linux / Windows 真机。
 
 ## 许可
 
