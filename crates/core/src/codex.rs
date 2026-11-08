@@ -421,6 +421,7 @@ mod tests {
         assert!(start.elapsed() < Duration::from_millis(500));
         worker.join().unwrap();
     }
+    #[cfg(unix)]
     #[test]
     fn queue_add_sends_the_message_and_checks_the_receipt() {
         for (answer_id, ok) in [("letter-1", true), ("someone-else", false)] {
