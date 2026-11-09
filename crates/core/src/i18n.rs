@@ -183,6 +183,7 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "cli.peers_need_code" => ("要么给配对码，要么给一段配对链接", "Give the pairing code, or a pairing link"),
         "cli.peers_relay_default" => ("默认（n0 的公共中转）", "default (n0's public relays)"),
         "cli.peers_restart" => ("App 或 dispatch serve 重启后生效", "Takes effect when the app or dispatch serve restarts"),
+        "cli.peers_superseded" => ("已被同名的新配对取代，按名字发信不会再到这里；不需要了就 dispatch peers remove {id}", "Replaced by a newer pairing with the same name; the name no longer reaches it. Remove it with dispatch peers remove {id}"),
         "cli.peers_unverified" => ("未确认：两台电脑显示的指纹一致后运行 dispatch peers verify \"{name}\"；之前它的信会先扣下", "Not confirmed: once both machines show the same fingerprint, run dispatch peers verify \"{name}\"; until then its letters are held"),
         "status.unknown" => ("未知", "unknown"),
         // retry, cancel, sweep

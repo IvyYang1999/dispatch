@@ -606,7 +606,9 @@ fn print_peers(v: &serde_json::Value) {
             p["rule"].as_str().unwrap_or("all"),
             p["address"].as_str().unwrap_or("")
         );
-        if !p["verified"].as_bool().unwrap_or(true) {
+        if p["superseded"].as_bool().unwrap_or(false) {
+            println!("    {}", t("cli.peers_superseded").replace("{id}", &model::short_id(p["id"].as_str().unwrap_or(""))));
+        } else if !p["verified"].as_bool().unwrap_or(true) {
             println!("    {}", t("cli.peers_unverified").replace("{name}", p["name"].as_str().unwrap_or("")));
         }
     }

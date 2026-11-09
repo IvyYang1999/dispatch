@@ -136,6 +136,8 @@ export interface PeerRow {
   rule: 'all' | 'contacts' | 'ask'
   /** Its internet key is known, so it can be reached off the local network. */
   internet: boolean
+  /** A later pairing has the same name, so the name no longer reaches this record. */
+  superseded?: boolean
 }
 export interface SeenRow {
   id: string

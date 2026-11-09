@@ -162,11 +162,20 @@ pub fn set_name(name: &str) -> Result<Me> {
     persistence::update(|b| { b.me.name = name; Ok(b.me.clone()) })
 }
 
+/// A peer by full id, then by name, then by id prefix. A machine paired again under the same
+/// name (a new identity) is added after the old record, so a name means the latest pairing.
 fn find_in(b: &Book, q: &str) -> Option<PeerInfo> {
     let q = q.trim();
     if q.is_empty() { return None; }
-    b.peers.iter().find(|p| p.name.eq_ignore_ascii_case(q))
-        .or_else(|| b.peers.iter().find(|p| q.len() >= 4 && p.id.starts_with(&q.to_lowercase()))).cloned()
+    let lower = q.to_lowercase();
+    b.peers.iter().find(|p| p.id == lower)
+        .or_else(|| b.peers.iter().rev().find(|p| p.name.eq_ignore_ascii_case(q)))
+        .or_else(|| b.peers.iter().find(|p| q.len() >= 4 && p.id.starts_with(&lower))).cloned()
+}
+
+/// A record that a later pairing under the same name has replaced: the name no longer reaches it.
+fn superseded(b: &Book, i: usize) -> bool {
+    b.peers.get(i).is_some_and(|p| b.peers[i + 1..].iter().any(|x| x.name.eq_ignore_ascii_case(&p.name)))
 }
 
 /// A paired peer by name or id prefix. Storage errors must not look like an unpaired host.
@@ -261,10 +270,29 @@ pub fn set_rule(q: &str, rule: &str) -> Result<PeerInfo> {
 }
 
 /// A line for whoever has to find out why a machine is offline or a letter was refused.
+static LOGGED: LazyLock<Mutex<HashMap<String, Instant>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+const LOG_REPEAT: Duration = Duration::from_secs(600);
+const LOG_MAX: u64 = 1_000_000;
+
+/// One line per problem, written in a single call so processes logging at once do not
+/// interleave; the same problem at most once every ten minutes per process; past 1 MB the
+/// file moves to `errors.log.1`.
 pub(crate) fn log_problem(who: &str, what: &str) {
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(state_dir().join("errors.log")) {
+    let text = format!("{} {}", who, what).replace(['\n', '\r'], " ");
+    {
+        let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+        if logged.get(&text).is_some_and(|at| at.elapsed() < LOG_REPEAT) { return; }
+        if logged.len() > 256 { logged.retain(|_, at| at.elapsed() < LOG_REPEAT); }
+        logged.insert(text.clone(), Instant::now());
+    }
+    let path = state_dir().join("errors.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX) {
+        let _ = std::fs::rename(&path, state_dir().join("errors.log.1"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         use std::io::Write as _;
-        let _ = writeln!(f, "{} {} {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), who, what);
+        let line = format!("{} {}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"), text);
+        let _ = f.write_all(line.as_bytes());
     }
 }
 
@@ -701,7 +729,8 @@ pub fn overview() -> Result<Value> {
     let peers: Vec<Value> = b
         .peers
         .iter()
-        .map(|p| {
+        .enumerate()
+        .map(|(i, p)| {
             let s = seen.iter().find(|s| s.id == p.id);
             let backoff = OFFLINE.lock().unwrap().get(&p.id).filter(|(until, _)| Instant::now() < *until).map(|(_, why)| why.clone());
             let link = route(&p.id);
@@ -716,6 +745,7 @@ pub fn overview() -> Result<Value> {
                 "verified": p.verified,
                 "rule": p.rule,
                 "internet": p.iroh_id.is_some(),
+                "superseded": superseded(&b, i),
             })
         })
         .collect();
@@ -734,6 +764,43 @@ pub fn overview() -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn peer_named(id: &str, name: &str) -> PeerInfo {
+        serde_json::from_value(serde_json::json!({ "id": id, "name": name, "public_key": "00", "paired_at": "2026-11-09 08:43" })).unwrap()
+    }
+
+    /// The main Mac lost its identity and was paired again under the same name: the name, the
+    /// app's actions (by id) and the overview must all point at the right record.
+    #[test]
+    fn a_name_paired_again_means_the_latest_pairing() {
+        let mut b: Book = serde_json::from_value(serde_json::json!({ "me": { "id": "me", "name": "me", "public_key": "00" }, "peers": [] })).unwrap();
+        b.peers.push(peer_named("a7acb9c9-0000-0000-0000-000000000000", "Mac mini"));
+        b.peers.push(peer_named("0b4329cb-0000-0000-0000-000000000000", "Mac mini"));
+        b.peers.push(peer_named("5555aaaa-0000-0000-0000-000000000000", "Laptop"));
+        assert_eq!(find_in(&b, "mac MINI").unwrap().id, b.peers[1].id);
+        assert_eq!(find_in(&b, "a7acb9c9-0000-0000-0000-000000000000").unwrap().id, b.peers[0].id);
+        assert_eq!(find_in(&b, "a7ac").unwrap().id, b.peers[0].id);
+        assert_eq!(find_in(&b, "Laptop").unwrap().id, b.peers[2].id);
+        assert!(superseded(&b, 0));
+        assert!(!superseded(&b, 1) && !superseded(&b, 2));
+    }
+
+    #[test]
+    fn a_repeated_problem_is_logged_once_and_whole() {
+        let base = std::env::temp_dir().join(format!("dispatch-log-{}", uuid::Uuid::new_v4()));
+        store::set_thread_root(Some(base.clone()));
+        std::fs::create_dir_all(state_dir()).unwrap();
+        let who = format!("peer-{}", uuid::Uuid::new_v4());
+        for _ in 0..5 { log_problem(&who, "offline: no answer\nwithin 8s"); }
+        log_problem(&who, "a different problem");
+        let text = std::fs::read_to_string(state_dir().join("errors.log")).unwrap();
+        store::set_thread_root(None);
+        std::fs::remove_dir_all(base).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].ends_with("offline: no answer within 8s"), "{text}");
+        assert!(lines[1].ends_with("a different problem"), "{text}");
+    }
 
     #[test]
     fn corrupt_book_never_replaces_existing_identity() {

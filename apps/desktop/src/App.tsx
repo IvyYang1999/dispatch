@@ -863,17 +863,18 @@ function Peers() {
                 {' · '}
                 {p.verified ? t('peers.confirmed') : t('peers.unconfirmed')}
               </span>
+              {p.superseded && <span className="host__found host__found--wrap">{t('peers.superseded')}</span>}
               <span className="host__row">
                 <span className="host__found">{t('peers.rule')}</span>
                 <span className="seg">
                   {(['all', 'contacts', 'ask'] as const).map((r) => (
-                    <button key={r} data-active={p.rule === r || undefined} onClick={() => run(() => api.peerRule(p.name, r))}>{t(`peers.rule.${r}` as const)}</button>
+                    <button key={r} data-active={p.rule === r || undefined} onClick={() => run(() => api.peerRule(p.id, r))}>{t(`peers.rule.${r}` as const)}</button>
                   ))}
                 </span>
-                {!p.verified && <button className="btn btn--primary btn--small" disabled={busy} onClick={() => run(async () => { const r = await api.peerVerify(p.name); setMsg(t('peers.pairedWith', { name: r.name })) })}>{t('peers.confirm')}</button>}
+                {!p.verified && <button className="btn btn--primary btn--small" disabled={busy} onClick={() => run(async () => { const r = await api.peerVerify(p.id); setMsg(t('peers.pairedWith', { name: r.name })) })}>{t('peers.confirm')}</button>}
               </span>
             </div>
-            <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => run(() => api.peerRemove(p.name))}>{t('peers.remove')}</button>
+            <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => run(() => api.peerRemove(p.id))}>{t('peers.remove')}</button>
           </div>
         ))}
         {ov?.seen.map((s) => (
