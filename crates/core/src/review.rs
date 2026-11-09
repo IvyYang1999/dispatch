@@ -157,11 +157,18 @@ pub fn forget_all(store: &Store) -> Result<usize> {
     Ok(n)
 }
 
+/// Whether the app has ever run with this store: it leaves its file behind when it quits.
+/// A machine with only the command line has no window to review in.
+pub fn app_installed(store: &Store) -> bool {
+    alive_file(store).exists()
+}
+
 /// Whether a message from `from` to `to` waits for the user. Not when the user sent it from
-/// the app, not when it goes to a person (the feed), not when review is off; under `new`,
-/// not when the user already let this sender write to this recipient.
+/// the app, not when it goes to a person (the feed), not when the app never ran here (no one
+/// could review it), not when review is off; under `new`, not when the user already let this
+/// sender write to this recipient.
 pub fn needed(store: &Store, from: &str, to: &Session) -> bool {
-    if from == "app" || to.harness == Harness::Human || send::is_person(&to.id) {
+    if from == "app" || to.harness == Harness::Human || send::is_person(&to.id) || !app_installed(store) {
         return false;
     }
     match mode() {
@@ -385,9 +392,16 @@ mod tests {
         };
         let b = "bbbbbbbb-1111-4222-8333-444455556666";
 
+        let e = send_to("eeeeeeee-1111-4222-8333-444455556666");
+        assert_ne!(e.route, "review", "the app never ran here: no one could review it, so it goes out");
+        touch_app(&store);
+        let quit = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        fs::File::options().write(true).open(alive_file(&store)).unwrap().set_modified(quit).unwrap();
+        assert!(app_installed(&store) && !app_alive(&store), "the app ran here once and is closed now");
+
         let rep = send_to(b);
         assert_eq!(rep.route, "review");
-        assert!(rep.detail.contains(t("send.review_no_app")), "no app: the sender is told the window cannot come up");
+        assert!(rep.detail.contains(t("send.review_no_app")), "app closed: the sender is told the window cannot come up");
         assert_eq!(store.find(&rep.letter_id).unwrap().unwrap().status, store::REVIEW);
         assert_eq!(queued(&store), vec![rep.letter_id.clone()]);
         assert_eq!(stage(&rep.letter_id), ("review".into(), t("stage.review_no_app").into(), Some("asked".into())));
