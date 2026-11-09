@@ -19,7 +19,7 @@ function hue(name: string): number {
   return h
 }
 
-function Avatar({ name, size = 24 }: { name: string; size?: number }) {
+export function Avatar({ name, size = 24 }: { name: string; size?: number }) {
   return (
     <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.46, background: `hsl(${hue(name)} 38% 56%)` }}>
       {initial(name)}
@@ -58,7 +58,7 @@ function withHost(name: string, host?: string | null): string {
 // The clients' own icons, taken from the installed apps by the backend; a text tag where none is.
 let icons: Record<string, string> = {}
 const iconListeners = new Set<() => void>()
-async function loadIcons(): Promise<void> {
+export async function loadIcons(): Promise<void> {
   try {
     icons = await api.harnessIcons()
     iconListeners.forEach((l) => l())
@@ -83,7 +83,7 @@ function harnessKey(label: string): string {
   return 'human'
 }
 
-function HarnessMark({ harness, size = 14 }: { harness?: string | null; size?: number }) {
+export function HarnessMark({ harness, size = 14 }: { harness?: string | null; size?: number }) {
   const all = useIcons()
   if (!harness) return null
   const key = harnessKey(harness)
@@ -101,7 +101,7 @@ function HarnessMark({ harness, size = 14 }: { harness?: string | null; size?: n
   return <img className="hmark" width={size} height={size} src={src} alt={harness} title={harness} />
 }
 
-function presence(s: Session): string {
+export function presence(s: Session): string {
   if (!s.running) return t('presence.offline')
   const st = s.status ?? 'idle'
   if (st === 'idle' || st === 'busy' || st === 'running' || st === 'waiting') return t(`presence.${st}` as const)
@@ -291,6 +291,12 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                         <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.cancel')}</button>
                       </span>
                     )}
+                    {r.kind === 'review' && (
+                      <span className="rcpt__acts">
+                        <button className="btn btn--primary btn--small" onClick={() => act(async () => { await api.reviewOpen(); return { text: '' } })}>{t('action.review')}</button>
+                        <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.cancel')}</button>
+                      </span>
+                    )}
                     {r.kind === 'held' && (
                       <span className="rcpt__acts">
                         <button className="btn btn--primary btn--small" onClick={() => act(() => api.retry(r.letter_id))}>{t('action.approve')}</button>
@@ -473,7 +479,7 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
 // ---- Session page ----
 
 /** `MM-DD HH:mm` in this machine's time; records carry UTC. */
-function localStamp(iso: string | null | undefined): string {
+export function localStamp(iso: string | null | undefined): string {
   if (!iso) return ''
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return ''
@@ -482,7 +488,7 @@ function localStamp(iso: string | null | undefined): string {
 }
 
 /** Long text folds to a few lines with a toggle. */
-function Clamp({ text }: { text: string }) {
+export function Clamp({ text }: { text: string }) {
   useLang()
   const [open, setOpen] = useState(false)
   const long = text.length > 420 || text.split('\n').length > 9
@@ -1055,6 +1061,30 @@ function Settings() {
               ))}
             </span>
           </div>
+        </div>
+        <div className="section-head">
+          <div className="section-head__title">{t('settings.review')}</div>
+        </div>
+        <div className="card">
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">{st?.review === 'off' ? t('settings.reviewOff') : st?.review === 'all' ? t('settings.reviewAll') : t('settings.reviewNew')}</span>
+              <span className="host__found host__found--wrap">{t('settings.reviewSub')}</span>
+            </div>
+            <span className="seg">
+              <button data-active={(st?.review ?? 'new') === 'new' || undefined} onClick={() => run('review', async () => { await api.setReview('new') })}>{t('settings.reviewNew')}</button>
+              <button data-active={st?.review === 'all' || undefined} onClick={() => run('review', async () => { await api.setReview('all') })}>{t('settings.reviewAll')}</button>
+              <button data-active={st?.review === 'off' || undefined} onClick={() => run('review', async () => { await api.setReview('off') })}>{t('settings.reviewOff')}</button>
+            </span>
+          </div>
+          {(st?.review_trusted ?? 0) > 0 && (
+            <div className="host">
+              <div className="host__who">
+                <span className="host__found host__found--wrap">{t('settings.reviewTrusted', { n: st?.review_trusted ?? 0 })}</span>
+              </div>
+              <button className="btn btn--small" onClick={() => run('review', async () => { await api.reviewForget() })}>{t('settings.reviewForget')}</button>
+            </div>
+          )}
         </div>
         <div className="section-head">
           <div className="section-head__title">{t('settings.notify')}</div>

@@ -654,7 +654,7 @@ pub fn remote_reach(s: &Session) -> Reach {
             return r.clone();
         }
     }
-    Reach { level: Level::Later, text: t("reach.peer_offline").into(), fix: None }
+    Reach { level: Level::Later, text: t("reach.peer_offline").into(), fix: None, mode: None, client: None }
 }
 
 /// Hand a letter to the machine its recipient is on: (status there, route, detail).
@@ -741,7 +741,7 @@ pub fn mirror(store: &Store) -> Result<usize> {
                 None => {
                     // a letter for a session here that the peer could not push: take it now,
                     // once its signature checks out against the key pinned for that machine
-                    if remote.to_host.as_deref() == Some(&me.id) && remote.status != store::CANCELLED {
+                    if remote.to_host.as_deref() == Some(&me.id) && remote.status != store::CANCELLED && remote.status != store::REVIEW {
                         let signed = match (p.iroh_id.as_deref(), rc.signature.as_deref()) {
                             (Some(signer), Some(sig)) => sign::verify(signer, &remote, sig),
                             _ => false,

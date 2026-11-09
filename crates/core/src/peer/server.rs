@@ -144,8 +144,9 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
                     let mut copies = vec![];
                     for did in dispatch_ids.iter().take(200) {
                         for l in store.copies(did).unwrap_or_default() {
-                            // only what concerns the asking machine
-                            if l.from_host.as_deref() != Some(&peer.id) && l.to_host.as_deref() != Some(&peer.id) {
+                            // only what concerns the asking machine; a copy held here for review
+                            // has not left yet, so the other machine must not take it
+                            if (l.from_host.as_deref() != Some(&peer.id) && l.to_host.as_deref() != Some(&peer.id)) || l.status == store::REVIEW {
                                 continue;
                             }
                             let (kind, stage_key) = ops::stage_of(&store, &l);

@@ -5,6 +5,10 @@ export interface Reach {
   level: ReachLevel
   text: string
   fix: string | null
+  /** Claude Code's permission mode or Codex's approval policy, for a running session. */
+  mode?: string | null
+  /** desktop, terminal, exec (Codex without a person), or what Codex calls its front end. */
+  client?: string | null
 }
 export interface Host {
   id: string
@@ -35,7 +39,14 @@ export interface Session {
   reach: Reach
   reason?: string
 }
-export type Kind = 'queued' | 'delivered' | 'working' | 'replied' | 'failed' | 'cancelled' | 'held'
+export type Kind = 'review' | 'queued' | 'delivered' | 'working' | 'replied' | 'failed' | 'cancelled' | 'held'
+/** Where the user's review of a held copy stands, as the sender sees it too. */
+export interface ReviewState {
+  state: 'asked' | 'shown' | 'approved' | 'trusted' | 'declined' | 'withdrawn' | 'expired'
+  at: string
+  app_running?: boolean | null
+  steps: { step: string; at: string }[]
+}
 export interface Run {
   at: string
   action: string
@@ -62,6 +73,7 @@ export interface Copy {
   path: string
   body: string
   runs?: Run[]
+  review?: ReviewState
   reply?: { letter_id: string; body: string; created: string; status: string }
 }
 export interface Dispatch {
@@ -93,6 +105,9 @@ export interface SetupStatus {
   theme: 'system' | 'light' | 'dark'
   /** Claude Code's crossSessionInbound in the user's settings: accept / hold / refuse, or null. */
   inbound: string | null
+  /** When a session's message waits for the user's review: off, new (first time per pair), all. */
+  review: 'off' | 'new' | 'all'
+  review_trusted: number
   version: string
   cli_sync_error: string | null
 }
@@ -119,6 +134,35 @@ export interface SessionPageData {
   dispatches: (Dispatch & { direction: 'in' | 'out' })[]
   rounds: Round[]
   transcript_available: boolean
+}
+/** One message held for review, as the review window shows it. */
+export interface ReviewInfo {
+  letter_id: string
+  dispatch_id: string
+  waiting: boolean
+  from: string
+  from_name: string
+  from_harness: string | null
+  to: string
+  to_name: string
+  to_harness: string | null
+  to_host: string | null
+  to_host_name: string | null
+  body: string
+  urgency: string
+  created: string
+  deadline: string
+  session: Session | null
+  rounds: Round[]
+  transcript_available: boolean
+  review: ReviewState | null
+  first_time: boolean
+  mode: 'off' | 'new' | 'all'
+  queued: number
+}
+export interface ReviewSettings {
+  mode: 'off' | 'new' | 'all'
+  trusted: number
 }
 export interface PeerRow {
   id: string
@@ -203,5 +247,13 @@ export const api = {
   sessionPage: (id: string) => invoke<SessionPageData>('session_page', { id }),
   harnessIcons: () => invoke<Record<string, string>>('harness_icons'),
   contactRemove: (name: string) => invoke<{ removed: string }>('contact_remove', { name }),
+  reviewList: () => invoke<string[]>('review_list'),
+  reviewInfo: (id: string) => invoke<ReviewInfo>('review_info', { id }),
+  reviewDecide: (id: string, decision: 'send' | 'trust' | 'decline') => invoke<{ letter_id: string; decision: string; route?: string; detail?: string; text: string }>('review_decide', { id, decision }),
+  reviewClose: () => invoke<void>('review_close'),
+  reviewOpen: () => invoke<void>('review_open'),
+  reviewSettings: () => invoke<ReviewSettings>('review_settings'),
+  setReview: (mode: 'off' | 'new' | 'all') => invoke<ReviewSettings>('set_review', { mode }),
+  reviewForget: () => invoke<ReviewSettings>('review_forget'),
   peerSetAddress: (name: string, address: string | null) => invoke<{ id: string; name: string; address: string | null }>('peer_set_address', { name, address }),
 }

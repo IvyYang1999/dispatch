@@ -37,7 +37,7 @@ fn tools() -> Value {
         },
         {
             "name": "dispatch_send",
-            "description": "Send one message to one or more sessions (by id, id prefix, or desktop name; <machine>/<session> for one on a paired machine, which stores and delivers it there). Each recipient gets its own copy and delivery state: delivered straight into a running session when it will take it, otherwise queued and handed over by its hook the next time it speaks (route 'stored'); when nobody could deliver it as things stand, route 'failed' with the fix in detail. A queued copy past its deadline (1h urgent, 24h normal, or `deadline`) is marked not delivered. Returns per-recipient route and detail plus the dispatch_id for dispatch_status. A recipient found by a fragment and not yet in the address book is noted under the words you found it by (`named`, provisional); tell the user, who can confirm or rename it. Write the message as you would brief a colleague: what you need, by when, and that they can reply with dispatch_reply.",
+            "description": "Send one message to one or more sessions (by id, id prefix, or desktop name; <machine>/<session> for one on a paired machine, which stores and delivers it there). Each recipient gets its own copy and delivery state: delivered straight into a running session when it will take it, otherwise queued and handed over by its hook the next time it speaks (route 'stored'); when nobody could deliver it as things stand, route 'failed' with the fix in detail. The user may review messages before they leave: then route is 'review', the copy is held on this machine until the user chooses Send in Dispatch's review window, and nothing else happens until then; follow it with dispatch_status (with wait) and do not send it again. A queued copy past its deadline (1h urgent, 24h normal, or `deadline`) is marked not delivered. Returns per-recipient route and detail plus the dispatch_id for dispatch_status. A recipient found by a fragment and not yet in the address book is noted under the words you found it by (`named`, provisional); tell the user, who can confirm or rename it. Write the message as you would brief a colleague: what you need, by when, and that they can reply with dispatch_reply.",
             "inputSchema": { "type": "object", "properties": { "to": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "text": { "type": "string" }, "urgency": { "type": "string", "enum": ["normal", "urgent", "普通", "紧急"], "default": "normal" }, "deadline": { "type": "string", "description": "How long it may wait before it counts as not delivered: 30m, 2h, 1d" } }, "required": ["to", "text"], "additionalProperties": false }
         },
         {
@@ -52,8 +52,8 @@ fn tools() -> Value {
         },
         {
             "name": "dispatch_status",
-            "description": "Where a message stands: every recipient copy of its dispatch with a kind (queued, delivered, working = the session started on it, replied = it answered or finished the turn, failed = not delivered, cancelled), a stage text in the user's language, its deadline, and the delivery log.",
-            "inputSchema": { "type": "object", "properties": { "id": { "type": "string", "description": "A letter id, its prefix, or a dispatch_id" } }, "required": ["id"], "additionalProperties": false }
+            "description": "Where a message stands: every recipient copy of its dispatch with a kind (review = held for the user's review, queued, delivered, working = the session started on it, replied = it answered or finished the turn, failed = not delivered, cancelled), a stage text in the user's language, its deadline, the delivery log, and for a reviewed copy `review`: state (asked = held, shown = the review window is in front of the user, approved, trusted = approved and this pair is not asked again, declined, withdrawn, expired), app_running (whether the window can come up at all) and every step with its time. With wait (seconds, at most 120) it returns as soon as any copy moves on, or when the wait runs out; `changed` says which.",
+            "inputSchema": { "type": "object", "properties": { "id": { "type": "string", "description": "A letter id, its prefix, or a dispatch_id" }, "wait": { "type": "integer", "minimum": 0, "maximum": 120, "description": "Seconds to wait for a change (default 0: answer now)" } }, "required": ["id"], "additionalProperties": false }
         },
         {
             "name": "dispatch_register",
@@ -87,7 +87,7 @@ fn call(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
         }
         "dispatch_inbox" => ops::inbox(store, s("session").as_deref(), b("all").unwrap_or(false)).map_err(|e| format!("{e:#}")),
         "dispatch_reply" => ops::reply(store, &s("id").ok_or("id is required")?, &s("text").ok_or("text is required")?).map_err(|e| format!("{e:#}")),
-        "dispatch_status" => ops::status(store, &s("id").ok_or("id is required")?).map_err(|e| format!("{e:#}")),
+        "dispatch_status" => ops::status_wait(store, &s("id").ok_or("id is required")?, args.get("wait").and_then(|v| v.as_u64()).unwrap_or(0)).map_err(|e| format!("{e:#}")),
         "dispatch_register" => ops::register(&s("name").ok_or("name is required")?, s("session").as_deref(), "self", s("description").as_deref()).map_err(|e| format!("{e:#}")),
         "dispatch_retry" => ops::retry(store, &s("id").ok_or("id is required")?).map_err(|e| format!("{e:#}")),
         "dispatch_cancel" => ops::cancel(store, &s("id").ok_or("id is required")?, &ops::caller_identity().1).map_err(|e| format!("{e:#}")),

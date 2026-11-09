@@ -36,6 +36,8 @@ pub struct Request {
     pub allow_resume: bool,
     /// How long the copy may wait before it counts as not delivered; the urgency's default when None.
     pub deadline: Option<chrono::Duration>,
+    /// A new message (not a reply): it waits for the user's review when `review::needed` says so.
+    pub review: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,7 +45,8 @@ pub struct Report {
     pub letter_id: String,
     pub dispatch_id: String,
     pub path: String,
-    /// `inbox` (delivered), `stored` (queued, waiting), `failed` (marked not delivered, with the fix in `detail`).
+    /// `inbox` (delivered), `stored` (queued, waiting), `review` (held here until the user says
+    /// send), `failed` (marked not delivered, with the fix in `detail`).
     pub route: String,
     pub detail: String,
 }
@@ -424,10 +427,11 @@ pub fn deliver(store: &Store, to: &Session, letter: &mut Letter, wait: bool, all
     }
 }
 
-/// Store the copy, then deliver it.
+/// Store the copy, then deliver it; or, when the user reviews this one first, hold it here.
 pub fn send(store: &Store, req: Request) -> Result<Report> {
     let created = store::now_text();
     let wait_for = req.deadline.unwrap_or_else(|| store::default_wait(&req.urgency));
+    let held = req.review && crate::review::needed(store, &req.from, &req.to);
     let mut letter = Letter {
         id: uuid::Uuid::new_v4().to_string(),
         dispatch_id: req.dispatch_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
@@ -437,7 +441,8 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
         to_name: req.to.display_name(),
         urgency: req.urgency.clone(),
         wake: true,
-        status: UNREAD.into(),
+        // held from the first byte: nothing hands over a copy that waits for review
+        status: if held { store::REVIEW.into() } else { UNREAD.into() },
         deadline: Some(store::deadline_text(&created, wait_for)),
         to_harness: Some(harness_code(req.to.harness).into()),
         from_host: None,
@@ -452,6 +457,12 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
     };
     let path = store.write_letter(&mut letter)?;
     store.append_run(&letter.id, "store", "written", &path.to_string_lossy())?;
+    if held {
+        store.append_run(&letter.id, "review", "asked", crate::review::mode())?;
+        crate::review::enqueue(store, &letter.id)?;
+        let detail = if crate::review::app_alive(store) { t("send.review").to_string() } else { format!("{} {}", t("send.review"), t("send.review_no_app")) };
+        return Ok(Report { letter_id: letter.id.clone(), dispatch_id: letter.dispatch_id.clone(), path: letter.path.clone(), route: "review".into(), detail });
+    }
     deliver(store, &req.to, &mut letter, req.wait, req.allow_resume)
 }
 

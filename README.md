@@ -28,6 +28,7 @@ Claude Code, Codex and Grok Bot sessions on one computer cannot talk to each oth
 - **Receipts** read from the session's own transcript: queued, started, finished, replied.
 - **Not delivered.** When nobody can hand a message over (the session is closed and there is no hook, no codex command, no Grok Bot app) it is marked failed at once, with the fix; a queued copy past its deadline (1 h urgent, 24 h normal, adjustable) counts as failed too. Retry and cancel exist; the app makes a postman's round every half minute and delivers queued copies whose route has opened.
 - **One dispatch, many recipients,** each with its own delivery state.
+- **Review before sending.** A message a session sends can wait on its machine until you look at it: a window comes up on top of everything (without taking the keyboard) with who writes to which session on which machine, how that session runs right now (idle or busy, its permission mode, desktop or terminal), what will happen once it goes, the message, and the recipient's last few rounds, so a wrong pick shows. Send, Don't send, or Send and stop asking for this pair. By default only the first message from a session to a recipient is reviewed; Settings switches to every message or off. Replies and what you send from the app are never held. The sending agent follows every step (held, window shown, approved, declined, expired) in `dispatch_status`.
 - **An address book.** Give a session a stable name and a one-line role (star it in the directory, `dispatch contacts add … --about`, or let the agent register itself with `dispatch_register`) and send to the name: no search, no guessing, and the name stays good after discovery's two-day window has forgotten the session. The directory searches every session you ever had, whatever its age. A recipient an agent found by a fragment is noted under those words as a provisional name until you confirm or rename it.
 - **The clients' own icons.** Sender and recipients are marked with the icon of the installed Claude, Codex or Grok Bot app, read from your machine at run time (Dispatch ships none of them); a text tag stands in where a client is not installed.
 - **Across machines.** Machines running Dispatch on one network find each other with Bonjour, pair once with a six-digit code, and talk directly over an encrypted connection; no server, no account. A message to `Mac mini/release` is stored on that machine and delivered by its own ladder, and the reply comes back the same way. On different networks they connect through iroh: a direct path punched through the routers, or a relay when that fails; pair with a one-time link and compare fingerprints. Messages are end-to-end encrypted and every letter is signed by the machine that sent it, so a relay can neither read nor change them. Each machine decides what another machine's letters may do (deliver, address book only, ask first). Tailscale users can pair by address instead. [How it works](docs/peers.md).
@@ -89,7 +90,7 @@ The plugin gives a session nine MCP tools and a skill that explains them.
 | `dispatch_sessions` | Who is on this machine, and how a message would reach each. |
 | `dispatch_find` | Find a session of any age, here or on a paired machine, by words from its name, project, folder or title. |
 | `dispatch_send` | Store and deliver a message to one or more sessions. Returns the dispatch id. |
-| `dispatch_status` | Each recipient's stage: queued, delivered, working, finished, replied, failed, cancelled. |
+| `dispatch_status` | Each recipient's stage: held for review, queued, delivered, working, finished, replied, failed, cancelled; `wait` answers as soon as one moves. |
 | `dispatch_inbox` | What is waiting for you, replies included. |
 | `dispatch_reply` | Answer a message back to its sender. |
 | `dispatch_retry` | Try a queued or failed message again now, with a fresh deadline. |
@@ -109,6 +110,7 @@ dispatch find opentrends codex                      # any age, every machine; ea
 dispatch send --to transparent "the e2e is green, merge when you like"
 dispatch send --to shyposter --to keykeeper "PR #11 splits the check from the send; have a look"
 dispatch status <dispatch id>                       # every recipient's stage and delivery log
+dispatch status <dispatch id> --wait 60             # the same, as soon as something moves (review, delivery, reply)
 dispatch inbox --session <id|name>                  # what is waiting for a session
 dispatch reply <message id> "done, see the PR"      # answer back to the sender
 dispatch send --to codex-thread --deadline 30m "…"  # counts as failed after 30 min (defaults: 1h urgent, 24h normal)
@@ -133,7 +135,8 @@ dispatch mcp                                        # the MCP server over stdio 
   <img src="docs/images/directory-en.png" width="880" alt="The directory: every session on this Mac with its harness, folder, state and the delivery path it would get">
 </p>
 
-- **Feed.** One row per dispatch, a chip per recipient colored by its state, the message with its recipients and their replies on the right. Filters for queued and failed. Queued and failed recipients carry Retry and Cancel.
+- **Feed.** One row per dispatch, a chip per recipient colored by its state, the message with its recipients and their replies on the right. Filters for queued and failed. Queued and failed recipients carry Retry and Cancel; one held for review carries Review.
+- **Review window.** Comes up by itself when a session's message is held for you, floating above other windows without taking the keyboard; closing it leaves the message held until something new comes or you press Review in the feed.
 - **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now. Paired machines' sessions follow, each group under its machine's name. The star on a row names the session for the address book.
 - **Send.** The recipient box is the finder. Urgency. Several recipients at once.
 - **Settings.** One-click install, the plugin commands to copy, other machines (pairing), the language, notifications, where the messages live, check for updates.

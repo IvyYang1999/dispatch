@@ -513,3 +513,89 @@ mod tests {
         assert_eq!(receipt_text(&lines(&[fake,event("task_started","a"),event("task_complete","a")]),"marker"),Receipt::NotFound);
     }
 }
+
+/// What a Codex thread's own log says about how it runs: the approval policy of its latest
+/// turn and which front end started it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Traits {
+    /// `never`, `on-request`, `untrusted`, `on-failure`.
+    pub approval: Option<String>,
+    /// `desktop`, `terminal`, `exec`, or the originator as Codex wrote it.
+    pub client: Option<String>,
+}
+
+/// Traits by rollout file, valid while its mtime and size hold.
+static TRAITS: Mutex<Option<std::collections::HashMap<PathBuf, (i64, u64, Traits)>>> = Mutex::new(None);
+
+/// How far back the approval policy is looked for: every turn writes one, so the last turn's
+/// is near the end.
+const TRAITS_TAIL: u64 = 512 * 1024;
+
+pub fn traits(path: &Path) -> Traits {
+    let Ok(md) = std::fs::metadata(path) else { return Traits::default() };
+    let mtime = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64).unwrap_or(0);
+    let size = md.len();
+    if let Some((m, s, t)) = TRAITS.lock().unwrap().as_ref().and_then(|c| c.get(path)) {
+        if *m == mtime && *s == size {
+            return t.clone();
+        }
+    }
+    let t = read_traits(path, size);
+    TRAITS.lock().unwrap().get_or_insert_with(Default::default).insert(path.to_path_buf(), (mtime, size, t.clone()));
+    t
+}
+
+fn read_traits(path: &Path, size: u64) -> Traits {
+    use std::io::{Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else { return Traits::default() };
+    let mut head = vec![0u8; 64 * 1024];
+    let n = f.read(&mut head).unwrap_or(0);
+    let head = String::from_utf8_lossy(&head[..n]).to_string();
+    let start = size.saturating_sub(TRAITS_TAIL);
+    let mut tail = String::new();
+    if f.seek(SeekFrom::Start(start)).is_ok() {
+        let mut buf = vec![];
+        let _ = f.take(TRAITS_TAIL).read_to_end(&mut buf);
+        tail = String::from_utf8_lossy(&buf).to_string();
+    }
+    parse_traits(&head, &tail)
+}
+
+fn parse_traits(head: &str, tail: &str) -> Traits {
+    let last = |text: &str, key: &str| -> Option<String> {
+        let re = regex::Regex::new(&format!(r#""{key}":"([^"]+)""#)).ok()?;
+        re.captures_iter(text).last().map(|c| c[1].to_string())
+    };
+    // the policy can change between turns: the tail's last one, else the head's
+    let approval = last(tail, "approval_policy").or_else(|| last(head, "approval_policy"));
+    let client = last(head, "originator").map(|o| {
+        let l = o.to_lowercase();
+        if l.contains("desktop") || l.contains("app") {
+            "desktop".to_string()
+        } else if l.contains("exec") {
+            "exec".to_string()
+        } else if l.contains("cli") || l.contains("tui") {
+            "terminal".to_string()
+        } else {
+            o
+        }
+    });
+    Traits { approval, client }
+}
+
+#[cfg(test)]
+mod traits_tests {
+    use super::*;
+
+    #[test]
+    fn the_latest_turn_says_the_policy() {
+        let head = r#"{"type":"session_meta","payload":{"originator":"codex_cli_rs"}}
+{"type":"turn_context","payload":{"approval_policy":"on-request"}}"#;
+        let tail = r#"{"type":"turn_context","payload":{"approval_policy":"on-request"}}
+{"type":"turn_context","payload":{"approval_policy":"never"}}"#;
+        assert_eq!(parse_traits(head, tail), Traits { approval: Some("never".into()), client: Some("terminal".into()) });
+        assert_eq!(parse_traits(r#"{"originator":"Codex Desktop"}"#, "").client.as_deref(), Some("desktop"));
+        assert_eq!(parse_traits(r#"{"originator":"codex_exec","approval_policy":"untrusted"}"#, "").approval.as_deref(), Some("untrusted"));
+        assert_eq!(parse_traits("", ""), Traits::default());
+    }
+}

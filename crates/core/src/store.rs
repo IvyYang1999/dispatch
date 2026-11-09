@@ -31,6 +31,9 @@ pub const CANCELLED: &str = "已取消";
 /// From another machine, held until a person here approves it (the machine is not confirmed
 /// yet, or its rule says to ask). Not pending: no hook or sweep hands it over.
 pub const HELD: &str = "待批准";
+/// Sent by a session here, held on this machine until the user says send in the review window
+/// (`review`). Not pending: no hook, sweep or peer hands it over before that.
+pub const REVIEW: &str = "待你审核";
 
 /// Still waiting to be delivered (the hook hands these over, the sweep retries them).
 pub fn pending(status: &str) -> bool {

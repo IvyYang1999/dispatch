@@ -25,6 +25,7 @@ pub mod model;
 pub mod ops;
 pub mod peer;
 pub mod reach;
+pub mod review;
 pub mod send;
 pub mod settings;
 pub mod store;

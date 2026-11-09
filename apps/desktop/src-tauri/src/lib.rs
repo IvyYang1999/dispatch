@@ -9,9 +9,13 @@
 //! current (how many dispatches are queued or failed, the most recent few), posts a
 //! notification when a reply comes in or a delivery fails, and tells the window to
 //! refresh. Closing the window hides it; the app stays in the menu bar until Quit.
+//!
+//! A second watcher looks every second for messages held for the user's review and brings
+//! up the review window: on top of everything, but without taking the keyboard.
 
 use dispatch_core::i18n::{self, t};
-use dispatch_core::{hook, model, ops, peer, settings, store::Store, watch};
+use dispatch_core::{hook, model, ops, peer, review, settings, store::Store, watch};
+use std::collections::HashSet;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -32,6 +36,15 @@ const RECENT_IN_TRAY: usize = 6;
 struct Cache {
     feed: Mutex<Option<(Instant, Value)>>,
 }
+
+/// Held copies the user put away by closing the review window: it comes back for a new one,
+/// or when the user opens it from the feed.
+#[derive(Default)]
+struct Reviews {
+    dismissed: Mutex<HashSet<String>>,
+}
+
+const REVIEW_WINDOW: &str = "review";
 
 fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
@@ -106,14 +119,19 @@ fn theme_setting() -> String {
 }
 
 /// Put the saved appearance on the window; the page's dark styles follow `prefers-color-scheme`.
+fn theme_now() -> Option<Theme> {
+    match theme_setting().as_str() {
+        "dark" => Some(Theme::Dark),
+        "light" => Some(Theme::Light),
+        _ => None,
+    }
+}
+
 fn apply_theme(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let theme = match theme_setting().as_str() {
-            "dark" => Some(Theme::Dark),
-            "light" => Some(Theme::Light),
-            _ => None,
-        };
-        let _ = w.set_theme(theme);
+    for label in ["main", REVIEW_WINDOW] {
+        if let Some(w) = app.get_webview_window(label) {
+            let _ = w.set_theme(theme_now());
+        }
     }
 }
 
@@ -296,6 +314,83 @@ async fn contact_remove(name: String) -> Result<Value, String> {
 }
 
 /// Try a queued or failed copy again now.
+/// The copies held for review, oldest first.
+#[tauri::command]
+async fn review_list() -> Result<Vec<String>, String> {
+    blocking(|| Ok(review::queued(&Store::open()))).await
+}
+
+/// What the review window shows for one held copy; asking for it means it is on screen.
+#[tauri::command]
+async fn review_info(id: String) -> Result<Value, String> {
+    blocking(move || {
+        let store = Store::open();
+        review::mark_shown(&store, &id).map_err(err)?;
+        review::info(&store, &id).map_err(err)
+    })
+    .await
+}
+
+/// The user's answer: send, trust (send, and let this sender write to this recipient from now
+/// on) or decline.
+#[tauri::command]
+async fn review_decide(app: AppHandle, id: String, decision: String) -> Result<Value, String> {
+    let r = blocking(move || review::decide(&Store::open(), &id, &decision).map_err(err)).await;
+    forget_feed(&app);
+    let _ = app.emit("dispatch:changed", ());
+    r
+}
+
+/// Put the review window away. What is still held stays held, and the window does not come
+/// back for it until something new is held or the user opens it from the feed.
+#[tauri::command]
+async fn review_close(app: AppHandle) -> Result<(), String> {
+    let held: HashSet<String> = blocking(|| Ok(review::queued(&Store::open()).into_iter().collect())).await?;
+    if let Ok(mut d) = app.state::<Reviews>().dismissed.lock() {
+        d.extend(held);
+    }
+    if let Some(w) = app.get_webview_window(REVIEW_WINDOW) {
+        let _ = w.hide();
+    }
+    Ok(())
+}
+
+/// Open the review window now, in front and with the keyboard (the user asked for it).
+#[tauri::command]
+async fn review_open(app: AppHandle) -> Result<(), String> {
+    if let Ok(mut d) = app.state::<Reviews>().dismissed.lock() {
+        d.clear();
+    }
+    show_review(&app, true);
+    let _ = app.emit("review:changed", ());
+    Ok(())
+}
+
+/// The review setting (`off`, `new`, `all`) and how many sender-recipient pairs go straight through.
+#[tauri::command]
+async fn review_settings() -> Result<Value, String> {
+    blocking(|| Ok(json!({ "mode": review::mode(), "trusted": review::trusted_count(&Store::open()) }))).await
+}
+
+#[tauri::command]
+async fn set_review(mode: String) -> Result<Value, String> {
+    blocking(move || {
+        let m = review::set_mode(&mode).map_err(err)?;
+        Ok(json!({ "mode": m, "trusted": review::trusted_count(&Store::open()) }))
+    })
+    .await
+}
+
+/// Forget every trusted pair: each sender asks again the next time.
+#[tauri::command]
+async fn review_forget() -> Result<Value, String> {
+    blocking(|| {
+        let n = review::forget_all(&Store::open()).map_err(err)?;
+        Ok(json!({ "mode": review::mode(), "trusted": 0, "forgot": n }))
+    })
+    .await
+}
+
 #[tauri::command]
 async fn retry(app: AppHandle, id: String) -> Result<Value, String> {
     let r = blocking(move || ops::retry(&Store::open(), &id).map_err(err)).await;
@@ -478,6 +573,8 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "notify": settings::notify_enabled(),
             "theme": theme_setting(),
             "inbound": dispatch_core::claude::inbound_setting(),
+            "review": review::mode(),
+            "review_trusted": review::trusted_count(&Store::open()),
             "version": env!("CARGO_PKG_VERSION"),
         }))
     })
@@ -556,6 +653,61 @@ fn show_main(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+/// Bring up the review window: above every other window and on every desktop, and, unless
+/// the user asked for it, without taking the keyboard from what they are typing in.
+fn show_review(app: &AppHandle, focus: bool) {
+    if let Some(w) = app.get_webview_window(REVIEW_WINDOW) {
+        let _ = w.show();
+        let _ = w.unminimize();
+        if focus {
+            let _ = w.set_focus();
+        }
+        return;
+    }
+    let builder = tauri::WebviewWindowBuilder::new(app, REVIEW_WINDOW, tauri::WebviewUrl::App("index.html#review".into()))
+        .title(t("review.window_title"))
+        .inner_size(480.0, 660.0)
+        .min_inner_size(400.0, 480.0)
+        .center()
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .focused(focus)
+        .theme(theme_now());
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    let _ = builder.build();
+}
+
+/// Every second: tell senders the app is up, and bring the review window up when a held copy
+/// is waiting that the user has not put away.
+fn start_review_watcher(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("dispatch-review".into())
+        .spawn(move || {
+            let mut last: Vec<String> = vec![];
+            loop {
+                let store = Store::open();
+                review::touch_app(&store);
+                let held = review::queued(&store);
+                if held != last {
+                    let _ = app.emit("review:changed", ());
+                    // forget what was put away once it is decided, withdrawn or expired
+                    if let Ok(mut d) = app.state::<Reviews>().dismissed.lock() {
+                        d.retain(|id| held.contains(id));
+                    }
+                }
+                let fresh = app.state::<Reviews>().dismissed.lock().map(|d| held.iter().any(|id| !d.contains(id))).unwrap_or(true);
+                let visible = app.get_webview_window(REVIEW_WINDOW).map(|w| w.is_visible().unwrap_or(false)).unwrap_or(false);
+                if fresh && !visible {
+                    show_review(&app, false);
+                }
+                last = held;
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        })
+        .expect("spawn the review watcher");
 }
 
 /// The menu bar menu: the counts, the recent dispatches (each opens the app on that one),
@@ -680,11 +832,12 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .manage(Cache::default())
+        .manage(Reviews::default())
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
-            peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay
+            peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -695,12 +848,20 @@ pub fn run() {
             build_tray(app.handle())?;
             start_listener();
             start_watcher(app.handle().clone());
+            start_review_watcher(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
             // Closing the window keeps the app in the menu bar; Quit is in the tray menu and ⌘Q.
+            // Closing the review window puts away what it holds until something new comes.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
+                if window.label() == REVIEW_WINDOW {
+                    let held = review::queued(&Store::open());
+                    if let Ok(mut d) = window.app_handle().state::<Reviews>().dismissed.lock() {
+                        d.extend(held);
+                    }
+                }
                 let _ = window.hide();
             }
         })

@@ -113,7 +113,8 @@ pub fn summary(feed: &Value, recent: usize) -> Summary {
     let has = |d: &Value, kind: &str| d["recipients"].as_array().into_iter().flatten().any(|r| r["kind"] == kind);
     for d in feed["dispatches"].as_array().into_iter().flatten() {
         out.total += 1;
-        if has(d, "queued") {
+        // held for the user's review is waiting too
+        if has(d, "queued") || has(d, "review") {
             out.queued += 1;
         }
         if has(d, "failed") {
@@ -122,6 +123,8 @@ pub fn summary(feed: &Value, recent: usize) -> Summary {
         if out.recent.len() < recent {
             let mark = if has(d, "failed") {
                 format!("  · {}", t("stage.failed"))
+            } else if has(d, "review") {
+                format!("  · {}", t("status.review"))
             } else if has(d, "queued") {
                 format!("  · {}", t("stage.queued"))
             } else {

@@ -90,6 +90,9 @@ enum Cmd {
     /// Where a message stands: its copies, their delivery runs and receipts
     Status {
         id: String,
+        /// Wait up to this many seconds (at most 120) for a copy to move on: reviewed, delivered, answered
+        #[arg(long, default_value_t = 0)]
+        wait: u64,
         #[arg(long)]
         json: bool,
     },
@@ -220,6 +223,11 @@ fn sender_identity(from: Option<String>) -> (String, String) {
             let name = claude::find_live(&sid).and_then(|i| i.name).unwrap_or_else(|| model::short_id(&sid));
             return (sid.to_lowercase(), name);
         }
+    }
+    // run by a Claude Code session without saying so: it is still that session writing
+    if let Some(i) = claude::caller_session() {
+        let name = i.name.clone().unwrap_or_else(|| model::short_id(&i.session_id));
+        return (i.session_id.to_lowercase(), name);
     }
     ("cli".into(), "cli".into())
 }
@@ -503,7 +511,7 @@ fn run() -> Result<i32> {
             let mut reports = vec![];
             for who in &to {
                 let (target, how) = send::resolve_how(who)?;
-                let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume, deadline })?;
+                let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume, deadline, review: true })?;
                 if !json {
                     println!("→ {} ({}): {} [{}]", target.address(), target.short_id, rep.detail, model::short_id(&rep.letter_id));
                     if let Some(n) = dispatch_core::ops::remember_match(who, &target, how) {
@@ -529,7 +537,8 @@ fn run() -> Result<i32> {
         }
         Cmd::Inbox { session, all, json } => {
             let target = send::resolve(&session)?;
-            let letters = st.list(Some(&target.id), !all)?;
+            // held for the user's review: not sent yet, so not in its recipient's inbox
+            let letters: Vec<store::Letter> = st.list(Some(&target.id), !all)?.into_iter().filter(|l| l.status != store::REVIEW).collect();
             if json {
                 println!("{}", serde_json::to_string_pretty(&letters)?);
             } else if letters.is_empty() {
@@ -570,8 +579,8 @@ fn run() -> Result<i32> {
                 }
             }
         }
-        Cmd::Status { id, json } => {
-            let v = dispatch_core::ops::status(&st, &id)?;
+        Cmd::Status { id, wait, json } => {
+            let v = dispatch_core::ops::status_wait(&st, &id, wait)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&v)?);
             } else {

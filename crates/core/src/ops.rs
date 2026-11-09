@@ -34,7 +34,7 @@ fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Co
         "last_active": s.last_active,
         "host": s.host,
         "address": s.address(),
-        "reach": { "level": r.level, "text": r.text, "fix": r.fix },
+        "reach": { "level": r.level, "text": r.text, "fix": r.fix, "mode": r.mode, "client": r.client },
     })
 }
 
@@ -185,7 +185,7 @@ pub fn send_many_opts(store: &Store, to: &[String], text: &str, urgency: &str, f
     let mut reports = vec![];
     for who in to {
         let (target, how) = send::resolve_how(who)?;
-        let rep = send::send(store, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: text.to_string(), urgency: urgency.to_string(), dispatch_id: Some(dispatch_id.clone()), wait: true, allow_resume, deadline })?;
+        let rep = send::send(store, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: text.to_string(), urgency: urgency.to_string(), dispatch_id: Some(dispatch_id.clone()), wait: true, allow_resume, deadline, review: true })?;
         let named = remember_match(who, &target, how);
         reports.push(json!({ "to": { "id": target.id, "short_id": target.short_id, "name": target.display_name(), "host": target.host, "address": target.address() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail, "path": rep.path, "named": named }));
     }
@@ -210,6 +210,10 @@ pub fn reconcile(store: &Store, letters: &mut [store::Letter]) -> Result<usize> 
     let now = chrono::Local::now().naive_local();
     let mut n = 0;
     for l in letters.iter_mut() {
+        if crate::review::expire(store, l, now)? {
+            n += 1;
+            continue;
+        }
         if l.overdue(now) {
             store.set_status(l, store::FAILED)?;
             store.append_run(&l.id, "deadline", "failed", &t("send.deadline_passed").replace("{t}", &store::time_text(l.deadline_at())))?;
@@ -236,7 +240,11 @@ fn copies_named(store: &Store, id: &str) -> Result<Vec<store::Letter>> {
 pub fn cancel(store: &Store, id: &str, by: &str) -> Result<Value> {
     let copies = copies_named(store, id)?;
     let mut done = vec![];
-    for mut l in copies.iter().filter(|l| store::pending(&l.status) || l.status == store::HELD).cloned() {
+    for mut l in copies.iter().filter(|l| store::pending(&l.status) || l.status == store::HELD || l.status == store::REVIEW).cloned() {
+        if l.status == store::REVIEW {
+            crate::review::dequeue(store, &l.id);
+            store.append_run(&l.id, "review", "withdrawn", by)?;
+        }
         store.set_status(&mut l, store::CANCELLED)?;
         store.append_run(&l.id, "cancel", "by", by)?;
         if let Some(h) = &l.to_host {
@@ -255,6 +263,15 @@ pub fn cancel(store: &Store, id: &str, by: &str) -> Result<Value> {
 pub fn retry(store: &Store, id: &str) -> Result<Value> {
     let copies = copies_named(store, id)?;
     let mut reports = vec![];
+    // a copy whose review ran out asks the user again; retrying never skips the review
+    for mut l in copies.iter().filter(|l| l.status == store::CANCELLED && crate::review::state(&store.runs(&l.id)).map(|(s, _)| s == "expired").unwrap_or(false)).cloned() {
+        let fresh = store::deadline_text(&store::now_text(), store::default_wait(&l.urgency));
+        store.set_deadline(&mut l, &fresh)?;
+        store.set_status(&mut l, store::REVIEW)?;
+        store.append_run(&l.id, "review", "asked", "again")?;
+        crate::review::enqueue(store, &l.id)?;
+        reports.push(json!({ "letter_id": l.id, "to": l.to, "to_name": l.to_name, "route": "review", "detail": t("send.review"), "status": l.status }));
+    }
     for mut l in copies.iter().filter(|l| store::pending(&l.status) || (l.status == store::HELD && l.from_host.is_some())).cloned() {
         // a letter held for approval: retrying it is the approval
         if l.status == store::HELD {
@@ -317,7 +334,8 @@ pub fn inbox(store: &Store, session: Option<&str>, all: bool) -> Result<Value> {
         Some(s) => send::resolve(s)?.id,
         None => claude::caller_session().map(|i| i.session_id).ok_or_else(|| anyhow!("no session given and the caller is not a Claude Code session"))?,
     };
-    let letters = store.list(Some(&sid), !all)?;
+    // a message still held for the user's review has not been sent: its recipient does not see it
+    let letters: Vec<store::Letter> = store.list(Some(&sid), !all)?.into_iter().filter(|l| l.status != store::REVIEW).collect();
     let known: Vec<String> = discover::sessions().into_iter().filter(|s| s.harness == crate::model::Harness::Grok).map(|s| s.id).collect();
     let rows: Vec<Value> = letters
         .iter()
@@ -341,7 +359,7 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
             _ => return Err(anyhow!("the sender \"{}\" is not a session, so it cannot be replied to", orig.from)),
         },
     };
-    let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false, deadline: None })?;
+    let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false, deadline: None, review: false })?;
     store.set_status(&mut orig, store::REPLIED)?;
     store.append_run(&orig.id, "reply", "sent", &rep.letter_id)?;
     Ok(json!({ "replied_to": orig.id, "to": { "id": target.id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail }))
@@ -377,11 +395,12 @@ fn stage_by_status(status: &str) -> (&'static str, &'static str) {
         store::FAILED => ("stage.failed", "failed"),
         store::CANCELLED => ("stage.cancelled", "cancelled"),
         store::HELD => ("stage.held", "held"),
+        store::REVIEW => ("stage.review_asked", "review"),
         _ => ("stage.queued", "queued"),
     }
 }
 
-const STAGE_KEYS: [&str; 18] = ["stage.held", "stage.held_there", "stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
+const STAGE_KEYS: [&str; 23] = ["stage.review_asked", "stage.review_no_app", "stage.review_shown", "stage.review_declined", "stage.review_expired", "stage.held", "stage.held_there", "stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
 
 /// Why a pending copy waits, from the recipient's state right now: the session is closed, busy
 /// (the hook hands it over when the turn ends), idle (its next turn), a Codex thread not on the
@@ -416,6 +435,17 @@ fn waiting_key(c: &store::Letter) -> &'static str {
 /// the i18n key of its stage text, from the store's status and, after a direct delivery here, the
 /// transcript's receipt. A copy on another machine shows what that machine last said about it.
 pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
+    // held here for the user's review, wherever it is going: nothing has left this machine
+    if c.status == store::REVIEW {
+        return ("review".into(), crate::review::waiting_stage(store, &store.runs(&c.id)).into());
+    }
+    if c.status == store::CANCELLED {
+        match crate::review::state(&store.runs(&c.id)).map(|(s, _)| s).as_deref() {
+            Some("declined") => return ("cancelled".into(), "stage.review_declined".into()),
+            Some("expired") => return ("failed".into(), "stage.review_expired".into()),
+            _ => {}
+        }
+    }
     if c.to_host.is_some() {
         // held over there: waiting for a person on that machine, nothing to approve here
         if c.status == store::HELD {
@@ -477,8 +507,12 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
         crate::i18n::status_label(&c.status).to_string()
     };
     let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "from_harness": sender_label(c), "from_host_name": c.from_host_name, "to": c.to, "to_name": c.to_name, "to_harness": harness_label(c.to_harness.as_deref()), "to_host": c.to_host, "to_host_name": c.to_host_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "deadline": deadline, "path": c.path, "body": c.body });
+    let runs = store.runs(&c.id);
+    if let Some(r) = crate::review::summary(store, &runs) {
+        v["review"] = r;
+    }
     if with_runs {
-        v["runs"] = json!(store.runs(&c.id));
+        v["runs"] = json!(runs);
     }
     v
 }
@@ -501,6 +535,35 @@ pub fn status(store: &Store, id: &str) -> Result<Value> {
     reconcile(store, &mut copies)?;
     let rows: Vec<Value> = copies.iter().map(|c| copy_json(store, c, true)).collect();
     Ok(json!({ "dispatch_id": l.dispatch_id, "copies": rows }))
+}
+
+/// `status`, waiting up to `wait_secs` (at most two minutes) for any copy to move on: its kind,
+/// stage or review step. Returns at once when nothing waits (all delivered, replied, failed,
+/// cancelled) or when `wait_secs` is 0. `changed` says whether something moved.
+pub fn status_wait(store: &Store, id: &str, wait_secs: u64) -> Result<Value> {
+    let first = status(store, id)?;
+    let key = |v: &Value| -> Vec<String> {
+        v["copies"].as_array().into_iter().flatten().map(|c| format!("{}|{}|{}", c["kind"], c["stage"], c["review"]["state"])).collect()
+    };
+    let settled = |v: &Value| v["copies"].as_array().into_iter().flatten().all(|c| matches!(c["kind"].as_str(), Some("replied" | "failed" | "cancelled")));
+    let wait = std::time::Duration::from_secs(wait_secs.min(120));
+    if wait.is_zero() || settled(&first) {
+        let mut v = first;
+        v["changed"] = json!(false);
+        return Ok(v);
+    }
+    let start = std::time::Instant::now();
+    let before = key(&first);
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let now = status(store, id)?;
+        if key(&now) != before || start.elapsed() >= wait {
+            let mut v = now;
+            v["changed"] = json!(key(&v) != before);
+            v["waited_secs"] = json!(start.elapsed().as_secs());
+            return Ok(v);
+        }
+    }
 }
 
 /// The feed: every dispatch (one message, its recipients), newest first.
