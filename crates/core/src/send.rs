@@ -83,14 +83,20 @@ pub fn resolve_how(query: &str) -> Result<(Session, Match)> {
             Match::Exact,
         ));
     }
-    let all: Vec<Session> = discover::sessions().into_iter().filter(|s| match &host {
+    let on_host = |s: &Session| match &host {
         Some(p) => s.host.as_ref().map(|h| h.id == p.id).unwrap_or(false),
         None => true,
-    }).collect();
+    };
+    let recent: Vec<Session> = discover::sessions().into_iter().filter(|s| on_host(s)).collect();
+    if let Some(hit) = pick(q, &recent)? {
+        return Ok(hit);
+    }
+    // not among the recent ones: every session here whatever its age, and what the machines find
+    let wide: Vec<Session> = discover::anywhere(q, host.as_ref()).into_iter().filter(|s| on_host(s)).collect();
+    if let Some(hit) = pick(q, &wide)? {
+        return Ok(hit);
+    }
     if is_uuid(q) {
-        if let Some(s) = all.iter().find(|s| s.id.eq_ignore_ascii_case(q)) {
-            return Ok((s.clone(), Match::Id));
-        }
         return Ok((
             match &host {
                 Some(p) => peer::remote_target(&p.id, &p.name, q, None, Harness::Claude),
@@ -99,6 +105,15 @@ pub fn resolve_how(query: &str) -> Result<(Session, Match)> {
             },
             Match::Id,
         ));
+    }
+    Err(anyhow!("{}", t("send.no_match").replace("{q}", q)))
+}
+
+/// The one session among these that `q` names: Ok(None) when none does, an error listing them
+/// when several do.
+fn pick(q: &str, all: &[Session]) -> Result<Option<(Session, Match)>> {
+    if is_uuid(q) {
+        return Ok(all.iter().find(|s| s.id.eq_ignore_ascii_case(q)).map(|s| (s.clone(), Match::Id)));
     }
     // an exact name (a contact, provisional or not, or the name the client gave it) wins over any fragment
     let book = crate::contacts::list();
@@ -109,7 +124,7 @@ pub fn resolve_how(query: &str) -> Result<(Session, Match)> {
     };
     let exact: Vec<&Session> = all.iter().filter(|s| named(s)).collect();
     if exact.len() == 1 {
-        return Ok((exact[0].clone(), Match::Exact));
+        return Ok(Some((exact[0].clone(), Match::Exact)));
     }
     let ql = q.to_lowercase();
     let about = |s: &Session| -> Option<String> {
@@ -128,8 +143,8 @@ pub fn resolve_how(query: &str) -> Result<(Session, Match)> {
         hits = all.iter().filter(|s| s.title.as_deref().map(|n| n.to_lowercase().contains(&ql)).unwrap_or(false)).collect();
     }
     match hits.len() {
-        0 => Err(anyhow!("{}", t("send.no_match").replace("{q}", q))),
-        1 => Ok((hits[0].clone(), how)),
+        0 => Ok(None),
+        1 => Ok(Some((hits[0].clone(), how))),
         _ => {
             let list: Vec<String> = hits.iter().take(8).map(|s| format!("  {}  {}  {}", s.short_address(), s.display_name(), s.cwd.as_deref().map(crate::model::short_cwd).unwrap_or_default())).collect();
             Err(anyhow!("{}", t("send.many_match").replace("{q}", q).replace("{n}", &hits.len().to_string()).replace("{list}", &list.join("\n"))))
@@ -171,6 +186,7 @@ fn bare_session(harness: Harness, id: &str, name: Option<String>) -> Session {
         status: None,
         transcript: None,
         host: None,
+        project: None,
     }
 }
 

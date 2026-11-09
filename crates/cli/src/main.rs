@@ -22,6 +22,15 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// Find sessions of any age, here and on paired machines; every word must match
+    Find {
+        /// Words from its name, project, folder, title, kind (Claude, Codex) or machine;
+        /// `<machine>/<words>` looks on that machine only
+        #[arg(required = true)]
+        query: Vec<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Send a message to a session (id, id prefix, desktop name or title fragment)
     Send {
         #[arg(long)]
@@ -450,6 +459,31 @@ fn run() -> Result<i32> {
                         truncate(&s.short_address(), 18),
                         s.harness.label(),
                         if s.running { t("cli.running_mark") } else { "  " },
+                        truncate(&s.display_name(), 26),
+                        truncate(&s.cwd.as_deref().map(model::short_cwd).unwrap_or_default(), 32),
+                        r.text
+                    );
+                }
+            }
+        }
+        Cmd::Find { query, json } => {
+            let q = query.join(" ");
+            if json {
+                println!("{}", serde_json::to_string_pretty(&dispatch_core::ops::search(&q))?);
+            } else {
+                let hook_on = hook::installed();
+                let found = dispatch_core::ops::find_sessions(&q);
+                if found.is_empty() {
+                    println!("{}", t("cli.find_none").replace("{q}", &q));
+                }
+                for (s, _) in &found {
+                    let r = reach::decide(s, hook_on);
+                    println!(
+                        "{:<26} {:<7} {:<4} {:<11} {:<26} {:<32} {}",
+                        truncate(&s.short_address(), 26),
+                        s.harness.label(),
+                        if s.running { t("cli.running_mark") } else { "  " },
+                        model::local_minute(s.last_active),
                         truncate(&s.display_name(), 26),
                         truncate(&s.cwd.as_deref().map(model::short_cwd).unwrap_or_default(), 32),
                         r.text

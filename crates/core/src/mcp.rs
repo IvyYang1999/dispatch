@@ -32,7 +32,7 @@ fn tools() -> Value {
         },
         {
             "name": "dispatch_find",
-            "description": "Find sessions by a fragment of their id, name, description in the address book, folder, first message or machine name (sessions on paired machines are included). Returns every candidate with the reason it matched. Send only when exactly one candidate is clearly the right one; otherwise ask the user.",
+            "description": "Find sessions of any age, on this machine and on paired machines, by words from their name, description in the address book, project, folder, title (the name its app shows or its first message), kind (Claude, Codex, Grok) or machine name, or an id prefix. Every word must match; <machine>/<words> looks on one machine. The one named exactly comes first, then running and recently active ones, at most 20 (count says how many matched). Each candidate carries the reason it matched. Send only when exactly one candidate is clearly the right one; otherwise ask the user.",
             "inputSchema": { "type": "object", "properties": { "query": { "type": "string" } }, "required": ["query"], "additionalProperties": false }
         },
         {

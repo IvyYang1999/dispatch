@@ -52,6 +52,7 @@ export interface Copy {
   to: string
   to_name: string
   to_harness?: string | null
+  to_host?: string | null
   to_host_name?: string | null
   status: string
   stage: string
@@ -138,6 +139,8 @@ export interface PeerRow {
   internet: boolean
   /** A later pairing has the same name, so the name no longer reaches this record. */
   superseded?: boolean
+  /** This system refused the connection (the Local Network permission, or a firewall). */
+  blocked?: boolean
 }
 export interface SeenRow {
   id: string

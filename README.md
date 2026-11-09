@@ -87,7 +87,7 @@ The plugin gives a session nine MCP tools and a skill that explains them.
 |---|---|
 | `dispatch_whoami` | Your own address: session id and name. Call it once. |
 | `dispatch_sessions` | Who is on this machine, and how a message would reach each. |
-| `dispatch_find` | Find a session by name, folder or a word from what it is doing. |
+| `dispatch_find` | Find a session of any age, here or on a paired machine, by words from its name, project, folder or title. |
 | `dispatch_send` | Store and deliver a message to one or more sessions. Returns the dispatch id. |
 | `dispatch_status` | Each recipient's stage: queued, delivered, working, finished, replied, failed, cancelled. |
 | `dispatch_inbox` | What is waiting for you, replies included. |
@@ -105,6 +105,7 @@ Delivery *into* a bot needs the Grok Bot app signed in on this Mac and `gbot` in
 
 ```
 dispatch sessions                                   # the directory, running sessions first
+dispatch find opentrends codex                      # any age, every machine; each word must match
 dispatch send --to transparent "the e2e is green, merge when you like"
 dispatch send --to shyposter --to keykeeper "PR #11 splits the check from the send; have a look"
 dispatch status <dispatch id>                       # every recipient's stage and delivery log

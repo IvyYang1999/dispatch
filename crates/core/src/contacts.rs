@@ -140,6 +140,7 @@ fn bare(c: &Contact) -> Session {
         status: None,
         transcript: None,
         host: c.host.clone(),
+        project: None,
     }
 }
 
@@ -174,7 +175,7 @@ mod tests {
     use super::*;
 
     fn session(id: &str, name: Option<&str>) -> Session {
-        Session { harness: Harness::Codex, id: id.into(), short_id: short_id(id), name: name.map(str::to_string), cwd: Some("/w/dispatch".into()), title: None, last_active: 5, running: true, desktop: false, host_session_id: None, status: None, transcript: None, host: None }
+        Session { harness: Harness::Codex, id: id.into(), short_id: short_id(id), name: name.map(str::to_string), cwd: Some("/w/dispatch".into()), title: None, last_active: 5, running: true, desktop: false, host_session_id: None, status: None, transcript: None, host: None, project: None }
     }
 
     #[test]

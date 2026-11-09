@@ -32,9 +32,12 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
 
 1. Once per session, call `dispatch_whoami` so you know your own address (and
    your machine's name: an agent elsewhere reaches you at `address_elsewhere`).
-2. Locate the recipient with `dispatch_find` (a name, a folder, a word from its
-   first message) or `dispatch_sessions`. Send only when exactly one candidate
-   is clearly right; if several match, show them to the user and ask.
+2. Locate the recipient with `dispatch_find` (a few words: a name, a project
+   or folder, a word from its title, `codex`; every word must match) or
+   `dispatch_sessions`. `dispatch_find` searches sessions of any age on every
+   paired machine, so an old session is found too; without MCP, run
+   `dispatch find <words>`. Send only when exactly one candidate is clearly
+   right; if several match, show them to the user and ask.
 3. Look at `reach` before sending: `now` means it arrives at once, `later`
    means the hook hands it over when that session's turn ends or at its next
    turn, `none` means nobody will read it until the user fixes something

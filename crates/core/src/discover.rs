@@ -27,6 +27,8 @@ const LIST_TTL: Duration = Duration::from_secs(3);
 static LIST: Mutex<Option<(Instant, Vec<Session>)>> = Mutex::new(None);
 /// Every session on this machine whatever its age, for searches; remembered ten seconds.
 static ALL: Mutex<Option<(Instant, Vec<Session>)>> = Mutex::new(None);
+/// What Codex's own database says about its threads, kept while the database files are unchanged.
+static CODEX_THREADS: Mutex<Option<(Vec<Option<i64>>, HashMap<String, CodexThread>)>> = Mutex::new(None);
 /// Parsed transcript heads, keyed by path, valid while the file's mtime and size hold.
 static HEADS: LazyLock<Mutex<HashMap<PathBuf, (i64, u64, Option<String>, Option<String>)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -65,8 +67,9 @@ pub fn clean_title(s: &str) -> Option<String> {
     if t.is_empty() {
         return None;
     }
-    let noise = Regex::new(r"(?i)^(This session is being continued|<system-reminder>|Caveat:|<local-command|<command-|\[Image|MemoraX|Base directory|You are|#{1,6} |\{|Filesystem sandboxing|<environment_context>|<user_instructions>|<permissions|Auto mode lets Claude)").ok()?;
-    if noise.is_match(&t) {
+    let noise = Regex::new(r"(?i)^(This session is being continued|<system-reminder>|Caveat:|<local-command|<command-|\[Image|MemoraX|Base directory|You are|#{1,6} |\{|Filesystem sandboxing|<environment_context>|<user_instructions>|<permissions|Auto mode lets Claude|Any earlier instruction|Here is a list of plugins|(Added )?[Dd]eferred tool namespaces|<INSTRUCTIONS>|<skills_instructions>|<apps_instructions>)").ok()?;
+    // a log that cut the message short (Codex writes "…119 tokens truncated…")
+    if noise.is_match(&t) || t.contains("tokens truncated") {
         return None;
     }
     if Regex::new(r"(?i)^[a-z0-9_-]{6,}$").ok()?.is_match(&t) {
@@ -145,6 +148,7 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64, ma
                 status: None,
                 transcript: Some(path.to_string_lossy().to_string()),
                 host: None,
+                project: None,
             });
         }
     }
@@ -156,6 +160,7 @@ fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>) -> Vec<Se
     let uuid_re = Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
     // Threads the shared daemon has loaded are running whatever the file times say.
     let loaded = crate::codex::state().loaded;
+    let threads = codex_threads();
     let mut out = vec![];
     for e in WalkDir::new(&root).max_depth(5).into_iter().flatten() {
         if !e.file_type().is_file() || !e.file_name().to_string_lossy().ends_with(".jsonl") {
@@ -165,19 +170,21 @@ fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>) -> Vec<Se
         let Some(m) = uuid_re.find(&name) else { continue };
         let id = m.as_str().to_lowercase();
         let Some(mtime) = mtime_ms(e.path()) else { continue };
-        if max_age.map(|m| now - mtime > m).unwrap_or(false) {
+        let is_loaded = loaded.contains(&id);
+        if !is_loaded && max_age.map(|m| now - mtime > m).unwrap_or(false) {
             continue;
         }
         let (cwd, title) = head_of(e.path(), mtime);
-        let is_loaded = loaded.contains(&id);
         let running = is_loaded || (codex_running && now - mtime < CODEX_RUNNING_WINDOW_MS);
+        let thread = threads.get(&id);
         out.push(Session {
             harness: Harness::Codex,
             short_id: short_id(&id),
-            id,
-            name: None,
+            name: thread.and_then(|t| t.name.clone()),
             cwd,
-            title,
+            // the title Codex shows in its sidebar, else the first message
+            title: thread.and_then(|t| t.title.clone()).or(title),
+            id,
             last_active: mtime,
             running,
             status: if is_loaded { Some("loaded".into()) } else { None },
@@ -185,9 +192,79 @@ fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>) -> Vec<Se
             host_session_id: None,
             transcript: Some(e.path().to_string_lossy().to_string()),
             host: None,
+            project: thread.and_then(|t| t.project.clone()),
         });
     }
     out
+}
+
+/// A Codex thread as Codex's own database (`~/.codex/state_<n>.sqlite`) records it: the name
+/// the user gave it, the title its sidebar shows, and the project it is filed under.
+#[derive(Debug, Clone, Default, PartialEq)]
+struct CodexThread {
+    name: Option<String>,
+    title: Option<String>,
+    project: Option<String>,
+}
+
+/// The newest `state_<n>.sqlite` in Codex's home.
+fn codex_state_db() -> Option<PathBuf> {
+    let dir = home_dir().join(".codex");
+    let re = Regex::new(r"^state_(\d+)\.sqlite$").ok()?;
+    fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            re.captures(&name).and_then(|c| c[1].parse::<u32>().ok()).map(|n| (n, e.path()))
+        })
+        .max_by_key(|(n, _)| *n)
+        .map(|(_, p)| p)
+}
+
+/// Thread names, titles and projects by thread id, read with the `sqlite3` command (read-only),
+/// again only when the database or its write-ahead log changed. Empty when there is no
+/// database or no `sqlite3`: discovery then goes by the rollout files alone.
+fn codex_threads() -> HashMap<String, CodexThread> {
+    let Some(db) = codex_state_db() else { return HashMap::new() };
+    let wal = PathBuf::from(format!("{}-wal", db.to_string_lossy()));
+    let stamp = vec![mtime_ms(&db), mtime_ms(&wal)];
+    if let Some((at, map)) = CODEX_THREADS.lock().unwrap().as_ref() {
+        if *at == stamp {
+            return map.clone();
+        }
+    }
+    let map = read_codex_threads(&db);
+    *CODEX_THREADS.lock().unwrap() = Some((stamp, map.clone()));
+    map
+}
+
+fn read_codex_threads(db: &Path) -> HashMap<String, CodexThread> {
+    let sqlite = if Path::new("/usr/bin/sqlite3").exists() { "/usr/bin/sqlite3" } else { "sqlite3" };
+    // newer Codex files threads under projects; older databases have neither column nor table
+    let queries = [
+        "select t.id as id, t.name as name, t.title as title, p.name as project from threads t left join projects p on p.id = t.project_id",
+        "select id, name, title from threads",
+        "select id, title from threads",
+    ];
+    for q in queries {
+        let Ok(out) = std::process::Command::new(sqlite).arg("-readonly").arg("-json").arg(db).arg(q).stderr(std::process::Stdio::null()).output() else { return HashMap::new() };
+        if out.status.success() {
+            return parse_codex_threads(&String::from_utf8_lossy(&out.stdout));
+        }
+    }
+    HashMap::new()
+}
+
+fn parse_codex_threads(json: &str) -> HashMap<String, CodexThread> {
+    let rows: Vec<serde_json::Value> = serde_json::from_str(json.trim()).unwrap_or_default();
+    let text = |r: &serde_json::Value, k: &str| r.get(k).and_then(|v| v.as_str()).map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")).filter(|s| !s.is_empty());
+    rows.iter()
+        .filter_map(|r| {
+            let id = r.get("id")?.as_str()?.to_lowercase();
+            Some((id, CodexThread { name: text(r, "name"), title: text(r, "title").and_then(|t| clean_title(&t)), project: text(r, "project") }))
+        })
+        .collect()
 }
 
 /// Grok Bot: the bots the signed-in app can reach through its gateway. They live in the cloud,
@@ -211,6 +288,7 @@ fn discover_grok(now: i64) -> Vec<Session> {
             status: Some("cloud".into()),
             transcript: None,
             host: None,
+            project: None,
         })
         .collect()
 }
@@ -300,6 +378,7 @@ fn gather(max_age: Option<i64>) -> Vec<Session> {
             status: None,
             transcript: None,
             host: None,
+            project: None,
         });
         entry.running = true;
         entry.desktop = r.desktop;
@@ -322,6 +401,63 @@ fn gather(max_age: Option<i64>) -> Vec<Session> {
     // the address book: names on listed sessions, and the named ones the window left out
     crate::contacts::apply_local(&mut all);
     all.sort_by(|a, b| b.running.cmp(&a.running).then(b.last_active.cmp(&a.last_active)));
+    all
+}
+
+/// The words of a query, lowercased.
+pub fn words(query: &str) -> Vec<String> {
+    query.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// Why a session matches when every word is found in one of its fields: the strongest field any
+/// word was found in. The fields, strongest first: id (a prefix of at least four characters),
+/// name (its own or the address book's), about (the address book's description), project,
+/// folder, title, kind (Claude, Codex), machine.
+pub fn reason(s: &Session, words: &[String], contact: Option<&crate::contacts::Contact>) -> Option<&'static str> {
+    const LABELS: [&str; 8] = ["id", "name", "about", "project", "cwd", "title", "kind", "host"];
+    if words.is_empty() {
+        return Some("all");
+    }
+    let low = |o: Option<&str>| o.map(str::to_lowercase).unwrap_or_default();
+    let fields = [
+        format!("{}\n{}", low(s.name.as_deref()), low(contact.map(|c| c.name.as_str()))),
+        low(contact.and_then(|c| c.description.as_deref())),
+        low(s.project.as_deref()),
+        low(s.cwd.as_deref()),
+        low(s.title.as_deref()),
+        s.harness.label().to_lowercase(),
+        low(s.host.as_ref().map(|h| h.name.as_str())),
+    ];
+    let mut best = LABELS.len();
+    for w in words {
+        let at = if w.chars().count() >= 4 && s.id.starts_with(w.as_str()) { 0 } else { 1 + fields.iter().position(|f| f.contains(w.as_str()))? };
+        best = best.min(at);
+    }
+    LABELS.get(best).copied()
+}
+
+/// The sessions every word of the query is found in, each with why, in the order given.
+pub fn matching(query: &str, sessions: Vec<Session>) -> Vec<(Session, &'static str)> {
+    let words = words(query);
+    let book = crate::contacts::list();
+    sessions
+        .into_iter()
+        .filter_map(|s| {
+            let host_id = s.host.as_ref().map(|h| h.id.clone());
+            let contact = book.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| &h.id) == host_id.as_ref());
+            reason(&s, &words, contact).map(|r| (s, r))
+        })
+        .collect()
+}
+
+/// Every session a query could mean, whatever its age: all of this machine's, and what each
+/// paired machine finds for the query (one too old to search sends its recent list). With a
+/// machine named, only that machine's. Each session once.
+pub fn anywhere(query: &str, only: Option<&crate::peer::PeerInfo>) -> Vec<Session> {
+    let mut all = if only.is_none() { all_local() } else { vec![] };
+    all.extend(crate::peer::remote_find(query, only));
+    let mut seen = std::collections::HashSet::new();
+    all.retain(|s| seen.insert((s.host.as_ref().map(|h| h.id.clone()), s.id.to_lowercase())));
     all
 }
 
@@ -354,6 +490,7 @@ pub fn lookup_files(id: &str) -> Option<Session> {
                 status: None,
                 transcript: Some(p.to_string_lossy().to_string()),
                 host: None,
+                project: None,
             });
         }
         if let Some(p) = codex_rollout(&id) {
@@ -374,6 +511,7 @@ pub fn lookup_files(id: &str) -> Option<Session> {
                 status: if loaded { Some("loaded".into()) } else { None },
                 transcript: Some(p.to_string_lossy().to_string()),
                 host: None,
+                project: None,
             });
         }
     }
@@ -395,11 +533,52 @@ fn codex_rollout(id: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    fn session(id: &str, name: Option<&str>, cwd: &str, title: &str) -> Session {
+        Session { harness: Harness::Codex, id: id.into(), short_id: short_id(id), name: name.map(str::to_string), cwd: Some(cwd.into()), title: Some(title.into()), last_active: 1, running: false, desktop: false, host_session_id: None, status: None, transcript: None, host: None, project: None }
+    }
+
+    #[test]
+    fn every_word_must_match_somewhere() {
+        let s = session("0199aaaa-1111-4222-8333-444455556666", Some("QA"), "/Users/y/developer/opentrends", "检查发布流程");
+        let w = |q: &str| words(q);
+        assert_eq!(reason(&s, &w("OpenTrends Codex"), None), Some("cwd"), "a folder word and a kind word");
+        assert_eq!(reason(&s, &w("qa opentrends"), None), Some("name"), "the strongest field wins");
+        assert_eq!(reason(&s, &w("发布"), None), Some("title"));
+        assert_eq!(reason(&s, &w("0199aaaa"), None), Some("id"));
+        assert_eq!(reason(&s, &w("opentrends claude"), None), None, "a Codex session is not a Claude one");
+        assert_eq!(reason(&s, &w("019"), None), None, "three characters are not an id prefix");
+        assert_eq!(reason(&s, &w(""), None), Some("all"));
+        let mut p = s.clone();
+        p.project = Some("Trends Lab".into());
+        p.cwd = None;
+        assert_eq!(reason(&p, &w("trends lab"), None), Some("project"));
+    }
+
+    #[test]
+    fn codex_thread_names_titles_and_projects() {
+        let rows = r#"[{"id":"0199AAAA-1111-4222-8333-444455556666","name":"OpenTrends 发布","title":"  检查  一下 发布流程 ","project":"OpenTrends"},
+{"id":"0199bbbb-1111-4222-8333-444455556666","name":null,"title":"","project":null}]"#;
+        let m = parse_codex_threads(rows);
+        assert_eq!(m.len(), 2);
+        let a = &m["0199aaaa-1111-4222-8333-444455556666"];
+        assert_eq!(a.name.as_deref(), Some("OpenTrends 发布"));
+        assert_eq!(a.title.as_deref(), Some("检查 一下 发布流程"));
+        assert_eq!(a.project.as_deref(), Some("OpenTrends"));
+        assert_eq!(m["0199bbbb-1111-4222-8333-444455556666"], CodexThread::default());
+        assert!(parse_codex_threads("").is_empty(), "no rows prints nothing");
+    }
+
     #[test]
     fn titles_skip_boilerplate() {
         // a leading tag is stripped, what follows is the title
         assert_eq!(clean_title("<system-reminder>\nfoo"), Some("foo".into()));
         assert_eq!(clean_title("Caveat: the messages below"), None);
         assert_eq!(clean_title("  帮我  看看 这个 "), Some("帮我 看看 这个".into()));
+        // what Codex puts in front of the first prompt
+        assert_eq!(clean_title("Any earlier instruction enabling proactive multi-agent work is void"), None);
+        assert_eq!(clean_title("Here is a list of plugins that are available but not installed"), None);
+        assert_eq!(clean_title("Deferred tool namespaces: - mcp__artifact_sessions"), None);
+        assert_eq!(clean_title("Added deferred tool namespaces: - mcp__dispatch"), None);
+        assert_eq!(clean_title("<in…119 tokens truncated…可以开始了"), None);
     }
 }

@@ -48,8 +48,13 @@ pub enum Request {
         #[serde(default)]
         iroh_addr: Option<serde_json::Value>,
     },
-    /// The sessions on your machine, each with how a message would reach it.
-    Sessions,
+    /// The sessions on your machine, each with how a message would reach it: the recent ones,
+    /// or with a query, every one of any age whose fields hold all of its words. A machine that
+    /// predates the query ignores it and sends its recent list.
+    Sessions {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        query: Option<String>,
+    },
     /// A letter for a session on your machine, with my signature over it; store it and run
     /// your ladder.
     Deliver {
@@ -258,6 +263,23 @@ mod tests {
     }
 
     #[test]
+    fn a_search_reads_as_the_recent_list_on_an_older_machine() {
+        // the request as 0.1.9 and earlier know it
+        #[derive(Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Before {
+            Hello,
+            Sessions,
+        }
+        let asked = serde_json::to_string(&Request::Sessions { query: Some("opentrends codex".into()) }).unwrap();
+        assert!(matches!(serde_json::from_str::<Before>(&asked).unwrap(), Before::Sessions));
+        assert!(matches!(serde_json::from_str::<Before>(r#"{"type":"hello"}"#).unwrap(), Before::Hello));
+        // and an older machine's plain request asks for the recent list here
+        assert!(matches!(serde_json::from_str::<Request>(r#"{"type":"sessions"}"#).unwrap(), Request::Sessions { query: None }));
+        assert_eq!(serde_json::to_string(&Request::Sessions { query: None }).unwrap(), r#"{"type":"sessions"}"#);
+    }
+
+    #[test]
     fn handshake_carries_keys_and_messages_both_ways() {
         let a = keypair();
         let b = keypair();
@@ -268,7 +290,7 @@ mod tests {
             let (s, _) = listener.accept().unwrap();
             let mut c = respond(s, &b_priv).unwrap();
             let req: Request = c.recv().unwrap();
-            assert!(matches!(req, Request::Sessions));
+            assert!(matches!(req, Request::Sessions { query: None }));
             // a response bigger than one frame, to exercise chunking
             let big = Response::Error { message: "x".repeat(150_000) };
             c.send(&big).unwrap();
@@ -276,7 +298,7 @@ mod tests {
         });
         let mut c = initiate(TcpStream::connect(addr).unwrap(), &a.private).unwrap();
         assert_eq!(c.remote_key, b.public);
-        c.send(&Request::Sessions).unwrap();
+        c.send(&Request::Sessions { query: None }).unwrap();
         let resp: Response = c.recv().unwrap();
         assert!(matches!(resp, Response::Error { message } if message.len() == 150_000));
         let (seen_key, server_hash) = server.join().unwrap();

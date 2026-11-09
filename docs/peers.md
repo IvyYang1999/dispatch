@@ -64,6 +64,7 @@ reuse B's proof on their own connection to A.
 | `hello` | anyone | `welcome { id, name, version }` |
 | `pair { proof, id, name }` | anyone, while a code is active | `paired { id, name }` or `error` |
 | `sessions` | a paired peer | `sessions { hook_installed, sessions: [{ session, reach }] }` |
+| `sessions { query }` | a paired peer | the same answer, but every session of any age whose fields hold all the words of `query` (at most 200); a peer older than 0.1.10 ignores `query` and sends its recent list |
 | `deliver { letter }` | a paired peer | `delivered { status, route, detail }` |
 | `status { dispatch_id }` | a paired peer | `status { copies: [{ letter, kind, stage_key }] }` |
 | `cancel { letter_id }` | a paired peer | `ok` |
@@ -115,6 +116,8 @@ pulled by mirroring are the same letter id, so nothing is delivered twice.
   `peers pair <name-or-address> <code>`, `peers add <name> <host:port>` (a manual address
   for a paired peer), `peers remove <name>`.
 - `dispatch serve [--port N]` runs the listener in the foreground.
+- `dispatch find <words>` (and the `dispatch_find` tool) asks every paired machine with the words,
+  so sessions of any age are found there too.
 - `dispatch sessions` shows remote sessions with their machine; `send`, `status`, `inbox`,
   `reply`, `retry`, `cancel` take remote addresses and ids like local ones.
 

@@ -53,6 +53,9 @@ pub struct Session {
     /// The machine it is on when that is not this one (a paired peer).
     #[serde(default)]
     pub host: Option<Host>,
+    /// The project it is filed under in its app (a Codex Desktop project), for searches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 impl Session {
@@ -77,6 +80,14 @@ impl Session {
             None => self.short_id.clone(),
         }
     }
+}
+
+/// The local date and time of a Unix-millisecond instant, `11-09 12:57`; blank when unknown.
+pub fn local_minute(ms: i64) -> String {
+    if ms <= 0 {
+        return String::new();
+    }
+    chrono::DateTime::from_timestamp_millis(ms).map(|d| d.with_timezone(&chrono::Local).format("%m-%d %H:%M").to_string()).unwrap_or_default()
 }
 
 pub fn short_id(id: &str) -> String {

@@ -23,6 +23,8 @@ fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Co
         "short_id": s.short_id,
         "name": s.display_name(),
         "harness": s.harness.label(),
+        "title": s.title,
+        "project": s.project,
         "cwd": s.cwd,
         "cwd_short": s.cwd.as_deref().map(short_cwd),
         "running": s.running,
@@ -105,60 +107,59 @@ pub fn unregister(name: &str) -> Result<Value> {
     }
 }
 
-/// Every session that matches, each with why it matched.
-pub fn find(query: &str) -> Value {
-    let out = matches(query, discover::sessions());
-    json!({ "query": query, "count": out.len(), "candidates": out, "note": "Send only when exactly one candidate is the right one; otherwise ask the user or refine the query." })
+/// At most this many candidates come back from a find.
+const FIND_MAX: usize = 20;
+
+/// Every session, of any age, here or on a paired machine, whose fields hold all the words of
+/// the query, each with why it matched: one named exactly by the query first, then running
+/// ones, then the most recently active. `<machine>/<words>` looks on that machine only.
+pub fn find_sessions(query: &str) -> Vec<(Session, &'static str)> {
+    let (host, q) = match crate::peer::split_address(query.trim()).ok().flatten() {
+        Some((p, rest)) => (Some(p), rest),
+        None => (None, query.trim().to_string()),
+    };
+    // nothing to look for: the recent ones, as the session list shows them
+    let pool = if q.trim().is_empty() { discover::sessions() } else { discover::anywhere(&q, host.as_ref()) };
+    let pool: Vec<Session> = pool.into_iter().filter(|s| host.as_ref().map(|p| s.host.as_ref().map(|h| h.id == p.id).unwrap_or(false)).unwrap_or(true)).collect();
+    let book = crate::contacts::list();
+    let ql = q.trim().to_lowercase();
+    let exact = |s: &Session| {
+        let host_id = s.host.as_ref().map(|h| h.id.as_str());
+        !ql.is_empty()
+            && (s.name.as_deref().map(|n| n.to_lowercase() == ql).unwrap_or(false)
+                || book.iter().any(|c| c.name.to_lowercase() == ql && c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id))
+    };
+    let mut out = discover::matching(&q, pool);
+    out.sort_by(|(a, _), (b, _)| exact(b).cmp(&exact(a)).then(b.running.cmp(&a.running)).then(b.last_active.cmp(&a.last_active)));
+    out
 }
 
-/// Every session this machine has records of (any age) or a paired machine lists, that matches.
+/// What `find_sessions` finds, as candidates for an agent: at most `FIND_MAX`, with how many matched.
+pub fn find(query: &str) -> Value {
+    let hook_on = hook::installed();
+    let book = crate::contacts::list();
+    let all = find_sessions(query);
+    let count = all.len();
+    let out: Vec<Value> = all.iter().take(FIND_MAX).map(|(s, r)| with_reason(s, r, hook_on, &book)).collect();
+    let mut note = "Send only when exactly one candidate is the right one; otherwise ask the user or refine the query. Sessions of any age are searched; every word of the query must match.".to_string();
+    if count > out.len() {
+        note = format!("{count} sessions matched; these are the {} most relevant. Add a word to narrow it down. {note}", out.len());
+    }
+    json!({ "query": query, "count": count, "candidates": out, "note": note })
+}
+
+/// Every session this machine has records of or a paired machine finds (any age), that matches.
 pub fn search(query: &str) -> Value {
-    let mut all = discover::all_local();
-    all.extend(crate::peer::remote_sessions());
-    let out = matches(query, all);
+    let hook_on = hook::installed();
+    let book = crate::contacts::list();
+    let out: Vec<Value> = find_sessions(query).iter().map(|(s, r)| with_reason(s, r, hook_on, &book)).collect();
     json!({ "query": query, "count": out.len(), "sessions": out })
 }
 
-fn matches(query: &str, sessions: Vec<Session>) -> Vec<Value> {
-    let (host, q) = match crate::peer::split_address(query.trim()).ok().flatten() {
-        Some((p, rest)) => (Some(p), rest.to_lowercase()),
-        None => (None, query.trim().to_lowercase()),
-    };
-    let hook_on = hook::installed();
-    let book = crate::contacts::list();
-    let mut out = vec![];
-    for s in sessions {
-        if let Some(p) = &host {
-            if s.host.as_ref().map(|h| h.id != p.id).unwrap_or(true) {
-                continue;
-            }
-        }
-        let host_id = s.host.as_ref().map(|h| h.id.as_str());
-        let contact = book.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id);
-        let reason = if q.is_empty() {
-            Some("all")
-        } else if s.id.starts_with(&q) {
-            Some("id")
-        } else if s.name.as_deref().map(|n| n.to_lowercase().contains(&q)).unwrap_or(false) || contact.map(|c| c.name.to_lowercase().contains(&q)).unwrap_or(false) {
-            Some("name")
-        } else if contact.and_then(|c| c.description.as_deref()).map(|d| d.to_lowercase().contains(&q)).unwrap_or(false) {
-            Some("about")
-        } else if s.cwd.as_deref().map(|c| c.to_lowercase().contains(&q)).unwrap_or(false) {
-            Some("cwd")
-        } else if s.title.as_deref().map(|t| t.to_lowercase().contains(&q)).unwrap_or(false) {
-            Some("title")
-        } else if s.host.is_some() && s.address().to_lowercase().contains(&q) {
-            Some("host")
-        } else {
-            None
-        };
-        if let Some(r) = reason {
-            let mut v = session_json_with(&s, hook_on, &book);
-            v["reason"] = json!(r);
-            out.push(v);
-        }
-    }
-    out
+fn with_reason(s: &Session, reason: &str, hook_on: bool, book: &[crate::contacts::Contact]) -> Value {
+    let mut v = session_json_with(s, hook_on, book);
+    v["reason"] = json!(reason);
+    v
 }
 
 pub fn send_many(store: &Store, to: &[String], text: &str, urgency: &str, from: Option<(String, String)>) -> Result<Value> {
@@ -475,7 +476,7 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
     } else {
         crate::i18n::status_label(&c.status).to_string()
     };
-    let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "from_harness": sender_label(c), "from_host_name": c.from_host_name, "to": c.to, "to_name": c.to_name, "to_harness": harness_label(c.to_harness.as_deref()), "to_host_name": c.to_host_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "deadline": deadline, "path": c.path, "body": c.body });
+    let mut v = json!({ "letter_id": c.id, "short_id": short_id(&c.id), "from": c.from, "from_name": c.from_name, "from_harness": sender_label(c), "from_host_name": c.from_host_name, "to": c.to, "to_name": c.to_name, "to_harness": harness_label(c.to_harness.as_deref()), "to_host": c.to_host, "to_host_name": c.to_host_name, "status": c.status, "stage": stage, "kind": kind, "created": c.created, "deadline": deadline, "path": c.path, "body": c.body });
     if with_runs {
         v["runs"] = json!(store.runs(&c.id));
     }

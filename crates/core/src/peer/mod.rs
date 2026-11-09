@@ -173,6 +173,13 @@ fn find_in(b: &Book, q: &str) -> Option<PeerInfo> {
         .or_else(|| b.peers.iter().find(|p| q.len() >= 4 && p.id.starts_with(&lower))).cloned()
 }
 
+/// Whether a probe's failure is this system refusing to connect (macOS's Local Network
+/// permission answers "No route to host"; a firewall, "Operation not permitted"), rather than
+/// a machine that is off, asleep or never seen.
+fn refused_here(problem: &str) -> bool {
+    ["os error 65", "os error 1)", "No route to host", "Operation not permitted"].iter().any(|m| problem.contains(m))
+}
+
 /// A record that a later pairing under the same name has replaced: the name no longer reaches it.
 fn superseded(b: &Book, i: usize) -> bool {
     b.peers.get(i).is_some_and(|p| b.peers[i + 1..].iter().any(|x| x.name.eq_ignore_ascii_case(&p.name)))
@@ -436,6 +443,7 @@ pub fn remote_target(host_id: &str, host_name: &str, session_id: &str, name: Opt
         status: None,
         transcript: None,
         host: Some(Host { id: host_id.to_string(), name: host_name.to_string() }),
+        project: None,
     }
 }
 
@@ -448,6 +456,8 @@ struct Remote {
 }
 
 static REMOTE: LazyLock<Mutex<HashMap<String, Remote>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// How a message would reach the remote sessions searches turned up, by (machine, session).
+static FOUND: LazyLock<Mutex<HashMap<(String, String), Reach>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// Peers that did not answer, and until when they are left alone.
 static OFFLINE: LazyLock<Mutex<HashMap<String, (Instant, String)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// What a peer last said about a copy on it: (kind, stage key), by letter id.
@@ -549,7 +559,7 @@ pub fn sessions_of(p: &PeerInfo) -> Option<Vec<Session>> {
             return Some(r.sessions.clone());
         }
     }
-    match ask(p, &Request::Sessions) {
+    match ask(p, &Request::Sessions { query: None }) {
         Ok(Response::Sessions { sessions, .. }) => {
             let mut list = vec![];
             let mut reach = HashMap::new();
@@ -573,9 +583,22 @@ pub fn sessions_of(p: &PeerInfo) -> Option<Vec<Session>> {
     }
 }
 
+/// The paired machines worth asking for sessions: not those a later pairing under the same name
+/// replaced (a dead identity that only costs a timeout).
+fn current(peers: Vec<PeerInfo>) -> Vec<PeerInfo> {
+    let mut out: Vec<PeerInfo> = vec![];
+    for p in peers.into_iter().rev() {
+        if !out.iter().any(|x| x.name.eq_ignore_ascii_case(&p.name)) {
+            out.push(p);
+        }
+    }
+    out.reverse();
+    out
+}
+
 /// The sessions on every paired peer that answers.
 pub fn remote_sessions() -> Vec<Session> {
-    let peers = match peers() { Ok(p) => p, Err(e) => { log_problem("storage", &format!("{e:#}")); return vec![]; } };
+    let peers = match peers() { Ok(p) => current(p), Err(e) => { log_problem("storage", &format!("{e:#}")); return vec![]; } };
     let mut out = vec![];
     for p in &peers {
         if let Some(list) = sessions_of(p) {
@@ -585,10 +608,49 @@ pub fn remote_sessions() -> Vec<Session> {
     out
 }
 
-/// How a message reaches a remote session: what its machine said when it listed it.
+/// Every session on the paired machines (or only on `only`) that matches the query, whatever
+/// its age, as each machine searches its own records. A machine that predates searching sends
+/// its recent list instead; the caller filters what comes back. Names this machine gave
+/// sessions over there are put on, and those not found are added from the address book.
+pub fn remote_find(query: &str, only: Option<&PeerInfo>) -> Vec<Session> {
+    let peers = match only {
+        Some(p) => vec![p.clone()],
+        None => match peers() { Ok(p) => current(p), Err(e) => { log_problem("storage", &format!("{e:#}")); return vec![]; } },
+    };
+    let mut out = vec![];
+    for p in &peers {
+        let mut list = vec![];
+        match ask(p, &Request::Sessions { query: Some(query.trim().to_string()) }) {
+            Ok(Response::Sessions { sessions, .. }) => {
+                let mut found = FOUND.lock().unwrap();
+                if found.len() > 5000 {
+                    found.clear();
+                }
+                for rs in sessions {
+                    let mut s = rs.session;
+                    s.host = Some(Host { id: p.id.clone(), name: p.name.clone() });
+                    s.transcript = None;
+                    found.insert((p.id.clone(), s.id.clone()), rs.reach);
+                    list.push(s);
+                }
+            }
+            Ok(Response::Error { message }) => mark_offline(p, message),
+            _ => {}
+        }
+        crate::contacts::apply_remote(&p.id, &mut list);
+        out.extend(list);
+    }
+    out
+}
+
+/// How a message reaches a remote session: what its machine said when it listed it, or when it
+/// turned up in a search.
 pub fn remote_reach(s: &Session) -> Reach {
     if let Some(h) = &s.host {
         if let Some(r) = REMOTE.lock().unwrap().get(&h.id).and_then(|r| r.reach.get(&s.id)) {
+            return r.clone();
+        }
+        if let Some(r) = FOUND.lock().unwrap().get(&(h.id.clone(), s.id.clone())) {
             return r.clone();
         }
     }
@@ -735,6 +797,7 @@ pub fn overview() -> Result<Value> {
             let backoff = OFFLINE.lock().unwrap().get(&p.id).filter(|(until, _)| Instant::now() < *until).map(|(_, why)| why.clone());
             let link = route(&p.id);
             let probe = if link.is_some() { Ok(String::new()) } else { probe(p) };
+            let blocked = !superseded(&b, i) && backoff.is_none() && probe.as_ref().err().is_some_and(|e| refused_here(e));
             json!({
                 "id": p.id, "name": p.name, "address": p.address, "paired_at": p.paired_at,
                 "online": backoff.is_none() && probe.is_ok(),
@@ -746,6 +809,7 @@ pub fn overview() -> Result<Value> {
                 "rule": p.rule,
                 "internet": p.iroh_id.is_some(),
                 "superseded": superseded(&b, i),
+                "blocked": blocked,
             })
         })
         .collect();
@@ -772,6 +836,15 @@ mod tests {
     /// The main Mac lost its identity and was paired again under the same name: the name, the
     /// app's actions (by id) and the overview must all point at the right record.
     #[test]
+    fn only_a_refused_connection_reads_as_blocked() {
+        assert!(refused_here("192.168.71.39:47831: No route to host (os error 65)"));
+        assert!(refused_here("10.0.0.2:47831: Operation not permitted (os error 1)"));
+        assert!(!refused_here("no address: not seen on the network and none set by hand"));
+        assert!(!refused_here("192.168.71.39:47831: Connection refused (os error 61)"));
+        assert!(!refused_here("192.168.71.39:47831: connection timed out"));
+    }
+
+    #[test]
     fn a_name_paired_again_means_the_latest_pairing() {
         let mut b: Book = serde_json::from_value(serde_json::json!({ "me": { "id": "me", "name": "me", "public_key": "00" }, "peers": [] })).unwrap();
         b.peers.push(peer_named("a7acb9c9-0000-0000-0000-000000000000", "Mac mini"));
@@ -783,6 +856,9 @@ mod tests {
         assert_eq!(find_in(&b, "Laptop").unwrap().id, b.peers[2].id);
         assert!(superseded(&b, 0));
         assert!(!superseded(&b, 1) && !superseded(&b, 2));
+        // only the latest pairing is asked for sessions
+        let asked: Vec<String> = current(b.peers.clone()).into_iter().map(|p| p.id[..8].to_string()).collect();
+        assert_eq!(asked, ["0b4329cb", "5555aaaa"]);
     }
 
     #[test]

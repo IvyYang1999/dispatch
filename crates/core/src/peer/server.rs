@@ -124,9 +124,14 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
             };
             let store = Store::open();
             match other {
-                Request::Sessions => {
+                Request::Sessions { query } => {
                     let hook_on = hook::installed();
-                    let sessions = discover::local().into_iter().map(|s| RemoteSession { reach: reach::decide(&s, hook_on), session: s }).collect();
+                    let list = match query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
+                        // a search: every session here, whatever its age, that has all the words
+                        Some(q) => discover::matching(q, discover::all_local()).into_iter().map(|(s, _)| s).take(SEARCH_MAX).collect(),
+                        None => discover::local(),
+                    };
+                    let sessions = list.into_iter().map(|s| RemoteSession { reach: reach::decide(&s, hook_on), session: s }).collect();
                     Response::Sessions { hook_installed: hook_on, sessions }
                 }
                 Request::Keys { iroh, iroh_addr } => match super::pin_keys(&peer.id, iroh, iroh_addr) {
@@ -170,6 +175,9 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
         }
     }
 }
+
+/// At most this many sessions answer a search from another machine.
+const SEARCH_MAX: usize = 200;
 
 fn ok_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')

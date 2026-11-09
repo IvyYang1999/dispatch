@@ -87,7 +87,7 @@ flowchart LR
 |---|---|
 | `dispatch_whoami` | 自己的地址：会话 id 和名字。每个会话调一次。 |
 | `dispatch_sessions` | 这台机器上有谁，消息怎么送到各自那里。 |
-| `dispatch_find` | 按名字、目录或它正在做的事找会话。 |
+| `dispatch_find` | 按名字、项目、目录或标题里的词找会话，任意时长，包括配对电脑上的。 |
 | `dispatch_send` | 存信并投递给一个或多个会话，返回派发 id。 |
 | `dispatch_status` | 每个收件人到了哪一步：排队、已送达、处理中、已结束、已回复、没送到、已取消。 |
 | `dispatch_inbox` | 等着你的消息，包括别人的回复。 |
@@ -105,6 +105,7 @@ Grok Bot 的 Bot 跑在云电脑上，起不了你 Mac 上的 MCP server，但�
 
 ```
 dispatch sessions                                   # 名录，运行中的会话排前面
+dispatch find opentrends codex                      # 任意时长、所有电脑；每个词都要对上
 dispatch send --to transparent "e2e 绿了，想合就合"
 dispatch send --to shyposter --to keykeeper "PR #11 把核对和发送拆开了，各看一眼"
 dispatch status <派发 id>                            # 每个收件人的阶段和投递日志

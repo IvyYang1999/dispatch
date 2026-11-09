@@ -44,8 +44,10 @@ function summary(rs: Copy[]): string {
 }
 
 /** `machine/id` for a session elsewhere, so the backend looks there; the id alone here. */
+/** How the app names a session to the core: a machine by its id, which stays exact when two
+ *  pairings share a name. */
 function addressOf(s: Session): string {
-  return s.host ? `${s.host.name}/${s.id}` : s.id
+  return s.host ? `${s.host.id}/${s.id}` : s.id
 }
 
 /** A name with its machine behind it when the session is elsewhere. */
@@ -295,13 +297,13 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                         <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.reject')}</button>
                       </span>
                     )}
-                    <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(r.to_host_name ? `${r.to_host_name}/${r.to}` : r.to)}>↗</button>
+                    <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(r.to_host ? `${r.to_host}/${r.to}` : r.to)}>↗</button>
                   </div>
                   {r.reply ? (
                     <>
                       <p className="rcpt__reply">{r.reply.body}</p>
                       <div className="rcpt__foot">
-                        <button className="btn btn--ghost btn--small" onClick={() => onCompose(r.to_host_name ? `${r.to_host_name}/${r.to}` : r.to)}>{t('action.reply')}</button>
+                        <button className="btn btn--ghost btn--small" onClick={() => onCompose(r.to_host ? `${r.to_host}/${r.to}` : r.to)}>{t('action.reply')}</button>
                       </div>
                     </>
                   ) : (
@@ -841,7 +843,7 @@ function Peers() {
             <span className="host__found host__found--wrap">{t('peers.codeShown', { s: left })}</span>
           </div>
         )}
-        {ov?.peers.some((p) => !p.online && p.problem) && (
+        {ov?.peers.some((p) => p.blocked) && (
           <div className="host host--code">
             <span className="host__found host__found--wrap">{t('peers.blocked')}</span>
             <button className="btn btn--small" onClick={() => run(api.openLocalNetworkSettings)}>{t('peers.openPrivacy')}</button>
