@@ -1,7 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The main and review windows talk to their own commands, and can be dragged by their drag regions.",
-  "windows": ["main", "review"],
-  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-internal-toggle-maximize"]
+  "description": "The main and review windows talk to their own commands and can be dragged by their drag regions; the review window sizes itself to what it shows.",
+  "windows": [
+    "main",
+    "review"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize",
+    "core:window:allow-set-size"
+  ]
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { api, type Kind, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
+import { api, type Kind, type Look, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
 type Screen = 'feed' | 'agents' | 'compose' | 'settings' | 'session'
@@ -19,11 +19,156 @@ function hue(name: string): number {
   return h
 }
 
-export function Avatar({ name, size = 24 }: { name: string; size?: number }) {
+// An emoji at the start of a name ("🪞 Transparent"): the session's own picture.
+const LEADING_EMOJI = /^(\p{Extended_Pictographic}(️|‍\p{Extended_Pictographic})*)\s*/u
+
+/** The emoji a name starts with, if any. */
+function leadingEmoji(name: string): string | null {
+  const m = name.match(LEADING_EMOJI)
+  return m ? m[1] : null
+}
+
+/** A name without the emoji it starts with, for where the avatar already shows that emoji. */
+export function plain(name: string): string {
+  const rest = name.replace(LEADING_EMOJI, '')
+  return rest.trim() ? rest : name
+}
+
+/** A session's picture: the emoji the user chose (or the one its name, or its name in its own
+ *  app, starts with) on a soft tint, else its initial on a color of its own; the user's color
+ *  wins either way. */
+export function Avatar({ name, look, appName, size = 24 }: { name: string; look?: Look | null; appName?: string | null; size?: number }) {
+  const emoji = look?.emoji || leadingEmoji(name) || (appName ? leadingEmoji(appName) : null)
+  const color = look?.color || null
+  if (emoji) {
+    return (
+      <span className="avatar avatar--emoji" style={{ width: size, height: size, fontSize: size * 0.58, background: color ?? `hsl(${hue(plain(name))} 40% 92%)` }}>
+        {emoji}
+      </span>
+    )
+  }
   return (
-    <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.46, background: `hsl(${hue(name)} 38% 56%)` }}>
+    <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.46, background: color ?? `hsl(${hue(name)} 38% 56%)` }}>
       {initial(name)}
     </span>
+  )
+}
+
+// Icon outlines after Lucide (lucide.dev, ISC license), drawn at 24 and scaled.
+const ICONS: Record<string, string> = {
+  feed: '<path d="M14 9a2 2 0 0 1-2 2H6l-4 4V4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2z"/><path d="M18 9h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1"/>',
+  agents: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  compose: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/>',
+  settings: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+  open: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  write: '<rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+  edit: '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+}
+
+export function Icon({ name, size = 16 }: { name: keyof typeof ICONS; size?: number }) {
+  return <svg className="icon" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" dangerouslySetInnerHTML={{ __html: ICONS[name] }} />
+}
+
+const SWATCHES = ['#e5484d', '#f76b15', '#ffc53d', '#46a758', '#12a594', '#0090ff', '#6e56cf', '#d6409f', '#8d8d86']
+const QUICK_EMOJI = ['🤖', '🧠', '🛠️', '🚀', '📦', '🔍', '📝', '🎨', '🔑', '🧪', '📊', '🌐']
+
+/** What the editor works on: a session's address, the name it shows, and what the address
+ *  book already says about it. */
+export interface EditTarget {
+  address: string
+  name: string
+  contact?: string | null
+  about?: string | null
+  avatar?: Look | null
+}
+
+/** Name a session, say what it is for, and pick its picture: one sheet, wherever it opens. */
+export function ContactEditor({ target, onClose, onSaved }: { target: EditTarget; onClose: () => void; onSaved: (text: string) => void }) {
+  useLang()
+  const [name, setName] = useState(target.contact ?? target.name)
+  const [about, setAbout] = useState(target.about ?? '')
+  const [emoji, setEmoji] = useState(target.avatar?.emoji ?? '')
+  const [color, setColor] = useState(target.avatar?.color ?? '')
+  const [err, setErr] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    if (!name.trim()) {
+      setErr(t('editor.needName'))
+      return
+    }
+    setBusy(true)
+    try {
+      const r = await api.contactSet(name.trim(), target.address, about.trim() || null, { emoji: emoji.trim() || null, color: color || null })
+      onSaved(r.text)
+      onClose()
+    } catch (e) {
+      setErr(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const remove = async () => {
+    if (!target.contact) return
+    setBusy(true)
+    try {
+      await api.contactRemove(target.contact)
+      onSaved('')
+      onClose()
+    } catch (e) {
+      setErr(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') save()
+    if (e.key === 'Escape') onClose()
+  }
+  return (
+    <div className="sheet" onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="sheet__card" role="dialog" aria-label={t('editor.title')}>
+        <div className="sheet__head">
+          <Avatar name={name || target.name} look={{ emoji: emoji || null, color: color || null }} size={44} />
+          <div className="sheet__title">
+            <span>{t('editor.title')}</span>
+            <span className="sheet__sub">{t('editor.sub')}</span>
+          </div>
+        </div>
+        <label className="field">
+          <span className="field__label">{t('editor.name')}</span>
+          <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={onKey} />
+        </label>
+        <label className="field">
+          <span className="field__label">{t('editor.about')}</span>
+          <input className="input" placeholder={t('contact.about')} value={about} onChange={(e) => setAbout(e.target.value)} onKeyDown={onKey} />
+        </label>
+        <div className="field">
+          <span className="field__label">{t('editor.emoji')}</span>
+          <div className="picks">
+            <input className="input input--emoji" placeholder={leadingEmoji(target.name) ?? '🙂'} value={emoji} onChange={(e) => setEmoji(e.target.value)} onKeyDown={onKey} />
+            {QUICK_EMOJI.map((x) => (
+              <button key={x} className="pick" data-on={emoji === x || undefined} onClick={() => setEmoji(emoji === x ? '' : x)}>{x}</button>
+            ))}
+          </div>
+        </div>
+        <div className="field">
+          <span className="field__label">{t('editor.color')}</span>
+          <div className="picks">
+            <button className="swatch swatch--auto" data-on={!color || undefined} title={t('editor.auto')} onClick={() => setColor('')}>A</button>
+            {SWATCHES.map((c) => (
+              <button key={c} className="swatch" data-on={color === c || undefined} style={{ background: c }} onClick={() => setColor(c)} />
+            ))}
+          </div>
+        </div>
+        {err && <div className="notice">{err}</div>}
+        <div className="sheet__foot">
+          {target.contact && <button className="btn btn--ghost btn--danger" disabled={busy} onClick={remove}>{t('editor.remove')}</button>}
+          <span className="bar__spacer" />
+          <button className="btn btn--ghost" onClick={onClose}>{t('action.cancel')}</button>
+          <button className="btn btn--primary" disabled={busy} onClick={save}>{t('action.save')}</button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -172,22 +317,31 @@ function partySub(p: Party): string {
   return bits.join(' · ')
 }
 
-/** One side of a conversation, as the review window shows it: avatar, name, client, where. */
-function PartyCard({ p, onCompose, onOpen }: { p: Party; onCompose: (to: string) => void; onOpen: (address: string) => void }) {
+/** One side of a conversation, as the review window shows it: picture, name, client, where;
+ *  and what can be done with it: open it in its app, write to it, rename it. */
+function PartyCard({ p, onCompose, onOpen, onEdit }: { p: Party; onCompose: (to: string) => void; onOpen: (address: string) => void; onEdit: (p: Party) => void }) {
   return (
     <div className="party">
-      <Avatar name={p.name} size={28} />
+      <Avatar name={p.name} look={p.avatar} appName={p.app_name} size={30} />
       <div className="party__names">
         <span className="party__name">
-          <span className="party__label">{p.name}</span>
+          <span className="party__label">{plain(p.name)}</span>
           <HarnessMark harness={p.harness} />
         </span>
         {!p.person && <span className="party__sub" title={partySub(p)}>{partySub(p)}</span>}
       </div>
       {p.address && (
         <span className="party__acts">
-          <button className="btn btn--ghost btn--icon" title={t('thread.write')} onClick={() => onCompose(p.address!)}>✎</button>
-          <button className="btn btn--ghost btn--icon" title={t('thread.open')} onClick={() => onOpen(p.address!)}>↗</button>
+          <button className="btn btn--ghost btn--small btn--with-icon" title={t('thread.open')} onClick={() => onOpen(p.address!)}>
+            <Icon name="open" size={13} />
+            {t('action.openShort')}
+          </button>
+          <button className="btn btn--ghost btn--icon" title={t('thread.write')} onClick={() => onCompose(p.address!)}>
+            <Icon name="write" size={14} />
+          </button>
+          <button className="btn btn--ghost btn--icon" title={t('thread.edit')} onClick={() => onEdit(p)}>
+            <Icon name="edit" size={14} />
+          </button>
         </span>
       )}
     </div>
@@ -206,9 +360,11 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
   const [picked, setPicked] = useState<string | null>(null)
   const [filter, setFilter] = useState<Filter>('all')
   const [err, setErr] = useState<string | null>(null)
-  const { open, notice, clear } = useOpen()
+  const { open, notice, clear, say } = useOpen()
+  const [editing, setEditing] = useState<EditTarget | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
+  const edit = (p: Party) => setEditing({ address: p.address!, name: p.app_name ?? p.name, contact: p.contact, about: p.about, avatar: p.avatar })
   // picked in the menu bar (a dispatch): show the conversation it is in, whatever the filter
   useEffect(() => {
     if (pick) {
@@ -289,22 +445,22 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
             return (
               <div key={th.key} className="row trow" data-selected={current?.key === th.key || undefined} onClick={() => setSelected(th.key)}>
                 <span className="pair">
-                  <Avatar name={th.a.name} size={22} />
-                  <Avatar name={th.b.name} size={22} />
+                  <Avatar name={th.a.name} look={th.a.avatar} appName={th.a.app_name} size={22} />
+                  <Avatar name={th.b.name} look={th.b.avatar} appName={th.b.app_name} size={22} />
                 </span>
                 <div className="row__main">
                   <div className="row__line">
                     <span className="trow__names">
-                      <span className="trow__name" title={th.a.host_name ?? ''}>{th.a.name}</span>
+                      <span className="trow__name" title={th.a.host_name ?? ''}>{plain(th.a.name)}</span>
                       <HarnessMark harness={th.a.harness} size={12} />
                       <span className="trow__sep">⇄</span>
-                      <span className="trow__name" title={th.b.host_name ?? ''}>{th.b.name}</span>
+                      <span className="trow__name" title={th.b.host_name ?? ''}>{plain(th.b.name)}</span>
                       <HarnessMark harness={th.b.harness} size={12} />
                     </span>
                   </div>
                   <div className="row__line">
                     <span className="row__text trow__last">
-                      <span className="trow__speaker">{speaker.name}：</span>
+                      <span className="trow__speaker">{plain(speaker.name)}：</span>
                       {firstLine(th.last.body)}
                     </span>
                     {th.attention && <Badge kind={th.attention} />}
@@ -319,9 +475,8 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
           {current ? (
             <>
               <div className="convo__head">
-                <PartyCard p={current.a} onCompose={onCompose} onOpen={open} />
-                <span className="convo__sep">⇄</span>
-                <PartyCard p={current.b} onCompose={onCompose} onOpen={open} />
+                <PartyCard p={current.a} onCompose={onCompose} onOpen={open} onEdit={edit} />
+                <PartyCard p={current.b} onCompose={onCompose} onOpen={open} onEdit={edit} />
               </div>
               <div
                 className="convo__msgs"
@@ -335,12 +490,15 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                 {current.messages.map((m) => {
                   const who = m.side === 'a' ? current.a : current.b
                   return (
-                    <div key={m.letter_id} className="tmsg" data-side={m.side}>
+                    <div key={m.letter_id} className="tmsg">
+                      <Avatar name={who.name} look={who.avatar} appName={who.app_name} size={26} />
+                      <div className="tmsg__main">
                       <div className="tmsg__head">
-                        <span className="tmsg__who">{who.name}</span>
+                        <span className="tmsg__who">{plain(who.name)}</span>
+                        <HarnessMark harness={who.harness} size={12} />
                         <span className="tmsg__at">{when(m.at)}</span>
                       </div>
-                      <div className="tmsg__bubble">
+                      <div className="tmsg__body">
                         <Clamp text={m.body} />
                       </div>
                       <div className="tmsg__foot">
@@ -365,6 +523,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                           </>
                         )}
                       </div>
+                      </div>
                     </div>
                   )
                 })}
@@ -380,6 +539,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
           )}
         </aside>
       </div>
+      {editing && <ContactEditor target={editing} onClose={() => setEditing(null)} onSaved={(text) => { say(text); load() }} />}
     </>
   )
 }
@@ -392,7 +552,7 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
   const [tool, setTool] = useState<string>('all')
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<Session[] | null>(null)
-  const [editing, setEditing] = useState<{ id: string; name: string; about: string } | null>(null)
+  const [editing, setEditing] = useState<EditTarget | null>(null)
   const { open, notice, clear, say } = useOpen()
   const load = useCallback(async () => {
     try {
@@ -437,27 +597,6 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
     }
     return Array.from(m.values())
   }, [shown, lang])
-  const save = async (s: Session) => {
-    if (!editing) return
-    const { name, about } = editing
-    setEditing(null)
-    try {
-      if (name.trim()) {
-        const r = await api.contactSet(name.trim(), addressOf(s), about.trim() || null)
-        say(r.text)
-      } else if (s.contact) {
-        await api.contactRemove(s.contact)
-      }
-    } catch (e) {
-      say(String(e))
-    }
-    load()
-    if (results) search(query)
-  }
-  const onKey = (s: Session) => (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') save(s)
-    if (e.key === 'Escape') setEditing(null)
-  }
   return (
     <>
       <header className="bar" data-tauri-drag-region>
@@ -479,21 +618,13 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
               <div
                 key={s.id}
                 className="line line--link"
-                data-editing={editing?.id === s.id || undefined}
                 onClick={(e) => {
                   if ((e.target as HTMLElement).closest('button, input')) return
                   onOpenPage(addressOf(s))
                 }}
               >
-                <Avatar name={s.name} />
-                {editing?.id === s.id ? (
-                  <span className="line__edit">
-                    <input className="input" autoFocus placeholder={t('contact.placeholder')} title={t('contact.hint')} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} onKeyDown={onKey(s)} />
-                    <input className="input input--about" placeholder={t('contact.about')} value={editing.about} onChange={(e) => setEditing({ ...editing, about: e.target.value })} onKeyDown={onKey(s)} />
-                    <button className="btn btn--primary btn--small" onClick={() => save(s)}>{t('action.save')}</button>
-                    <button className="btn btn--ghost btn--small" onClick={() => setEditing(null)}>{t('action.cancel')}</button>
-                  </span>
-                ) : (
+                <Avatar name={s.name} look={s.avatar} appName={s.app_name} />
+                {(
                   <>
                     <span className="line__who" title={s.id}>
                       <span className="line__name">
@@ -511,9 +642,12 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
                     </span>
                     <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
                     <span className="line__actions">
-                      <button className="btn btn--ghost btn--icon" title={s.contact && !s.provisional ? t('action.unname') : t('action.name')} onClick={() => setEditing({ id: s.id, name: s.contact ?? '', about: s.about ?? '' })}>{s.contact && !s.provisional ? '★' : '☆'}</button>
-                      <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(addressOf(s))}>✎</button>
-                      <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
+                      <button className="btn btn--ghost btn--small btn--with-icon" title={t('action.open')} onClick={() => open(addressOf(s))}>
+                        <Icon name="open" size={13} />
+                        {t('action.openShort')}
+                      </button>
+                      <button className="btn btn--ghost btn--icon" title={t('action.message')} onClick={() => onCompose(addressOf(s))}><Icon name="write" size={14} /></button>
+                      <button className="btn btn--ghost btn--icon" title={t('action.edit')} onClick={() => setEditing({ address: addressOf(s), name: s.app_name ?? s.name, contact: s.provisional ? null : s.contact, about: s.about, avatar: s.avatar })}><Icon name="edit" size={14} /></button>
                     </span>
                   </>
                 )}
@@ -524,6 +658,17 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
         {shown.length === 0 && <div className="empty">{results ? t('agents.noResults') : t('agents.empty')}</div>}
         {notice && <div className="notice" onClick={clear}>{notice}</div>}
       </div>
+      {editing && (
+        <ContactEditor
+          target={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(text) => {
+            say(text)
+            load()
+            if (results) search(query)
+          }}
+        />
+      )}
     </>
   )
 }
@@ -557,6 +702,7 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
   const [page, setPage] = useState<SessionPageData | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [showDispatches, setShowDispatches] = useState(false)
+  const [editing, setEditing] = useState<EditTarget | null>(null)
   const { open, notice, clear } = useOpen()
   const chatRef = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
@@ -590,7 +736,7 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
         <div className="spage">
           <div className="spage__head">
             <div className="who">
-              <Avatar name={s.name} size={40} />
+              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={40} />
               <div className="who__text">
                 <div className="who__line">
                   <span className="who__name">{s.contact && !s.provisional && <span className="line__star">★</span>}{s.name}</span>
@@ -604,7 +750,15 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
                   <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
                 </div>
               </div>
-              <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(addressOf(s))}>↗</button>
+              <span className="who__acts">
+                <button className="btn btn--small btn--with-icon" onClick={() => open(addressOf(s))}>
+                  <Icon name="open" size={13} />
+                  {t('action.open')}
+                </button>
+                <button className="btn btn--ghost btn--icon" title={t('action.edit')} onClick={() => setEditing({ address: addressOf(s), name: s.app_name ?? s.name, contact: s.provisional ? null : s.contact, about: s.about, avatar: s.avatar })}>
+                  <Icon name="edit" size={14} />
+                </button>
+              </span>
             </div>
             {page.dispatches.length > 0 && (
               <div className="spage__dispatches">
@@ -667,6 +821,7 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
           {notice && <div className="notice" onClick={clear}>{notice}</div>}
         </div>
       )}
+      {editing && <ContactEditor target={editing} onClose={() => setEditing(null)} onSaved={() => load()} />}
     </>
   )
 }
@@ -1190,11 +1345,10 @@ function Settings() {
 
 // ---- Shell ----
 
-const NAV: { key: Screen; label: 'nav.feed' | 'nav.agents' | 'nav.compose' | 'nav.settings'; icon: string }[] = [
-  { key: 'feed', label: 'nav.feed', icon: '▤' },
-  { key: 'agents', label: 'nav.agents', icon: '◉' },
-  { key: 'compose', label: 'nav.compose', icon: '✎' },
-  { key: 'settings', label: 'nav.settings', icon: '⚙' },
+const NAV: { key: Screen; label: 'nav.feed' | 'nav.agents' | 'nav.compose' | 'nav.settings'; icon: 'feed' | 'agents' | 'compose' | 'settings' }[] = [
+  { key: 'feed', label: 'nav.feed', icon: 'feed' },
+  { key: 'agents', label: 'nav.agents', icon: 'agents' },
+  { key: 'compose', label: 'nav.compose', icon: 'compose' },
 ]
 
 export function App() {
@@ -1238,7 +1392,8 @@ export function App() {
       try {
         const [s, f] = await Promise.all([api.sessions(true), api.feed(100)])
         setLive(s.sessions)
-        setQueued(f.dispatches.filter((d) => d.recipients.some((r) => r.kind === 'queued' || r.kind === 'failed')).length)
+        // only what waits on the user: a message held for review, or one held for approval
+        setQueued(f.dispatches.filter((d) => d.recipients.some((r) => r.kind === 'review' || r.kind === 'held')).length)
       } catch {
         /* the backend may not be up yet */
       }
@@ -1260,9 +1415,9 @@ export function App() {
         <div className="group" data-tauri-drag-region>
           {NAV.map((n) => (
             <button key={n.key} className="nav" data-active={screen === n.key || undefined} onClick={() => (n.key === 'compose' ? compose() : setScreen(n.key))}>
-              <span className="nav__icon">{n.icon}</span>
+              <span className="nav__icon"><Icon name={n.icon} size={17} /></span>
               <span className="nav__label">{t(n.label)}</span>
-              {n.key === 'feed' && queued > 0 && <span className="count">{queued}</span>}
+              {n.key === 'feed' && queued > 0 && <span className="count" title={t('nav.waiting', { n: queued })}>{queued}</span>}
             </button>
           ))}
         </div>
@@ -1270,8 +1425,8 @@ export function App() {
           <div className="section">{t('side.local')}</div>
           {live.filter((s) => !s.host).slice(0, 8).map((s) => (
             <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
-              <Avatar name={s.name} size={16} />
-              <span className="agent__name">{s.name}</span>
+              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={18} />
+              <span className="agent__name">{plain(s.name)}</span>
               <span className="presence" data-on={s.running || undefined} />
             </div>
           ))}
@@ -1281,13 +1436,19 @@ export function App() {
             <div className="section">{h.name}</div>
             {live.filter((s) => s.host?.id === h.id).slice(0, 5).map((s) => (
               <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
-                <Avatar name={s.name} size={16} />
-                <span className="agent__name">{s.name}</span>
+                <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={18} />
+                <span className="agent__name">{plain(s.name)}</span>
                 <span className="presence" data-on={s.running || undefined} />
               </div>
             ))}
           </div>
         ))}
+        <div className="side__foot">
+          <button className="nav" data-active={screen === 'settings' || undefined} onClick={() => setScreen('settings')}>
+            <span className="nav__icon"><Icon name="settings" size={17} /></span>
+            <span className="nav__label">{t('nav.settings')}</span>
+          </button>
+        </div>
       </nav>
       <main className="panel">
         {screen === 'feed' && <Feed onCompose={compose} pick={pick} />}

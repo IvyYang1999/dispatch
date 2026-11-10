@@ -22,6 +22,7 @@ fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Co
     let contact = contacts.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id);
     json!({
         "contact": contact.map(|c| c.name.clone()),
+        "avatar": contact.and_then(|c| c.avatar.clone()),
         "about": contact.and_then(|c| c.description.clone()),
         "provisional": contact.map(|c| c.provisional).unwrap_or(false),
         "id": s.id,
@@ -668,9 +669,9 @@ pub fn feed(store: &Store, limit: usize) -> Result<Value> {
 
 /// One side of a conversation: a session (here or on a paired machine), the person at the app or
 /// the command line (on any machine: one person), or a process that did not say who it is.
-fn party_of(id: &str, stored_name: &str, harness: Option<&str>, host: Option<(&str, &str)>, index: &std::collections::HashMap<String, Session>) -> (String, Value) {
+fn party_of(id: &str, stored_name: &str, harness: Option<&str>, host: Option<(&str, &str)>, index: &std::collections::HashMap<String, Session>, book: &[crate::contacts::Contact]) -> (String, Value) {
     if send::is_person(id) && id != "mcp" {
-        return ("you".into(), json!({ "key": "you", "id": id, "name": t("party.you"), "app_name": null, "harness": crate::model::Harness::Human.label(), "host_id": null, "host_name": null, "person": true, "address": null, "running": false, "status": null, "cwd_short": null }));
+        return ("you".into(), json!({ "key": "you", "id": id, "name": t("party.you"), "app_name": null, "harness": crate::model::Harness::Human.label(), "host_id": null, "host_name": null, "person": true, "address": null, "running": false, "status": null, "cwd_short": null, "avatar": null, "contact": null, "about": null }));
     }
     let host_id = host.map(|h| h.0).unwrap_or("");
     let key = format!("{host_id}|{}", id.to_lowercase());
@@ -678,6 +679,7 @@ fn party_of(id: &str, stored_name: &str, harness: Option<&str>, host: Option<(&s
     let name = s.map(|s| s.display_name()).unwrap_or_else(|| stored_name.to_string());
     let harness = s.map(|s| s.harness.label()).or_else(|| harness_label(harness));
     let address = if id == "mcp" { None } else { Some(match host { Some((h, _)) => format!("{h}/{id}"), None => id.to_string() }) };
+    let contact = book.iter().find(|c| c.session_id.eq_ignore_ascii_case(id) && c.host.as_ref().map(|h| h.id.as_str()) == host.map(|h| h.0));
     let v = json!({
         "key": key,
         "id": id,
@@ -691,6 +693,9 @@ fn party_of(id: &str, stored_name: &str, harness: Option<&str>, host: Option<(&s
         "running": s.map(|s| s.running).unwrap_or(false),
         "status": s.and_then(|s| s.status.clone()),
         "cwd_short": s.and_then(|s| s.cwd.as_deref().map(short_cwd)),
+        "avatar": contact.and_then(|c| c.avatar.clone()),
+        "contact": contact.filter(|c| !c.provisional).map(|c| c.name.clone()),
+        "about": contact.and_then(|c| c.description.clone()),
     });
     (key, v)
 }
@@ -730,6 +735,7 @@ pub fn threads(store: &Store, limit: usize) -> Result<Value> {
         let host = s.host.as_ref().map(|h| h.id.clone()).unwrap_or_default();
         index.insert(format!("{host}|{}", s.id.to_lowercase()), s);
     }
+    let book = crate::contacts::list();
     // a machine paired again under the same name is one machine: its old records join the new one
     let peers = crate::peer::peers().unwrap_or_default();
     let mut hosts: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
@@ -763,8 +769,8 @@ pub fn threads(store: &Store, limit: usize) -> Result<Value> {
     for l in &letters {
         let from_host = host_of(l.from_host.as_deref(), l.from_host_name.as_deref());
         let to_host = host_of(l.to_host.as_deref(), l.to_host_name.as_deref());
-        let (fk, fv) = party_of(&l.from, &l.from_name, l.from_harness.as_deref(), from_host.as_ref().map(|(i, n)| (i.as_str(), n.as_str())), &index);
-        let (tk, tv) = party_of(&l.to, &l.to_name, l.to_harness.as_deref(), to_host.as_ref().map(|(i, n)| (i.as_str(), n.as_str())), &index);
+        let (fk, fv) = party_of(&l.from, &l.from_name, l.from_harness.as_deref(), from_host.as_ref().map(|(i, n)| (i.as_str(), n.as_str())), &index, &book);
+        let (tk, tv) = party_of(&l.to, &l.to_name, l.to_harness.as_deref(), to_host.as_ref().map(|(i, n)| (i.as_str(), n.as_str())), &index, &book);
         let key = if fk <= tk { format!("{fk}\u{1f}{tk}") } else { format!("{tk}\u{1f}{fk}") };
         let th = threads.entry(key.clone()).or_insert_with(|| {
             order.push(key.clone());

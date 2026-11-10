@@ -4,9 +4,11 @@
 // happen when the message goes, and the message itself, so a wrong pick shows.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
+import { LogicalSize } from '@tauri-apps/api/dpi'
 import { api, type ReviewInfo } from './api'
 import { loadLang, t, useLang, type Key } from './i18n'
-import { Avatar, Clamp, HarnessMark, loadIcons, localStamp, presence } from './App'
+import { Avatar, Clamp, HarnessMark, Icon, loadIcons, localStamp, plain, presence } from './App'
 
 function modeText(mode: string | null | undefined, running: boolean): string {
   if (!running) return t('review.notRunning')
@@ -57,6 +59,11 @@ export function Review() {
   const [err, setErr] = useState<string | null>(null)
   const current = useRef<string | null>(null)
   const closing = useRef<number | null>(null)
+  const [always, setAlways] = useState(false)
+  const [note, setNote] = useState<string | null>(null)
+  const bar = useRef<HTMLDivElement>(null)
+  const body = useRef<HTMLDivElement>(null)
+  const foot = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
     try {
@@ -101,6 +108,31 @@ export function Review() {
     }
   }, [load])
 
+  // the window is as tall as what it shows, within the screen
+  useEffect(() => {
+    if (!info) return
+    const fit = () => {
+      const content = (bar.current?.offsetHeight ?? 0) + (body.current?.scrollHeight ?? 0) + (foot.current?.offsetHeight ?? 0)
+      const most = Math.max(420, (window.screen?.availHeight ?? 900) - 120)
+      const h = Math.min(most, Math.max(360, Math.ceil(content)))
+      getCurrentWindow()
+        .setSize(new LogicalSize(window.innerWidth || 480, h))
+        .catch(() => {})
+    }
+    const raf = requestAnimationFrame(fit)
+    return () => cancelAnimationFrame(raf)
+  }, [info, done])
+
+  const openIt = async () => {
+    if (!info) return
+    try {
+      const r = await api.openSession(info.to_host ? `${info.to_host}/${info.to}` : info.to)
+      setNote(r.kind === 'command' ? `${r.note ?? ''}: ${r.command}` : r.note ?? null)
+    } catch (e) {
+      setNote(String(e))
+    }
+  }
+
   const decide = async (decision: 'send' | 'trust' | 'decline') => {
     if (!info) return
     setBusy(true)
@@ -130,28 +162,34 @@ export function Review() {
 
   return (
     <div className="review">
-      <div className="review__bar" data-tauri-drag-region>
+      <div className="review__bar" data-tauri-drag-region ref={bar}>
         <span className="review__title" data-tauri-drag-region>{t('review.title')}</span>
         {ids.length > 1 && <span className="review__more">{t('review.waiting', { n: ids.length - 1 })}</span>}
       </div>
       {!info && !err && <div className="empty">{t('review.none')}</div>}
       {err && <div className="notice">{err}</div>}
       {info && (
-        <div className="review__body">
+        <div className="review__body" ref={body}>
           <div className="review__who">
             <div className="review__party">
-              <Avatar name={info.from_name} size={26} />
+              <Avatar name={info.from_name} look={info.from_avatar} size={30} />
               <div className="review__names">
-                <span className="review__name">{info.from_name} <HarnessMark harness={harnessLabel(info.from_harness)} /></span>
+                <span className="review__name">{plain(info.from_name)} <HarnessMark harness={harnessLabel(info.from_harness)} /></span>
                 <span className="review__sub">{t('review.wantsTo')}</span>
               </div>
             </div>
             <div className="review__arrow">→</div>
             <div className="review__party">
-              <Avatar name={shown} size={26} />
+              <Avatar name={shown} look={s?.avatar} appName={s?.app_name} size={30} />
               <div className="review__names">
-                <span className="review__name">{shown} <HarnessMark harness={s?.harness ?? harnessLabel(info.to_harness)} /></span>
-                <span className="review__sub">{where}</span>
+                <span className="review__name">{plain(shown)} <HarnessMark harness={s?.harness ?? harnessLabel(info.to_harness)} /></span>
+                <span className="review__sub">
+                  {where}
+                  <button className="review__open" title={t('review.open')} onClick={openIt}>
+                    {t('review.open')}
+                    <Icon name="open" size={11} />
+                  </button>
+                </span>
               </div>
             </div>
           </div>
@@ -197,21 +235,22 @@ export function Review() {
           <div className="review__msg">
             <Clamp text={info.body} />
           </div>
-
+          {!done && <div className="review__deadline">{t('review.deadline', { t: info.deadline.slice(5) })}</div>}
+          {note && <div className="notice" onClick={() => setNote(null)}>{note}</div>}
         </div>
       )}
       {info && (
-        <div className="review__foot">
+        <div className="review__foot" ref={foot}>
           {done ? (
             <div className="review__done">{done}</div>
           ) : (
             <>
-              <div className="review__deadline">{t('review.deadline', { t: info.deadline.slice(5) })}</div>
-              <div className="review__acts">
-                <button className="btn btn--ghost" disabled={busy || !info.waiting} onClick={() => decide('decline')}>{t('review.decline')}</button>
-                <button className="btn btn--ghost" disabled={busy || !info.waiting} onClick={() => decide('trust')}>{t('review.trust')}</button>
-                <button className="btn btn--primary" disabled={busy || !info.waiting} onClick={() => decide('send')}>{t('review.send')}</button>
-              </div>
+              <label className="review__always">
+                <input type="checkbox" checked={always} disabled={busy || !info.waiting} onChange={(e) => setAlways(e.target.checked)} />
+                <span>{t('review.trustBox')}</span>
+              </label>
+              <button className="btn" disabled={busy || !info.waiting} onClick={() => decide('decline')}>{t('review.decline')}</button>
+              <button className="btn btn--primary" disabled={busy || !info.waiting} onClick={() => decide(always ? 'trust' : 'send')}>{t('review.send')}</button>
             </>
           )}
         </div>

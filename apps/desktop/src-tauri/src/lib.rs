@@ -293,8 +293,15 @@ fn start_listener() {
 
 /// Name a session in the address book (`session`: id or `machine/id`), with a line on its role.
 #[tauri::command]
-async fn contact_set(name: String, session: String, about: Option<String>) -> Result<Value, String> {
-    blocking(move || ops::register(&name, Some(&session), "app", about.as_deref()).map_err(err)).await
+async fn contact_set(name: String, session: String, about: Option<String>, avatar: Option<dispatch_core::contacts::Look>) -> Result<Value, String> {
+    blocking(move || {
+        let v = ops::register(&name, Some(&session), "app", about.as_deref()).map_err(err)?;
+        if let Some(look) = avatar {
+            dispatch_core::contacts::set_avatar(v["name"].as_str().unwrap_or(&name), look).map_err(err)?;
+        }
+        Ok(v)
+    })
+    .await
 }
 
 /// One session's page: identity, the dispatches it took part in, its last turns.

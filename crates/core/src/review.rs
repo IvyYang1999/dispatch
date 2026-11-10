@@ -269,9 +269,14 @@ pub fn expire(store: &Store, l: &mut store::Letter, now: chrono::NaiveDateTime) 
 /// it stands now (running or not, mode, client, how it would get it) and its last few rounds.
 /// The last thing the person typed to a session (not a message Dispatch handed over), else the
 /// last message it got at all: the line that tells which session this is.
+/// Something the person (or Dispatch) put to the session. Claude Code opens a compacted
+/// conversation with a summary in the person's place: that is not a question.
+fn is_question(t: &crate::transcript::Turn) -> bool {
+    t.role == "user" && !t.text.trim().is_empty() && !t.text.starts_with("This session is being continued from a previous conversation")
+}
+
 fn last_query(turns: &[crate::transcript::Turn]) -> Option<crate::transcript::Turn> {
-    // Claude Code opens a compacted conversation with a summary in the person's place: not a question
-    let asked = |t: &&crate::transcript::Turn| t.role == "user" && !t.text.trim().is_empty() && !t.text.starts_with("This session is being continued from a previous conversation");
+    let asked = |t: &&crate::transcript::Turn| is_question(t);
     let mut q = turns.iter().rev().filter(asked).find(|t| !t.via_dispatch).or_else(|| turns.iter().rev().find(asked)).cloned()?;
     if q.via_dispatch {
         q.text = envelope_body(&q.text);
@@ -298,15 +303,17 @@ pub fn info(store: &Store, letter_id: &str) -> Result<Value> {
     let session = target.as_ref().map(crate::ops::session_json).unwrap_or(Value::Null);
     let (turns, readable) = match &target {
         Some(s) => match &s.host {
-            Some(h) => match crate::peer::transcript(h, &s.id, 60) {
+            Some(h) => match crate::peer::transcript(h, &s.id, 120) {
                 Ok(t) => (t, true),
                 Err(_) => (vec![], false),
             },
-            None => (crate::transcript::recent(s, 60), s.transcript.is_some()),
+            None => (crate::transcript::recent(s, 200), s.transcript.is_some()),
         },
         None => (vec![], false),
     };
-    let last_query = last_query(&turns);
+    // here, look as far back as the person's last question; elsewhere, what that machine sent
+    let local_question = target.as_ref().filter(|s| s.host.is_none()).and_then(|s| crate::transcript::last_matching(s, |t| is_question(t) && !t.via_dispatch));
+    let last_query = local_question.or_else(|| last_query(&turns));
     let runs = store.runs(&l.id);
     Ok(json!({
         "letter_id": l.id,
@@ -317,6 +324,7 @@ pub fn info(store: &Store, letter_id: &str) -> Result<Value> {
         "from": l.from,
         "from_name": l.from_name,
         "from_harness": l.from_harness,
+        "from_avatar": crate::contacts::for_session(&l.from, None).and_then(|c| c.avatar),
         "to": l.to,
         "to_name": l.to_name,
         "to_harness": l.to_harness,

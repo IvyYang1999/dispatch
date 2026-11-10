@@ -35,6 +35,46 @@ pub struct Contact {
     /// Named automatically from a search; shown apart, never replaces a confirmed name.
     #[serde(default)]
     pub provisional: bool,
+    /// How the user wants it pictured: an emoji and a color, instead of an initial on a color
+    /// picked from its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<Look>,
+}
+
+/// A picture for a session: an emoji, a background color (`#rrggbb`), or both.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Look {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+}
+
+impl Look {
+    /// Trimmed and checked: a short emoji (a few code points), a `#rrggbb` color; None when empty.
+    fn clean(self) -> Result<Option<Look>> {
+        let emoji = self.emoji.map(|e| e.trim().to_string()).filter(|e| !e.is_empty());
+        if emoji.as_ref().is_some_and(|e| e.chars().count() > 12) {
+            bail!("the picture is longer than one emoji");
+        }
+        let color = self.color.map(|c| c.trim().to_lowercase()).filter(|c| !c.is_empty());
+        if color.as_ref().is_some_and(|c| c.len() != 7 || !c.starts_with('#') || !c[1..].chars().all(|x| x.is_ascii_hexdigit())) {
+            bail!("a color is written #rrggbb");
+        }
+        Ok((emoji.is_some() || color.is_some()).then_some(Look { emoji, color }))
+    }
+}
+
+/// Give a named session a picture (or take it away with an empty one).
+pub fn set_avatar(name: &str, look: Look) -> Result<Contact> {
+    let look = look.clean()?;
+    let mut all = list();
+    let Some(c) = all.iter_mut().find(|c| c.name.eq_ignore_ascii_case(name.trim())) else { bail!("no contact named {name}") };
+    c.avatar = look;
+    c.updated = crate::store::now_text();
+    let out = c.clone();
+    save(&all)?;
+    Ok(out)
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -95,7 +135,8 @@ pub fn set(name: &str, s: &Session, by: &str, description: Option<&str>, provisi
     }
     let previous = all.iter().find(|x| same_session(x)).cloned();
     let description = description.map(|d| d.trim().chars().take(200).collect::<String>()).filter(|d| !d.is_empty()).or_else(|| previous.as_ref().and_then(|p| p.description.clone()));
-    let c = Contact { name: name.to_string(), session_id: s.id.to_lowercase(), harness: s.harness, host: s.host.clone(), cwd: s.cwd.clone(), set_by: by.to_string(), updated: crate::store::now_text(), description, provisional };
+    let avatar = previous.as_ref().and_then(|p| p.avatar.clone());
+    let c = Contact { name: name.to_string(), session_id: s.id.to_lowercase(), harness: s.harness, host: s.host.clone(), cwd: s.cwd.clone(), set_by: by.to_string(), updated: crate::store::now_text(), description, provisional, avatar };
     all.retain(|x| !x.name.eq_ignore_ascii_case(name) && !same_session(x));
     all.push(c.clone());
     save(&all)?;
@@ -238,6 +279,24 @@ mod tests {
         apply_local(&mut l);
         assert_eq!(l.iter().find(|s| s.id == b).unwrap().name.as_deref(), Some("🪞 Transparent"));
         assert_eq!(l.iter().find(|s| s.id == a).unwrap().name.as_deref(), Some("Release"));
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_picture_is_checked_and_survives_a_rename() {
+        let dir = std::env::temp_dir().join(format!("dispatch-contacts-look-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let a = "33333333-aaaa-4bbb-8ccc-dddddddddddd";
+        set("Mirror", &session(a, None), "app", None, false).unwrap();
+        assert!(set_avatar("Mirror", Look { emoji: None, color: Some("red".into()) }).is_err(), "a color is #rrggbb");
+        assert!(set_avatar("Mirror", Look { emoji: Some("🪞🪞🪞🪞🪞🪞🪞🪞🪞🪞🪞🪞🪞".into()), color: None }).is_err(), "one emoji, not a sentence");
+        set_avatar("Mirror", Look { emoji: Some(" 🪞 ".into()), color: Some("#0090FF".into()) }).unwrap();
+        set("Mirror 2", &session(a, None), "app", None, false).unwrap();
+        let c = find("Mirror 2").unwrap();
+        assert_eq!(c.avatar, Some(Look { emoji: Some("🪞".into()), color: Some("#0090ff".into()) }), "renaming keeps the picture");
+        set_avatar("Mirror 2", Look::default()).unwrap();
+        assert_eq!(find("Mirror 2").unwrap().avatar, None, "an empty picture takes it away");
         crate::store::set_thread_root(None);
         let _ = std::fs::remove_dir_all(dir);
     }

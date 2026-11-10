@@ -1,6 +1,11 @@
 import { invoke } from '@tauri-apps/api/core'
 
 export type ReachLevel = 'now' | 'later' | 'none'
+/** How the user wants a session pictured: an emoji and/or a `#rrggbb` color. */
+export interface Look {
+  emoji?: string | null
+  color?: string | null
+}
 export interface Reach {
   level: ReachLevel
   text: string
@@ -38,6 +43,8 @@ export interface Session {
   contact?: string | null
   /** One line on what it is for, from the address book. */
   about?: string | null
+  /** The picture the user chose for it, from the address book. */
+  avatar?: Look | null
   /** The name came from a search, not a person; shown apart until confirmed. */
   provisional?: boolean
   reach: Reach
@@ -137,6 +144,10 @@ export interface Party {
   running: boolean
   status: string | null
   cwd_short: string | null
+  avatar: Look | null
+  /** Its name in the address book, when the user gave it one. */
+  contact: string | null
+  about: string | null
 }
 /** One message in a conversation: a stored copy with the side that wrote it. */
 export interface ThreadMessage extends Copy {
@@ -184,6 +195,7 @@ export interface ReviewInfo {
   from: string
   from_name: string
   from_harness: string | null
+  from_avatar?: Look | null
   to: string
   to_name: string
   to_harness: string | null
@@ -285,7 +297,7 @@ export const api = {
   setPeerInternet: (on: boolean) => invoke<boolean>('set_peer_internet', { on }),
   setPeerRelay: (url: string | null) => invoke<{ relay: string | null }>('set_peer_relay', { url }),
   peerRemove: (name: string) => invoke<boolean>('peer_remove', { name }),
-  contactSet: (name: string, session: string, about: string | null) => invoke<{ name: string; address: string; text: string }>('contact_set', { name, session, about }),
+  contactSet: (name: string, session: string, about: string | null, avatar?: Look) => invoke<{ name: string; address: string; text: string }>('contact_set', { name, session, about, avatar: avatar ?? null }),
   searchSessions: (query: string) => invoke<{ sessions: Session[] }>('search_sessions', { query }),
   sessionPage: (id: string) => invoke<SessionPageData>('session_page', { id }),
   harnessIcons: () => invoke<Record<string, string>>('harness_icons'),

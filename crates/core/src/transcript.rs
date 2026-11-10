@@ -75,6 +75,23 @@ pub fn recent(s: &Session, limit: usize) -> Vec<Turn> {
     parse(&tail, s.harness, limit)
 }
 
+/// The newest turn that `keep` accepts, reading further back than `recent` when a long run of
+/// the session's own work follows it (a busy session writes megabytes between two prompts).
+pub fn last_matching(s: &Session, keep: impl Fn(&Turn) -> bool) -> Option<Turn> {
+    let path = std::path::Path::new(s.transcript.as_deref()?);
+    let size = std::fs::metadata(path).ok()?.len();
+    for bytes in [TAIL_BYTES, 8 * 1024 * 1024, 32 * 1024 * 1024] {
+        let tail = crate::claude::read_tail(path, bytes).ok()?;
+        if let Some(t) = parse(&tail, s.harness, usize::MAX).into_iter().rev().find(|t| keep(t)) {
+            return Some(t);
+        }
+        if bytes >= size {
+            break;
+        }
+    }
+    None
+}
+
 pub fn parse(text: &str, harness: Harness, limit: usize) -> Vec<Turn> {
     let mut turns: Vec<Turn> = vec![];
     for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
