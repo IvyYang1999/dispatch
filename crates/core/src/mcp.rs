@@ -22,7 +22,7 @@ fn tools() -> Value {
     json!([
         {
             "name": "dispatch_whoami",
-            "description": "Your own Dispatch address: the Claude Code session this server was started by (id, name, cwd) and the machine it runs on. Call it once at the start, and use the id (or address_elsewhere, for an agent on another machine) when another agent asks who you are.",
+            "description": "Your own Dispatch address: the Claude Code session or Codex thread calling (id, name, cwd) and the machine it runs on. Call it once at the start, and use the id (or address_elsewhere, for an agent on another machine) when another agent asks who you are.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         },
         {
@@ -145,6 +145,8 @@ pub fn serve(store: &Store) {
             "tools/call" => {
                 let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
+                // Codex names the thread making the call; without it the caller is found by process
+                ops::set_mcp_thread(params.pointer("/_meta/threadId").and_then(|v| v.as_str()).map(str::to_string));
                 match call(store, name, &args) {
                     Ok(v) => respond(&mut out, &id, json!({ "content": [{ "type": "text", "text": serde_json::to_string_pretty(&v).unwrap_or_default() }], "structuredContent": v, "isError": false })),
                     Err(e) => respond(&mut out, &id, json!({ "content": [{ "type": "text", "text": e }], "isError": true })),

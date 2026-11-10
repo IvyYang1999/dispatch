@@ -1,6 +1,7 @@
 // The review window: one message a session wants to send, held until the user says send.
-// It shows who writes to whom, how the recipient runs right now, what will happen when it
-// goes, the message itself, and the recipient's last few rounds, so a wrong pick shows.
+// It shows who writes to whom and enough to recognize the recipient (its name in its own app,
+// its project, when it was last active, the last thing you asked it), how it runs, what will
+// happen when the message goes, and the message itself, so a wrong pick shows.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { api, type ReviewInfo } from './api'
@@ -22,6 +23,23 @@ function clientText(client: string | null | undefined, desktop: boolean, harness
   const key = `client.${c}` as Key
   const text = t(key)
   return text === key ? c : text
+}
+
+/** `3 分钟前`: how long ago, from Unix milliseconds. */
+export function ago(ms: number): string {
+  const m = Math.floor((Date.now() - ms) / 60000)
+  if (m < 1) return t('ago.now')
+  if (m < 60) return t('ago.min', { n: m })
+  const h = Math.floor(m / 60)
+  if (h < 24) return t('ago.hour', { n: h })
+  return t('ago.day', { n: Math.floor(h / 24) })
+}
+
+/** The last folder of a path: what the Claude app files a session under. */
+function folder(cwd: string | null | undefined): string | null {
+  if (!cwd) return null
+  const parts = cwd.split('/').filter(Boolean)
+  return parts[parts.length - 1] ?? null
 }
 
 /** The stored harness code as the label HarnessMark knows. */
@@ -104,6 +122,11 @@ export function Review() {
   const running = s?.running ?? false
   const where = info?.to_host_name ?? t('side.local')
   const level = s?.reach.level ?? 'later'
+  const shown = s?.name ?? info?.to_name ?? ''
+  const appName = s?.app_name && s.app_name !== shown ? s.app_name : null
+  const project = s?.project ?? folder(s?.cwd)
+  const runs = s ? (running ? [clientText(s.reach.client, s.desktop, s.harness, running), modeText(s.reach.mode, running)].filter((x) => x !== t('review.unknown')).join(' · ') || t('review.unknown') : t('review.notRunning')) : t('review.unknown')
+  const q = info?.last_query ?? null
 
   return (
     <div className="review">
@@ -125,22 +148,47 @@ export function Review() {
             </div>
             <div className="review__arrow">→</div>
             <div className="review__party">
-              <Avatar name={s?.name ?? info.to_name} size={26} />
+              <Avatar name={shown} size={26} />
               <div className="review__names">
-                <span className="review__name">{s?.name ?? info.to_name} <HarnessMark harness={s?.harness ?? null} /></span>
-                <span className="review__sub">{where}{s?.cwd_short ? ` · ${s.cwd_short}` : ''}</span>
+                <span className="review__name">{shown} <HarnessMark harness={s?.harness ?? harnessLabel(info.to_harness)} /></span>
+                <span className="review__sub">{where}</span>
               </div>
             </div>
           </div>
           {info.first_time && <div className="review__first">{t('review.firstTime')}</div>}
 
           <dl className="review__facts">
-            <dt>{t('review.state')}</dt>
-            <dd>{s ? presence(s) : t('review.unknown')}</dd>
-            <dt>{t('review.mode')}</dt>
-            <dd>{s ? modeText(s.reach.mode, running) : t('review.unknown')}</dd>
-            <dt>{t('review.client')}</dt>
-            <dd>{s ? clientText(s.reach.client, s.desktop, s.harness, running) : t('review.unknown')}</dd>
+            {appName && (
+              <>
+                <dt>{t('review.inApp', { app: s?.harness ?? '' })}</dt>
+                <dd>{appName}</dd>
+              </>
+            )}
+            {project && (
+              <>
+                <dt>{t('review.project')}</dt>
+                <dd className="review__one" title={s?.cwd ?? ''}>
+                  {project}
+                  {s?.cwd_short && <span className="review__dim"> · {s.cwd_short.endsWith(`/${project}`) ? s.cwd_short.slice(0, -project.length - 1) : s.cwd_short}</span>}
+                </dd>
+              </>
+            )}
+            <dt>{t('review.active')}</dt>
+            <dd>{s ? (s.last_active ? `${ago(s.last_active)} · ${presence(s)}` : presence(s)) : t('review.unknown')}</dd>
+            {q && (
+              <>
+                <dt>{t('review.lastQuery')}</dt>
+                <dd className="review__query">
+                  <span className="review__clamp">{q.text}</span>
+                  <span className="review__dim">
+                    {localStamp(q.at)}
+                    {q.via_dispatch ? ` · ${t('review.viaDispatch', { n: q.from_agent ?? '' })}` : ''}
+                  </span>
+                </dd>
+              </>
+            )}
+            <dt>{t('review.runs')}</dt>
+            <dd>{runs}</dd>
             <dt>{t('review.after')}</dt>
             <dd className="review__reach" data-reach={level}>{s?.reach.text ?? t('review.unknown')}</dd>
           </dl>
@@ -150,26 +198,6 @@ export function Review() {
             <Clamp text={info.body} />
           </div>
 
-          <div className="section-title">{t('review.recent')}</div>
-          <div className="review__recent">
-            {!info.transcript_available && <p className="msg__text msg__text--faint">{t('session.noTranscript')}</p>}
-            {info.transcript_available && info.rounds.length === 0 && <p className="msg__text msg__text--faint">{t('session.emptyTranscript')}</p>}
-            {info.rounds.map((r, i) => (
-              <div key={i} className="review__round">
-                {r.user && (
-                  <div className="review__turn review__turn--user">
-                    <span className="review__when">{localStamp(r.user.at)}{r.user.via_dispatch ? ` · 📨 ${r.user.from_agent ?? ''}` : ''}</span>
-                    <p className="review__line">{r.user.text}</p>
-                  </div>
-                )}
-                {r.replies.length > 0 && (
-                  <div className="review__turn">
-                    <p className="review__line review__line--reply">{r.replies.map((x) => x.text).join(' ')}</p>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
         </div>
       )}
       {info && (

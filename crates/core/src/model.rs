@@ -56,6 +56,10 @@ pub struct Session {
     /// The project it is filed under in its app (a Codex Desktop project), for searches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
+    /// The name its own app shows (the Claude app's session name, the Codex sidebar title) when
+    /// an address-book name took `name`'s place; None when `name` is still the app's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_name: Option<String>,
 }
 
 impl Session {

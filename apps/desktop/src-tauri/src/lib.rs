@@ -65,6 +65,13 @@ async fn find(query: String) -> Result<Value, String> {
 }
 
 /// The feed: the watcher's copy when it is fresh, else read now.
+/// The conversations, one per pair who wrote to each other (see `ops::threads`).
+#[tauri::command]
+async fn threads(limit: Option<usize>) -> Result<Value, String> {
+    let limit = limit.unwrap_or(200);
+    blocking(move || ops::threads(&Store::open(), limit).map_err(err)).await
+}
+
 #[tauri::command]
 async fn feed(app: AppHandle, limit: Option<usize>) -> Result<Value, String> {
     let limit = limit.unwrap_or(200);
@@ -668,8 +675,8 @@ fn show_review(app: &AppHandle, focus: bool) {
     }
     let builder = tauri::WebviewWindowBuilder::new(app, REVIEW_WINDOW, tauri::WebviewUrl::App("index.html#review".into()))
         .title(t("review.window_title"))
-        .inner_size(480.0, 660.0)
-        .min_inner_size(400.0, 480.0)
+        .inner_size(480.0, 600.0)
+        .min_inner_size(400.0, 440.0)
         .center()
         .always_on_top(true)
         .visible_on_all_workspaces(true)
@@ -835,7 +842,7 @@ pub fn run() {
         .manage(Reviews::default())
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
-            sessions, find, feed, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
+            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget
         ])

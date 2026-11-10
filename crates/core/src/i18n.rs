@@ -100,7 +100,7 @@ pub fn status_label(status: &str) -> &'static str {
     }
 }
 
-fn pair(key: &str) -> (&'static str, &'static str) {
+pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
     match key {
         // how a message would reach a session
         "reach.off_later" => ("没开着，下次打开它时会看到", "Not running; when next opened"),
@@ -301,6 +301,7 @@ fn pair(key: &str) -> (&'static str, &'static str) {
         "cli.grok_error" => ("网关：{e}", "gateway: {e}"),
         "harness.human" => ("人", "Human"),
         "me" => ("我", "me"),
+        "party.you" => ("你", "You"),
 
         // the command line
         "cli.codex_cmd" => ("codex 命令：{v}", "codex command: {v}"),

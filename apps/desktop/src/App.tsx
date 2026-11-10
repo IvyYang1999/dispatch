@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { api, type Copy, type Dispatch, type Kind, type OpenResult, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type UpdateCheck } from './api'
+import { api, type Kind, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
 type Screen = 'feed' | 'agents' | 'compose' | 'settings' | 'session'
@@ -34,13 +34,6 @@ function Badge({ kind, text }: { kind: Kind; text?: string }) {
       {text ?? kindText(kind)}
     </span>
   )
-}
-
-function summary(rs: Copy[]): string {
-  const replied = rs.filter((r) => r.kind === 'replied').length
-  if (rs.length === 1) return rs[0].stage
-  if (replied === rs.length) return t('summary.all')
-  return t('summary.some', { n: replied, m: rs.length })
 }
 
 /** `machine/id` for a session elsewhere, so the backend looks there; the id alone here. */
@@ -159,25 +152,83 @@ function FirstRun() {
   )
 }
 
+/** `13:25` today, `11-08 16:30` before: a time on this machine's clock. */
+function when(at: string): string {
+  const n = new Date()
+  const today = `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
+  return at.startsWith(today) ? at.slice(11, 16) : at.slice(5, 16)
+}
+
+function firstLine(text: string): string {
+  return text.split('\n').find((l) => l.trim()) ?? ''
+}
+
+/** Under a party's name: its machine, then its name in its own app when the address book
+ *  renamed it, else its folder. */
+function partySub(p: Party): string {
+  const bits = [p.host_name ?? t('side.local')]
+  if (p.app_name && p.app_name !== p.name) bits.push(p.app_name)
+  else if (p.cwd_short) bits.push(p.cwd_short)
+  return bits.join(' · ')
+}
+
+/** One side of a conversation, as the review window shows it: avatar, name, client, where. */
+function PartyCard({ p, onCompose, onOpen }: { p: Party; onCompose: (to: string) => void; onOpen: (address: string) => void }) {
+  return (
+    <div className="party">
+      <Avatar name={p.name} size={28} />
+      <div className="party__names">
+        <span className="party__name">
+          <span className="party__label">{p.name}</span>
+          <HarnessMark harness={p.harness} />
+        </span>
+        {!p.person && <span className="party__sub" title={partySub(p)}>{partySub(p)}</span>}
+      </div>
+      {p.address && (
+        <span className="party__acts">
+          <button className="btn btn--ghost btn--icon" title={t('thread.write')} onClick={() => onCompose(p.address!)}>✎</button>
+          <button className="btn btn--ghost btn--icon" title={t('thread.open')} onClick={() => onOpen(p.address!)}>↗</button>
+        </span>
+      )}
+    </div>
+  )
+}
+
+type Filter = 'all' | 'queued' | 'failed'
+const passes = (th: Thread, f: Filter) => f === 'all' || (f === 'failed' ? th.attention === 'failed' : th.attention === 'queued' || th.attention === 'review' || th.attention === 'held')
+
+// The feed: one row per pair who wrote to each other, both as equals; the conversation between
+// them on the right, oldest first, each message with where it stands.
 function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: string | null }) {
   const lang = useLang()
-  const [items, setItems] = useState<Dispatch[]>([])
+  const [items, setItems] = useState<Thread[]>([])
   const [selected, setSelected] = useState<string | null>(null)
-  const [filter, setFilter] = useState<'all' | 'queued' | 'failed'>('all')
+  const [picked, setPicked] = useState<string | null>(null)
+  const [filter, setFilter] = useState<Filter>('all')
   const [err, setErr] = useState<string | null>(null)
   const { open, notice, clear } = useOpen()
-  // picked in the menu bar: show it whatever the filter
+  const scroller = useRef<HTMLDivElement>(null)
+  const pinned = useRef(true)
+  // picked in the menu bar (a dispatch): show the conversation it is in, whatever the filter
   useEffect(() => {
     if (pick) {
-      setSelected(pick)
+      setPicked(pick)
       setFilter('all')
     }
   }, [pick])
+  useEffect(() => {
+    if (!picked) return
+    const th = items.find((x) => x.messages.some((m) => m.dispatch_id === picked))
+    if (th) {
+      setSelected(th.key)
+      setPicked(null)
+    }
+  }, [picked, items])
 
   const load = useCallback(async () => {
     try {
-      const r = await api.feed()
-      setItems(r.dispatches)
+      const r = await api.threads()
+      setItems(r.threads)
       setErr(null)
     } catch (e) {
       setErr(String(e))
@@ -193,25 +244,23 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
     }
   }, [load])
 
-  const shown = useMemo(() => {
-    const pass = (d: Dispatch) => filter === 'all' || d.recipients.some((r) => r.kind === filter)
-    const list = items.filter(pass)
-    // queued and failed first: that is what a person comes to see
-    const weight = (d: Dispatch) => (d.recipients.some((r) => r.kind === 'failed') ? 0 : d.recipients.some((r) => r.kind === 'queued') ? 1 : 2)
-    return [...list].sort((a, b) => weight(a) - weight(b) || b.created.localeCompare(a.created))
-  }, [items, filter])
-  const counts = useMemo(
-    () => ({ queued: items.filter((d) => d.recipients.some((r) => r.kind === 'queued')).length, failed: items.filter((d) => d.recipients.some((r) => r.kind === 'failed')).length }),
-    [items],
-  )
-  const current = shown.find((d) => d.dispatch_id === selected) ?? shown[0] ?? null
-  const act = async (f: () => Promise<{ text: string }>) => {
+  const shown = useMemo(() => items.filter((th) => passes(th, filter)), [items, filter])
+  const counts = useMemo(() => ({ queued: items.filter((th) => passes(th, 'queued')).length, failed: items.filter((th) => passes(th, 'failed')).length }), [items])
+  const current = shown.find((th) => th.key === selected) ?? shown[0] ?? null
+
+  // a conversation opens at its newest message, and stays there as new ones come in
+  useEffect(() => {
+    pinned.current = true
+  }, [current?.key])
+  useEffect(() => {
+    const el = scroller.current
+    if (el && pinned.current) el.scrollTop = el.scrollHeight
+  }, [current?.key, current?.messages.length])
+
+  const act = async (f: () => Promise<unknown>) => {
     try {
-      const r = await f()
+      await f()
       setErr(null)
-      if (r.text) {
-        /* the feed shows the outcome */
-      }
     } catch (e) {
       setErr(String(e))
     }
@@ -231,100 +280,103 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
         <button className="btn btn--primary" onClick={() => onCompose()}>{t('feed.send')}</button>
       </header>
       <div className="split">
-        <div className="list">
+        <div className="list tlist">
           <FirstRun />
           {err && <div className="empty">{err}</div>}
           {!err && shown.length === 0 && <div className="empty">{t('feed.empty')}</div>}
-          {shown.map((d) => (
-            <div key={d.dispatch_id} className="row" data-selected={current?.dispatch_id === d.dispatch_id || undefined} onClick={() => setSelected(d.dispatch_id)}>
-              <Avatar name={d.from_name} />
-              <div className="row__main">
-                <div className="row__line">
-                  <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
-                  <HarnessMark harness={d.from_harness} />
-                  <span className="row__text">{d.text}</span>
-                  <span className="row__time">{d.created.slice(11)}</span>
-                </div>
-                <div className="row__rcpts">
-                  {d.recipients.map((r) => (
-                    <span key={r.letter_id} className="chip" data-kind={r.kind} title={r.to_harness ?? ''}>
-                      <span className="chip__dot" />
-                      {r.to_host_name && <span className="chip__host">{r.to_host_name}/</span>}
-                      {r.to_name}
+          {shown.map((th) => {
+            const speaker = th.last.side === 'a' ? th.a : th.b
+            return (
+              <div key={th.key} className="row trow" data-selected={current?.key === th.key || undefined} onClick={() => setSelected(th.key)}>
+                <span className="pair">
+                  <Avatar name={th.a.name} size={22} />
+                  <Avatar name={th.b.name} size={22} />
+                </span>
+                <div className="row__main">
+                  <div className="row__line">
+                    <span className="trow__names">
+                      <span className="trow__name" title={th.a.host_name ?? ''}>{th.a.name}</span>
+                      <HarnessMark harness={th.a.harness} size={12} />
+                      <span className="trow__sep">⇄</span>
+                      <span className="trow__name" title={th.b.host_name ?? ''}>{th.b.name}</span>
+                      <HarnessMark harness={th.b.harness} size={12} />
                     </span>
-                  ))}
-                  {d.recipients.length <= 2 && <span className="row__sum">{summary(d.recipients)}</span>}
+                  </div>
+                  <div className="row__line">
+                    <span className="row__text trow__last">
+                      <span className="trow__speaker">{speaker.name}：</span>
+                      {firstLine(th.last.body)}
+                    </span>
+                    {th.attention && <Badge kind={th.attention} />}
+                    <span className="row__time">{when(th.last_at)}</span>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
-        <aside className="detail">
+        <aside className="convo">
           {current ? (
             <>
-              <div className="detail__head">
-                <Avatar name={current.from_name} size={28} />
-                <div className="detail__who">
-                  <span className="detail__name">
-                    {withHost(current.from_name, current.from_host_name)}
-                    <HarnessMark harness={current.from_harness} />
-                  </span>
-                  <span className="detail__meta">
-                    {current.created} · {current.recipients.length === 1 ? t('feed.sentOne') : t('feed.sentMany', { n: current.recipients.length })}
-                  </span>
-                </div>
+              <div className="convo__head">
+                <PartyCard p={current.a} onCompose={onCompose} onOpen={open} />
+                <span className="convo__sep">⇄</span>
+                <PartyCard p={current.b} onCompose={onCompose} onOpen={open} />
               </div>
-              <p className="detail__body">{current.text}</p>
-              <div className="rule" />
-              <div className="section-title">{t('feed.recipients')}</div>
-              {current.recipients.map((r) => (
-                <div key={r.letter_id} className="rcpt">
-                  <div className="rcpt__head">
-                    <Avatar name={r.to_name} size={20} />
-                    <span className="rcpt__name">{r.to_host_name && <span className="rcpt__host">{r.to_host_name}/</span>}{r.to_name}</span>
-                    <HarnessMark harness={r.to_harness} />
-                    <Badge kind={r.kind} />
-                    <span className="rcpt__time">{(r.reply?.created ?? r.created).slice(11)}</span>
-                    {(r.kind === 'queued' || r.kind === 'failed') && (
-                      <span className="rcpt__acts">
-                        <button className="btn btn--ghost btn--small" onClick={() => act(() => api.retry(r.letter_id))}>{t('action.retry')}</button>
-                        <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.cancel')}</button>
-                      </span>
-                    )}
-                    {r.kind === 'review' && (
-                      <span className="rcpt__acts">
-                        <button className="btn btn--primary btn--small" onClick={() => act(async () => { await api.reviewOpen(); return { text: '' } })}>{t('action.review')}</button>
-                        <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.cancel')}</button>
-                      </span>
-                    )}
-                    {r.kind === 'held' && (
-                      <span className="rcpt__acts">
-                        <button className="btn btn--primary btn--small" onClick={() => act(() => api.retry(r.letter_id))}>{t('action.approve')}</button>
-                        <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(r.letter_id))}>{t('action.reject')}</button>
-                      </span>
-                    )}
-                    <button className="btn btn--ghost btn--icon" title={t('action.open')} onClick={() => open(r.to_host ? `${r.to_host}/${r.to}` : r.to)}>↗</button>
-                  </div>
-                  {r.reply ? (
-                    <>
-                      <p className="rcpt__reply">{r.reply.body}</p>
-                      <div className="rcpt__foot">
-                        <button className="btn btn--ghost btn--small" onClick={() => onCompose(r.to_host ? `${r.to_host}/${r.to}` : r.to)}>{t('action.reply')}</button>
+              <div
+                className="convo__msgs"
+                ref={scroller}
+                onScroll={(e) => {
+                  const el = e.currentTarget
+                  pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+                }}
+              >
+                {current.count > current.messages.length && <div className="convo__more">{t('thread.more', { n: current.count - current.messages.length })}</div>}
+                {current.messages.map((m) => {
+                  const who = m.side === 'a' ? current.a : current.b
+                  return (
+                    <div key={m.letter_id} className="tmsg" data-side={m.side}>
+                      <div className="tmsg__head">
+                        <span className="tmsg__who">{who.name}</span>
+                        <span className="tmsg__at">{when(m.at)}</span>
                       </div>
-                    </>
-                  ) : (
-                    <p className="rcpt__note">{r.stage}</p>
-                  )}
-                </div>
-              ))}
+                      <div className="tmsg__bubble">
+                        <Clamp text={m.body} />
+                      </div>
+                      <div className="tmsg__foot">
+                        <span className="tmsg__stage" data-kind={m.kind}>{m.stage}</span>
+                        {m.also_to && m.also_to.length > 0 && <span className="tmsg__also">{t('thread.alsoTo', { n: m.also_to.join('、') })}</span>}
+                        {(m.kind === 'queued' || m.kind === 'failed') && (
+                          <>
+                            <button className="btn btn--ghost btn--small" onClick={() => act(() => api.retry(m.letter_id))}>{t('action.retry')}</button>
+                            <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(m.letter_id))}>{t('action.cancel')}</button>
+                          </>
+                        )}
+                        {m.kind === 'review' && (
+                          <>
+                            <button className="btn btn--primary btn--small" onClick={() => act(() => api.reviewOpen())}>{t('action.review')}</button>
+                            <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(m.letter_id))}>{t('action.cancel')}</button>
+                          </>
+                        )}
+                        {m.kind === 'held' && (
+                          <>
+                            <button className="btn btn--primary btn--small" onClick={() => act(() => api.retry(m.letter_id))}>{t('action.approve')}</button>
+                            <button className="btn btn--ghost btn--small" onClick={() => act(() => api.cancel(m.letter_id))}>{t('action.reject')}</button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
               {notice && (
-                <div className="notice" onClick={clear}>
+                <div className="notice convo__notice" onClick={clear}>
                   {notice}
                 </div>
               )}
             </>
           ) : (
-            <div className="empty">{t('feed.pick')}</div>
+            <div className="empty">{t('thread.pick')}</div>
           )}
         </aside>
       </div>

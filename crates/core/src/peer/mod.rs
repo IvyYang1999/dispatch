@@ -444,6 +444,7 @@ pub fn remote_target(host_id: &str, host_name: &str, session_id: &str, name: Opt
         transcript: None,
         host: Some(Host { id: host_id.to_string(), name: host_name.to_string() }),
         project: None,
+        app_name: None,
     }
 }
 
@@ -648,10 +649,10 @@ pub fn remote_find(query: &str, only: Option<&PeerInfo>) -> Vec<Session> {
 pub fn remote_reach(s: &Session) -> Reach {
     if let Some(h) = &s.host {
         if let Some(r) = REMOTE.lock().unwrap().get(&h.id).and_then(|r| r.reach.get(&s.id)) {
-            return r.clone();
+            return crate::reach::localized(r.clone());
         }
         if let Some(r) = FOUND.lock().unwrap().get(&(h.id.clone(), s.id.clone())) {
-            return r.clone();
+            return crate::reach::localized(r.clone());
         }
     }
     Reach { level: Level::Later, text: t("reach.peer_offline").into(), fix: None, mode: None, client: None }

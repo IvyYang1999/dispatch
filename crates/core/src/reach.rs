@@ -35,6 +35,27 @@ pub struct Reach {
     pub client: Option<String>,
 }
 
+/// Every reach text, so one written on another machine (in that machine's language) can be
+/// read here in this one's.
+const KEYS: &[&str] = &[
+    "reach.off_later", "reach.off_none", "reach.noinbox_later", "reach.noinbox_none", "reach.now_desktop", "reach.now_terminal",
+    "reach.bypass_busy", "reach.bypass_idle", "reach.unknown_later", "reach.refuse_later", "reach.bypass_none", "reach.codex_nocli",
+    "reach.codex_nodaemon", "reach.codex_queue", "reach.codex_now", "reach.codex_notloaded", "reach.grok_noapp", "reach.grok_nologin",
+    "reach.grok_nocli", "reach.grok_now", "reach.nosocket_later", "reach.nosocket_none", "reach.human", "reach.peer_offline",
+];
+
+/// A reach another machine worked out, its text in this machine's language when it is one of
+/// ours (a text with a detail filled in, like the Grok gateway's error, stays as it came).
+pub fn localized(mut r: Reach) -> Reach {
+    if let Some(key) = KEYS.iter().find(|k| {
+        let (zh, en) = crate::i18n::pair(k);
+        r.text == zh || r.text == en
+    }) {
+        r.text = t(key).into();
+    }
+    r
+}
+
 pub fn decide(s: &Session, hook_installed: bool) -> Reach {
     if s.host.is_some() {
         // the machine it runs on worked all of this out, mode and client included
@@ -136,5 +157,21 @@ fn decide_here(s: &Session, hook_installed: bool) -> Reach {
             }
         }
         Harness::Human => Reach { level: Level::Now, text: t("reach.human").into(), fix: None, mode: None, client: None },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reach_from_another_machine_reads_in_this_ones_language() {
+        let (zh, en) = crate::i18n::pair("reach.now_desktop");
+        for text in [zh, en] {
+            let r = localized(Reach { level: Level::Now, text: text.into(), fix: None, mode: None, client: None });
+            assert_eq!(r.text, t("reach.now_desktop"));
+        }
+        let odd = localized(Reach { level: Level::None, text: "something else".into(), fix: None, mode: None, client: None });
+        assert_eq!(odd.text, "something else");
     }
 }

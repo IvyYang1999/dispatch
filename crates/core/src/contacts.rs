@@ -117,8 +117,14 @@ fn rename(s: &mut Session, c: &Contact) {
         return;
     }
     if let Some(old) = s.name.take() {
-        if old != c.name && s.title.is_none() {
-            s.title = Some(old);
+        if old != c.name {
+            // the name its app shows stays known: it is how the user recognizes the session
+            if s.app_name.is_none() {
+                s.app_name = Some(old.clone());
+            }
+            if s.title.is_none() {
+                s.title = Some(old);
+            }
         }
     }
     s.name = Some(c.name.clone());
@@ -141,6 +147,7 @@ fn bare(c: &Contact) -> Session {
         transcript: None,
         host: c.host.clone(),
         project: None,
+        app_name: None,
     }
 }
 
@@ -175,7 +182,7 @@ mod tests {
     use super::*;
 
     fn session(id: &str, name: Option<&str>) -> Session {
-        Session { harness: Harness::Codex, id: id.into(), short_id: short_id(id), name: name.map(str::to_string), cwd: Some("/w/dispatch".into()), title: None, last_active: 5, running: true, desktop: false, host_session_id: None, status: None, transcript: None, host: None, project: None }
+        Session { harness: Harness::Codex, id: id.into(), short_id: short_id(id), name: name.map(str::to_string), cwd: Some("/w/dispatch".into()), title: None, last_active: 5, running: true, desktop: false, host_session_id: None, status: None, transcript: None, host: None, project: None, app_name: None }
     }
 
     #[test]

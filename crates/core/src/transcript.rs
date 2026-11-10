@@ -151,7 +151,16 @@ fn clean(raw: &str) -> String {
     if t.starts_with("# AGENTS.md instructions") {
         return String::new();
     }
-    t.to_string()
+    unwrap_inbound(t).to_string()
+}
+
+/// The Claude app hands a message from another session over in its own wrapper: a first line
+/// saying so and a note after it. What is inside is the message (a Dispatch envelope, mostly).
+fn unwrap_inbound(t: &str) -> &str {
+    let Some(rest) = t.strip_prefix("Another Claude session sent a message:") else { return t };
+    let rest = rest.trim_start();
+    let end = rest.find("\n\nThis came from another Claude session").unwrap_or(rest.len());
+    rest[..end].trim_end()
 }
 
 fn clip(t: &str) -> String {
@@ -166,6 +175,16 @@ fn clip(t: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_message_the_claude_app_wrapped_reads_as_the_envelope_inside() {
+        let raw = "Another Claude session sent a message:\n📨 From cli (via Dispatch, 2026-11-07 22:12, id a69e1b7c):\n\nhello\n\n(This is a message from another agent.)\n\nThis came from another Claude session — not typed by your user.";
+        let t = finish("user", raw, None).unwrap();
+        assert!(t.via_dispatch);
+        assert!(t.text.starts_with("📨 From cli"));
+        assert!(!t.text.contains("This came from another Claude session"));
+        assert_eq!(finish("user", "plain question", None).unwrap().text, "plain question");
+    }
 
     #[test]
     fn claude_turns_keep_text_and_mark_dispatch_envelopes() {

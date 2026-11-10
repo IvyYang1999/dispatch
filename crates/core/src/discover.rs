@@ -149,6 +149,7 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64, ma
                 transcript: Some(path.to_string_lossy().to_string()),
                 host: None,
                 project: None,
+                app_name: None,
             });
         }
     }
@@ -193,6 +194,7 @@ fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>) -> Vec<Se
             transcript: Some(e.path().to_string_lossy().to_string()),
             host: None,
             project: thread.and_then(|t| t.project.clone()),
+            app_name: None,
         });
     }
     out
@@ -289,6 +291,7 @@ fn discover_grok(now: i64) -> Vec<Session> {
             transcript: None,
             host: None,
             project: None,
+            app_name: None,
         })
         .collect()
 }
@@ -379,6 +382,7 @@ fn gather(max_age: Option<i64>) -> Vec<Session> {
             transcript: None,
             host: None,
             project: None,
+            app_name: None,
         });
         entry.running = true;
         entry.desktop = r.desktop;
@@ -491,6 +495,7 @@ pub fn lookup_files(id: &str) -> Option<Session> {
                 transcript: Some(p.to_string_lossy().to_string()),
                 host: None,
                 project: None,
+                app_name: None,
             });
         }
         if let Some(p) = codex_rollout(&id) {
@@ -512,6 +517,7 @@ pub fn lookup_files(id: &str) -> Option<Session> {
                 transcript: Some(p.to_string_lossy().to_string()),
                 host: None,
                 project: None,
+                app_name: None,
             });
         }
     }
@@ -534,7 +540,7 @@ mod tests {
     use super::*;
 
     fn session(id: &str, name: Option<&str>, cwd: &str, title: &str) -> Session {
-        Session { harness: Harness::Codex, id: id.into(), short_id: short_id(id), name: name.map(str::to_string), cwd: Some(cwd.into()), title: Some(title.into()), last_active: 1, running: false, desktop: false, host_session_id: None, status: None, transcript: None, host: None, project: None }
+        Session { harness: Harness::Codex, id: id.into(), short_id: short_id(id), name: name.map(str::to_string), cwd: Some(cwd.into()), title: Some(title.into()), last_active: 1, running: false, desktop: false, host_session_id: None, status: None, transcript: None, host: None, project: None, app_name: None }
     }
 
     #[test]

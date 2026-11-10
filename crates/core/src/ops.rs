@@ -11,6 +11,11 @@ use crate::store::{self, Store};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 
+/// One session as the app shows it: names, where it runs, and how a message reaches it now.
+pub fn session_json(s: &Session) -> Value {
+    session_json_with(s, hook::installed(), &crate::contacts::list())
+}
+
 fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Contact]) -> Value {
     let r = reach::decide(s, hook_on);
     let host_id = s.host.as_ref().map(|h| h.id.as_str());
@@ -22,6 +27,8 @@ fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Co
         "id": s.id,
         "short_id": s.short_id,
         "name": s.display_name(),
+        // a name the address book gave is not the app's: then only what the app was seen to call it
+        "app_name": if contact.is_some() { s.app_name.clone() } else { s.app_name.clone().or_else(|| s.name.clone()) },
         "harness": s.harness.label(),
         "title": s.title,
         "project": s.project,
@@ -38,15 +45,57 @@ fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Co
     })
 }
 
-/// Who is calling: the Claude Code session this process was spawned by, if any.
+/// A Codex thread id handed over with the current MCP call (`_meta.threadId`, which Codex puts
+/// on every tool call). Set by the MCP server around each call.
+static MCP_THREAD: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+pub fn set_mcp_thread(id: Option<String>) {
+    if let Ok(mut t) = MCP_THREAD.lock() {
+        *t = id.filter(|i| is_uuid(i)).map(|i| i.to_lowercase());
+    }
+}
+
+/// The session making this call.
+#[derive(Debug, Clone)]
+pub struct Caller {
+    pub id: String,
+    pub name: String,
+    pub harness: crate::model::Harness,
+    pub cwd: Option<String>,
+    pub desktop: bool,
+}
+
+/// Who is calling: the Codex thread named on this MCP call, else the Claude Code session this
+/// process was started by, else the Codex thread whose command started it (Codex sets
+/// `CODEX_THREAD_ID` on the commands it runs). None for a person at a terminal.
+pub fn caller() -> Option<Caller> {
+    let mcp = MCP_THREAD.lock().ok().and_then(|t| t.clone());
+    if let Some(id) = mcp {
+        return Some(codex_caller(&id));
+    }
+    if let Some(i) = claude::caller_session() {
+        let name = i.name.clone().unwrap_or_else(|| short_id(&i.session_id));
+        return Some(Caller { id: i.session_id.to_lowercase(), name, harness: crate::model::Harness::Claude, cwd: i.cwd.clone(), desktop: i.desktop });
+    }
+    std::env::var("CODEX_THREAD_ID").ok().filter(|i| is_uuid(i)).map(|id| codex_caller(&id.to_lowercase()))
+}
+
+/// A Codex thread as a sender: its address-book name, else the title Codex shows, else its id.
+fn codex_caller(id: &str) -> Caller {
+    let s = discover::lookup(id);
+    let name = crate::contacts::for_session(id, None).map(|c| c.name).or_else(|| s.as_ref().and_then(|s| s.app_name.clone().or_else(|| s.name.clone()).or_else(|| s.title.clone()))).unwrap_or_else(|| short_id(id));
+    Caller { id: id.to_string(), name, harness: crate::model::Harness::Codex, cwd: s.as_ref().and_then(|s| s.cwd.clone()), desktop: false }
+}
+
+/// Who is calling, as `dispatch_whoami` answers.
 pub fn whoami() -> Result<Value> {
     let me = crate::peer::me()?;
     let machine = json!({ "id": me.id, "name": me.name });
-    Ok(match claude::caller_session() {
-        Some(i) => {
-            let contact = crate::contacts::for_session(&i.session_id, None).map(|c| c.name);
-            let handle = contact.clone().unwrap_or_else(|| short_id(&i.session_id));
-            json!({ "session_id": i.session_id, "short_id": short_id(&i.session_id), "name": i.name.clone().unwrap_or_else(|| short_id(&i.session_id)), "contact": contact, "harness": "Claude", "cwd": i.cwd, "desktop": i.desktop, "machine": machine, "address_elsewhere": format!("{}/{}", me.name, handle) })
+    Ok(match caller() {
+        Some(c) => {
+            let contact = crate::contacts::for_session(&c.id, None).map(|c| c.name);
+            let handle = contact.clone().unwrap_or_else(|| short_id(&c.id));
+            json!({ "session_id": c.id, "short_id": short_id(&c.id), "name": c.name, "contact": contact, "harness": c.harness.label(), "cwd": c.cwd, "desktop": c.desktop, "machine": machine, "address_elsewhere": format!("{}/{}", me.name, handle) })
         }
         None => json!({ "session_id": null, "name": "unknown", "harness": null, "machine": machine }),
     })
@@ -54,8 +103,8 @@ pub fn whoami() -> Result<Value> {
 
 /// The caller's identity for `from`: (id, name).
 pub fn caller_identity() -> (String, String) {
-    match claude::caller_session() {
-        Some(i) => (i.session_id.clone(), i.name.unwrap_or_else(|| short_id(&i.session_id))),
+    match caller() {
+        Some(c) => (c.id, c.name),
         None => ("mcp".into(), "mcp".into()),
     }
 }
@@ -87,9 +136,9 @@ pub fn register(name: &str, session: Option<&str>, by: &str, description: Option
     let target = match session.map(str::trim).filter(|s| !s.is_empty()) {
         Some(q) => send::resolve(q)?,
         None => {
-            let i = claude::caller_session().ok_or_else(|| anyhow!("no session given and the caller is not a Claude Code session; pass the session's id or name"))?;
-            discover::lookup(&i.session_id).unwrap_or_else(|| {
-                let mut s = crate::peer::remote_target("", "", &i.session_id, i.name.clone(), crate::model::Harness::Claude);
+            let i = caller().ok_or_else(|| anyhow!("no session given and the caller is not a Claude Code or Codex session; pass the session's id or name"))?;
+            discover::lookup(&i.id).unwrap_or_else(|| {
+                let mut s = crate::peer::remote_target("", "", &i.id, Some(i.name.clone()), i.harness);
                 s.host = None;
                 s.cwd = i.cwd.clone();
                 s
@@ -332,7 +381,7 @@ pub fn sweep(store: &Store) -> Result<Value> {
 pub fn inbox(store: &Store, session: Option<&str>, all: bool) -> Result<Value> {
     let sid = match session {
         Some(s) => send::resolve(s)?.id,
-        None => claude::caller_session().map(|i| i.session_id).ok_or_else(|| anyhow!("no session given and the caller is not a Claude Code session"))?,
+        None => caller().map(|c| c.id).ok_or_else(|| anyhow!("no session given and the caller is not a Claude Code or Codex session"))?,
     };
     // a message still held for the user's review has not been sent: its recipient does not see it
     let letters: Vec<store::Letter> = store.list(Some(&sid), !all)?.into_iter().filter(|l| l.status != store::REVIEW).collect();
@@ -351,7 +400,7 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
     // A person who wrote from the app or the command line gets the reply in the feed.
     let target = match &orig.from_host {
         Some(h) => {
-            let harness = if send::is_person(&orig.from) { crate::model::Harness::Human } else { crate::model::Harness::Claude };
+            let harness = if send::is_person(&orig.from) { crate::model::Harness::Human } else { send::harness_of(orig.from_harness.as_deref()) };
             crate::peer::remote_target(h, orig.from_host_name.as_deref().unwrap_or(""), &orig.from, Some(orig.from_name.clone()), harness)
         }
         None => match send::resolve(&orig.from) {
@@ -617,6 +666,148 @@ pub fn feed(store: &Store, limit: usize) -> Result<Value> {
     Ok(json!({ "count": out.len(), "dispatches": out }))
 }
 
+/// One side of a conversation: a session (here or on a paired machine), the person at the app or
+/// the command line (on any machine: one person), or a process that did not say who it is.
+fn party_of(id: &str, stored_name: &str, harness: Option<&str>, host: Option<(&str, &str)>, index: &std::collections::HashMap<String, Session>) -> (String, Value) {
+    if send::is_person(id) && id != "mcp" {
+        return ("you".into(), json!({ "key": "you", "id": id, "name": t("party.you"), "app_name": null, "harness": crate::model::Harness::Human.label(), "host_id": null, "host_name": null, "person": true, "address": null, "running": false, "status": null, "cwd_short": null }));
+    }
+    let host_id = host.map(|h| h.0).unwrap_or("");
+    let key = format!("{host_id}|{}", id.to_lowercase());
+    let s = index.get(&key);
+    let name = s.map(|s| s.display_name()).unwrap_or_else(|| stored_name.to_string());
+    let harness = s.map(|s| s.harness.label()).or_else(|| harness_label(harness));
+    let address = if id == "mcp" { None } else { Some(match host { Some((h, _)) => format!("{h}/{id}"), None => id.to_string() }) };
+    let v = json!({
+        "key": key,
+        "id": id,
+        "name": name,
+        "app_name": s.and_then(|s| s.app_name.clone().or_else(|| s.name.clone())),
+        "harness": harness,
+        "host_id": host.map(|h| h.0),
+        "host_name": host.map(|h| h.1),
+        "person": false,
+        "address": address,
+        "running": s.map(|s| s.running).unwrap_or(false),
+        "status": s.and_then(|s| s.status.clone()),
+        "cwd_short": s.and_then(|s| s.cwd.as_deref().map(short_cwd)),
+    });
+    (key, v)
+}
+
+/// When a copy came to be on this machine's clock: its first run (written here, or received),
+/// else its `created` read as local time.
+fn happened_at(store: &Store, l: &store::Letter) -> chrono::DateTime<chrono::Local> {
+    store
+        .runs(&l.id)
+        .first()
+        .and_then(|r| chrono::DateTime::parse_from_rfc3339(&r.at).ok())
+        .map(|t| t.with_timezone(&chrono::Local))
+        .or_else(|| store::parse_time(&l.created).and_then(|t| t.and_local_timezone(chrono::Local).earliest()))
+        .unwrap_or_else(chrono::Local::now)
+}
+
+/// How much a copy needs the user: review first, then not delivered, held, waiting.
+fn attention_rank(kind: &str) -> Option<u8> {
+    match kind {
+        "review" => Some(0),
+        "failed" => Some(1),
+        "held" => Some(2),
+        "queued" => Some(3),
+        _ => None,
+    }
+}
+
+/// The conversations: one per pair of parties who wrote to each other, whatever the dispatch,
+/// newest activity first. Each has both parties as equals, every message between them in order
+/// (with who else a message went to), and the most pressing state that needs the user, if any.
+pub fn threads(store: &Store, limit: usize) -> Result<Value> {
+    let _ = crate::peer::mirror(store);
+    let mut letters = store.list(None, false)?;
+    reconcile(store, &mut letters)?;
+    let mut index: std::collections::HashMap<String, Session> = std::collections::HashMap::new();
+    for s in discover::sessions() {
+        let host = s.host.as_ref().map(|h| h.id.clone()).unwrap_or_default();
+        index.insert(format!("{host}|{}", s.id.to_lowercase()), s);
+    }
+    // a machine paired again under the same name is one machine: its old records join the new one
+    let peers = crate::peer::peers().unwrap_or_default();
+    let mut hosts: std::collections::HashMap<String, (String, String)> = std::collections::HashMap::new();
+    for (i, p) in peers.iter().enumerate() {
+        let latest = peers[i..].iter().rev().find(|x| x.name.eq_ignore_ascii_case(&p.name)).unwrap_or(p);
+        hosts.insert(p.id.clone(), (latest.id.clone(), latest.name.clone()));
+    }
+    let host_of = |id: Option<&str>, name: Option<&str>| -> Option<(String, String)> {
+        let id = id?;
+        Some(hosts.get(id).cloned().unwrap_or_else(|| (id.to_string(), name.unwrap_or("").to_string())))
+    };
+    // A copy's `created` is the writing machine's wall clock, with no zone; two machines in
+    // different zones would interleave wrongly. Its first run here (written, or received from
+    // the other machine) carries the zone: that is when it happened on this machine's clock.
+    let when: std::collections::HashMap<String, chrono::DateTime<chrono::Local>> = letters.iter().map(|l| (l.id.clone(), happened_at(store, l))).collect();
+    letters.sort_by(|a, b| when[&a.id].cmp(&when[&b.id]).then(a.path.cmp(&b.path)));
+    // the copies of each dispatch, to tell who else a message went to
+    let mut by_dispatch: std::collections::HashMap<&str, Vec<&store::Letter>> = std::collections::HashMap::new();
+    for l in &letters {
+        by_dispatch.entry(l.dispatch_id.as_str()).or_default().push(l);
+    }
+    struct Thread {
+        a: Value,
+        b: Value,
+        a_key: String,
+        messages: Vec<Value>,
+        last_at: String,
+    }
+    let mut order: Vec<String> = vec![];
+    let mut threads: std::collections::HashMap<String, Thread> = std::collections::HashMap::new();
+    for l in &letters {
+        let from_host = host_of(l.from_host.as_deref(), l.from_host_name.as_deref());
+        let to_host = host_of(l.to_host.as_deref(), l.to_host_name.as_deref());
+        let (fk, fv) = party_of(&l.from, &l.from_name, l.from_harness.as_deref(), from_host.as_ref().map(|(i, n)| (i.as_str(), n.as_str())), &index);
+        let (tk, tv) = party_of(&l.to, &l.to_name, l.to_harness.as_deref(), to_host.as_ref().map(|(i, n)| (i.as_str(), n.as_str())), &index);
+        let key = if fk <= tk { format!("{fk}\u{1f}{tk}") } else { format!("{tk}\u{1f}{fk}") };
+        let th = threads.entry(key.clone()).or_insert_with(|| {
+            order.push(key.clone());
+            Thread { a: fv.clone(), b: tv.clone(), a_key: fk.clone(), messages: vec![], last_at: String::new() }
+        });
+        let mut m = copy_json(store, l, false);
+        m["dispatch_id"] = json!(l.dispatch_id);
+        m["side"] = json!(if fk == th.a_key { "a" } else { "b" });
+        // the same message sent to others as well
+        let others: Vec<Value> = by_dispatch
+            .get(l.dispatch_id.as_str())
+            .into_iter()
+            .flatten()
+            .filter(|o| o.dispatch_id == l.dispatch_id && o.from == l.from && o.id != l.id && !(o.to == l.to && o.to_host == l.to_host) && o.body == l.body)
+            .map(|o| json!(match &o.to_host_name { Some(h) => format!("{} @ {h}", o.to_name), None => o.to_name.clone() }))
+            .collect();
+        if !others.is_empty() {
+            m["also_to"] = json!(others);
+        }
+        let at = when[&l.id].format("%Y-%m-%d %H:%M").to_string();
+        m["at"] = json!(at);
+        th.last_at = at;
+        th.messages.push(m);
+    }
+    let mut out: Vec<Value> = order
+        .into_iter()
+        .filter_map(|k| threads.remove(&k).map(|t| (k, t)))
+        .map(|(key, t)| {
+            // what needs the user now: anything held for review, and whatever has not gone through
+            // since the last message that did (an old failure the talk has moved past is history)
+            let went = t.messages.iter().rposition(|m| matches!(m["kind"].as_str(), Some("delivered" | "working" | "replied"))).map(|i| i + 1).unwrap_or(0);
+            let attention = t.messages.iter().enumerate().filter(|(i, m)| *i >= went || m["kind"] == "review").filter_map(|(_, m)| m["kind"].as_str().and_then(|k| attention_rank(k).map(|r| (r, k.to_string())))).min().map(|(_, k)| k);
+            let last = t.messages.last().cloned().unwrap_or(Value::Null);
+            let count = t.messages.len();
+            let keep = count.saturating_sub(60);
+            json!({ "key": key, "a": t.a, "b": t.b, "last_at": t.last_at, "count": count, "attention": attention, "last": { "side": last["side"], "body": last["body"], "kind": last["kind"], "stage": last["stage"] }, "messages": t.messages[keep..].to_vec() })
+        })
+        .collect();
+    out.sort_by(|x, y| y["last_at"].as_str().cmp(&x["last_at"].as_str()));
+    out.truncate(limit);
+    Ok(json!({ "count": out.len(), "threads": out }))
+}
+
 /// One session's page: who it is, the dispatches it took part in (each marked as received or
 /// sent from its point of view), and the last turns of its own record, with the messages
 /// Dispatch handed over marked. A session on a peer is asked for over the wire.
@@ -694,6 +885,75 @@ mod tests {
         };
         s.write_letter(&mut l).unwrap();
         l
+    }
+
+    #[test]
+    fn conversations_are_pairs_whatever_the_dispatch() {
+        use crate::store::{DELIVERED_INBOX, REPLIED};
+        let dir = std::env::temp_dir().join(format!("dispatch-ops-threads-{}", uuid::Uuid::new_v4()));
+        let s = Store::at(dir.clone());
+        let (a, b, c) = ("aaaaaaaa-1111-4222-8333-444455556666", "bbbbbbbb-1111-4222-8333-444455556666", "cccccccc-1111-4222-8333-444455556666");
+        let mk = |did: &str, from: &str, from_name: &str, to: &str, to_name: &str, body: &str, created: &str, status: &str| {
+            let mut l = Letter {
+                id: uuid::Uuid::new_v4().to_string(),
+                dispatch_id: did.into(),
+                from: from.into(),
+                from_name: from_name.into(),
+                to: to.into(),
+                to_name: to_name.into(),
+                urgency: "普通".into(),
+                wake: true,
+                status: status.into(),
+                created: created.into(),
+                deadline: Some("2999-01-01 00:00".into()),
+                to_harness: Some("claude".into()),
+                from_host: None,
+                from_host_name: None,
+                to_host: None,
+                to_host_name: None,
+                from_harness: Some("claude".into()),
+                signature: None,
+                body: body.into(),
+                path: String::new(),
+            };
+            s.write_letter(&mut l).unwrap();
+        };
+        mk("d0", "app", "me", a, "A", "from you", "2026-11-08 08:00", DELIVERED_INBOX);
+        mk("d1", a, "A", b, "B", "hello", "2026-11-08 09:00", REPLIED);
+        mk("d1", b, "B", a, "A", "hi back", "2026-11-08 09:01", DELIVERED_INBOX);
+        mk("d2", a, "A", b, "B", "second", "2026-11-08 10:00", FAILED);
+        mk("d2", a, "A", c, "C", "second", "2026-11-08 10:00", UNREAD);
+        mk("d3", b, "B", a, "A", "third", "2026-11-08 11:00", DELIVERED_INBOX);
+        let v = threads(&s, 10).unwrap();
+        let list = v["threads"].as_array().unwrap();
+        assert_eq!(list.len(), 3, "A-B, A-C and you-A: {v:#}");
+        let ab = &list[0];
+        assert_eq!(ab["count"], 4, "both directions and both dispatches in one conversation");
+        let bodies: Vec<&str> = ab["messages"].as_array().unwrap().iter().map(|m| m["body"].as_str().unwrap()).collect();
+        assert_eq!(bodies, ["hello", "hi back", "second", "third"]);
+        let sides: Vec<&str> = ab["messages"].as_array().unwrap().iter().map(|m| m["side"].as_str().unwrap()).collect();
+        assert_eq!(sides, ["a", "b", "a", "b"], "a is whoever wrote first");
+        assert_eq!(ab["messages"][2]["also_to"], json!(["C"]));
+        assert_eq!(ab["attention"], Value::Null, "the failure was followed by a message that went through");
+        let ac = list.iter().find(|t| t["b"]["name"] == "C").unwrap();
+        assert_eq!(ac["attention"], "queued");
+        let you = list.iter().find(|t| t["a"]["person"] == true).unwrap();
+        assert_eq!(you["a"]["name"], t("party.you"));
+        assert_eq!(you["a"]["address"], Value::Null, "the person is not a session to write to");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_codex_thread_named_on_the_call_is_the_sender() {
+        let id = "019a0000-1111-7222-8333-444455556666";
+        set_mcp_thread(Some(id.to_uppercase()));
+        let c = caller().unwrap();
+        assert_eq!(c.id, id);
+        assert_eq!(c.harness, crate::model::Harness::Codex);
+        assert_eq!(caller_identity().0, id);
+        set_mcp_thread(Some("not-an-id".into()));
+        assert_ne!(caller().map(|c| c.id).as_deref(), Some("not-an-id"));
+        set_mcp_thread(None);
     }
 
     #[test]

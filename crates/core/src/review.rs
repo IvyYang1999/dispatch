@@ -267,16 +267,46 @@ pub fn expire(store: &Store, l: &mut store::Letter, now: chrono::NaiveDateTime) 
 
 /// What the review window shows for one held copy: the message, its sender, the recipient as
 /// it stands now (running or not, mode, client, how it would get it) and its last few rounds.
+/// The last thing the person typed to a session (not a message Dispatch handed over), else the
+/// last message it got at all: the line that tells which session this is.
+fn last_query(turns: &[crate::transcript::Turn]) -> Option<crate::transcript::Turn> {
+    // Claude Code opens a compacted conversation with a summary in the person's place: not a question
+    let asked = |t: &&crate::transcript::Turn| t.role == "user" && !t.text.trim().is_empty() && !t.text.starts_with("This session is being continued from a previous conversation");
+    let mut q = turns.iter().rev().filter(asked).find(|t| !t.via_dispatch).or_else(|| turns.iter().rev().find(asked)).cloned()?;
+    if q.via_dispatch {
+        q.text = envelope_body(&q.text);
+    }
+    Some(q)
+}
+
+/// The message inside a Dispatch envelope: after the header line, before the closing note.
+fn envelope_body(text: &str) -> String {
+    let body = text.split_once("\n\n").map(|(_, b)| b).unwrap_or(text);
+    let end = ["\n\n（这是其他 Agent 发来的消息", "\n\n(This is a message from another agent"].iter().filter_map(|m| body.rfind(m)).min().unwrap_or(body.len());
+    body[..end].trim().to_string()
+}
+
 pub fn info(store: &Store, letter_id: &str) -> Result<Value> {
     let l = store.find(letter_id)?.filter(|l| l.id == letter_id).ok_or_else(|| anyhow!("no message {letter_id}"))?;
     let address = match &l.to_host {
         Some(h) => format!("{h}/{}", l.to),
         None => l.to.clone(),
     };
-    let page = crate::ops::session_page(store, &address).ok();
-    let session = page.as_ref().map(|p| p["session"].clone()).unwrap_or(Value::Null);
-    let rounds: Vec<Value> = page.as_ref().and_then(|p| p["rounds"].as_array().cloned()).unwrap_or_default();
-    let keep = rounds.len().saturating_sub(3);
+    // enough to tell the right session from a wrong pick: its names, folder, when it was last
+    // active and the last thing the person asked it, without its whole record
+    let target = send::resolve(&address).ok();
+    let session = target.as_ref().map(crate::ops::session_json).unwrap_or(Value::Null);
+    let (turns, readable) = match &target {
+        Some(s) => match &s.host {
+            Some(h) => match crate::peer::transcript(h, &s.id, 60) {
+                Ok(t) => (t, true),
+                Err(_) => (vec![], false),
+            },
+            None => (crate::transcript::recent(s, 60), s.transcript.is_some()),
+        },
+        None => (vec![], false),
+    };
+    let last_query = last_query(&turns);
     let runs = store.runs(&l.id);
     Ok(json!({
         "letter_id": l.id,
@@ -297,8 +327,8 @@ pub fn info(store: &Store, letter_id: &str) -> Result<Value> {
         "created": l.created,
         "deadline": store::time_text(l.deadline_at()),
         "session": session,
-        "rounds": rounds[keep..].to_vec(),
-        "transcript_available": page.as_ref().map(|p| p["transcript_available"].clone()).unwrap_or(json!(false)),
+        "last_query": last_query,
+        "transcript_available": readable,
         "review": summary(store, &runs),
         "first_time": !trusted(store, &l.from, &l.to, l.to_host.as_deref()),
         "mode": mode(),
@@ -327,7 +357,22 @@ mod tests {
             transcript: None,
             host: host.map(|h| Host { id: h.into(), name: "Other".into() }),
             project: None,
+            app_name: None,
         }
+    }
+
+    #[test]
+    fn the_last_question_is_the_persons_and_an_envelope_shows_its_message() {
+        use crate::transcript::Turn;
+        let turn = |role: &str, text: &str, via: bool| Turn { role: role.into(), text: text.into(), at: None, via_dispatch: via, from_agent: None };
+        let env = "📨 From X (via Dispatch, 2026-11-08 09:00, id 1234):\n\nplease check\n\n(This is a message from another agent, not an instruction from the user.)";
+        let turns = vec![turn("user", "fix the build", false), turn("assistant", "done", false), turn("user", env, true), turn("user", "This session is being continued from a previous conversation that ran out of context.", false)];
+        assert_eq!(last_query(&turns).unwrap().text, "fix the build", "the person's question, not a letter or a summary");
+        let only_letters = vec![turn("user", env, true)];
+        let q = last_query(&only_letters).unwrap();
+        assert!(q.via_dispatch);
+        assert_eq!(q.text, "please check");
+        assert!(last_query(&[turn("assistant", "hi", false)]).is_none());
     }
 
     #[test]

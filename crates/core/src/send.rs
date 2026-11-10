@@ -170,6 +170,7 @@ pub fn sender_harness(from: &str) -> Option<&'static str> {
     discover::sessions()
         .into_iter()
         .find(|s| s.id.eq_ignore_ascii_case(from) || s.name.as_deref().map(|n| n.eq_ignore_ascii_case(from)).unwrap_or(false))
+        .or_else(|| crate::model::is_uuid(from).then(|| discover::lookup(from)).flatten())
         .map(|s| harness_code(s.harness))
 }
 
@@ -190,6 +191,7 @@ fn bare_session(harness: Harness, id: &str, name: Option<String>) -> Session {
         transcript: None,
         host: None,
         project: None,
+        app_name: None,
     }
 }
 
@@ -202,7 +204,7 @@ fn harness_code(h: Harness) -> &'static str {
     }
 }
 
-fn harness_of(code: Option<&str>) -> Harness {
+pub(crate) fn harness_of(code: Option<&str>) -> Harness {
     match code {
         Some("codex") => Harness::Codex,
         Some("grok") => Harness::Grok,

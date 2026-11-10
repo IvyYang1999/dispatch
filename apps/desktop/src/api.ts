@@ -18,7 +18,11 @@ export interface Session {
   id: string
   short_id: string
   name: string
+  /** The name its own app shows (the Claude app's session name, the Codex sidebar title). */
+  app_name?: string | null
   harness: string
+  title?: string | null
+  project?: string | null
   cwd: string | null
   cwd_short: string | null
   running: boolean
@@ -118,6 +122,43 @@ export interface UpdateCheck {
   notes?: string | null
   date?: string | null
 }
+/** One side of a conversation: a session here or elsewhere, or the person (`you`). */
+export interface Party {
+  key: string
+  id: string
+  name: string
+  app_name: string | null
+  harness: string | null
+  host_id: string | null
+  host_name: string | null
+  person: boolean
+  /** What to hand compose and open: `machine-id/session-id` elsewhere, the id here; null for the person. */
+  address: string | null
+  running: boolean
+  status: string | null
+  cwd_short: string | null
+}
+/** One message in a conversation: a stored copy with the side that wrote it. */
+export interface ThreadMessage extends Copy {
+  dispatch_id: string
+  side: 'a' | 'b'
+  /** When it happened on this machine's clock, `YYYY-MM-DD HH:MM`. */
+  at: string
+  /** The same message went to these as well. */
+  also_to?: string[]
+}
+/** Two parties and everything between them, oldest message first. */
+export interface Thread {
+  key: string
+  a: Party
+  b: Party
+  last_at: string
+  count: number
+  /** The most pressing state that needs the user: review, failed, held or queued. */
+  attention: Kind | null
+  last: { side: 'a' | 'b'; body: string; kind: Kind; stage: string }
+  messages: ThreadMessage[]
+}
 export interface Turn {
   role: 'user' | 'assistant'
   text: string
@@ -153,7 +194,8 @@ export interface ReviewInfo {
   created: string
   deadline: string
   session: Session | null
-  rounds: Round[]
+  /** The last thing the person asked that session (else the last message it got). */
+  last_query: Turn | null
   transcript_available: boolean
   review: ReviewState | null
   first_time: boolean
@@ -214,6 +256,7 @@ export const api = {
   sessions: (runningOnly: boolean) => invoke<{ hook_installed: boolean; sessions: Session[] }>('sessions', { runningOnly }),
   find: (query: string) => invoke<{ candidates: Session[] }>('find', { query }),
   feed: (limit = 200) => invoke<{ dispatches: Dispatch[] }>('feed', { limit }),
+  threads: (limit = 200) => invoke<{ count: number; threads: Thread[] }>('threads', { limit }),
   status: (id: string) => invoke<{ dispatch_id: string; copies: Copy[] }>('dispatch_status', { id }),
   send: (to: string[], text: string, urgency: string, deadline?: string) => invoke<{ dispatch_id: string; recipients: { to: { name: string; address?: string }; route: string; detail: string }[] }>('send', { to, text, urgency, deadline }),
   reply: (id: string, text: string) => invoke<{ route: string; detail: string }>('reply', { id, text }),

@@ -96,6 +96,13 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// The conversations: one per pair who wrote to each other, newest first
+    Threads {
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
     /// The Claude Code hook
     Hook {
         #[command(subcommand)]
@@ -224,10 +231,9 @@ fn sender_identity(from: Option<String>) -> (String, String) {
             return (sid.to_lowercase(), name);
         }
     }
-    // run by a Claude Code session without saying so: it is still that session writing
-    if let Some(i) = claude::caller_session() {
-        let name = i.name.clone().unwrap_or_else(|| model::short_id(&i.session_id));
-        return (i.session_id.to_lowercase(), name);
+    // run by a Claude Code session or a Codex thread without saying so: it is still that one writing
+    if let Some(c) = dispatch_core::ops::caller() {
+        return (c.id, c.name);
     }
     ("cli".into(), "cli".into())
 }
@@ -590,6 +596,22 @@ fn run() -> Result<i32> {
                         let at = r["at"].as_str().unwrap_or("");
                         println!("    {} {} {} {}", at.get(11..19).unwrap_or(at), r["action"].as_str().unwrap_or(""), r["result"].as_str().unwrap_or(""), r["detail"].as_str().unwrap_or(""));
                     }
+                }
+            }
+        }
+        Cmd::Threads { limit, json } => {
+            let v = dispatch_core::ops::threads(&st, limit)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                for th in v["threads"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                    let who = |p: &serde_json::Value| match p["host_name"].as_str() {
+                        Some(h) if !h.is_empty() => format!("{} @ {h}", p["name"].as_str().unwrap_or("")),
+                        _ => p["name"].as_str().unwrap_or("").to_string(),
+                    };
+                    let last = th["last"]["body"].as_str().unwrap_or("").lines().next().unwrap_or("").chars().take(60).collect::<String>();
+                    let attention = th["attention"].as_str().map(|k| format!("  [{k}]")).unwrap_or_default();
+                    println!("{} ⇄ {}  ({})  {}{}\n    {}", who(&th["a"]), who(&th["b"]), th["count"], th["last_at"].as_str().unwrap_or(""), attention, last);
                 }
             }
         }
