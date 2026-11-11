@@ -35,7 +35,7 @@ enum Cmd {
     Send {
         #[arg(long)]
         to: Vec<String>,
-        /// Who it is from: a session id or a name (defaults to $CLAUDE_SESSION_ID or "cli")
+        /// Who it is from: a session id or a name (defaults to the session running this, else "cli"; never "app")
         #[arg(long)]
         from: Option<String>,
         /// normal or urgent
@@ -217,7 +217,13 @@ fn main() {
     std::process::exit(code);
 }
 
-fn sender_identity(from: Option<String>) -> (String, String) {
+fn sender_identity(from: Option<String>) -> Result<(String, String)> {
+    Ok(sender_identity_inner(from.map(|f| f.trim().to_string()).map(|f| if f.eq_ignore_ascii_case("app") { Err(anyhow!("{}", t("cli.from_app"))) } else { Ok(f) }).transpose()?))
+}
+
+/// Who a command-line message is from. `app` is never accepted here: only the app writes as the
+/// person, and a message from the app is not held for review.
+fn sender_identity_inner(from: Option<String>) -> (String, String) {
     if let Some(f) = from {
         if model::is_uuid(&f) {
             let name = claude::find_live(&f).and_then(|i| i.name).unwrap_or_else(|| model::short_id(&f));
@@ -511,7 +517,7 @@ fn run() -> Result<i32> {
             }
             let body = read_text(text)?;
             let deadline = dispatch_core::ops::parse_deadline(deadline.as_deref())?;
-            let (from_id, from_name) = sender_identity(from);
+            let (from_id, from_name) = sender_identity(from)?;
             let dispatch_id = uuid_v4();
             let urgency = store::urgency_stored(&urgency).to_string();
             let mut reports = vec![];
@@ -534,7 +540,7 @@ fn run() -> Result<i32> {
         }
         Cmd::Reply { id, text, json } => {
             let body = read_text(text)?;
-            let v = dispatch_core::ops::reply(&st, &id, &body)?;
+            let v = dispatch_core::ops::reply_as_agent(&st, &id, &body)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&v)?);
             } else {

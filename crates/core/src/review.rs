@@ -342,8 +342,10 @@ pub fn info(store: &Store, letter_id: &str) -> Result<Value> {
         "status": l.status,
         "waiting": l.status == store::REVIEW,
         "from": l.from,
-        "from_name": l.from_name,
-        "from_harness": l.from_harness,
+        // a sender no session was recognized behind is named for what it is, not by the label it gave
+        "from_name": match l.from.as_str() { "cli" => crate::i18n::t("party.cli").to_string(), "mcp" => crate::i18n::t("party.mcp").to_string(), _ => l.from_name.clone() },
+        "from_unknown": matches!(l.from.as_str(), "cli" | "mcp"),
+        "from_harness": if matches!(l.from.as_str(), "cli" | "mcp") { None } else { l.from_harness.clone() },
         "from_avatar": crate::contacts::for_session(&l.from, None).and_then(|c| c.avatar),
         "to": l.to,
         "to_name": l.to_name,

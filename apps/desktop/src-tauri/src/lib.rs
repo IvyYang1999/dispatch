@@ -304,6 +304,12 @@ async fn contact_set(name: String, session: String, about: Option<String>, avata
     .await
 }
 
+/// The person's own name and picture, as the feed shows them.
+#[tauri::command]
+async fn me_set(name: Option<String>, avatar: dispatch_core::contacts::Look) -> Result<Value, String> {
+    blocking(move || dispatch_core::contacts::set_me(name, avatar).map(|m| json!(m)).map_err(err)).await
+}
+
 /// One session's page: identity, the dispatches it took part in, its last turns.
 #[tauri::command]
 async fn session_page(id: String) -> Result<Value, String> {
@@ -872,7 +878,7 @@ pub fn run() {
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
-            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
+            peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget
         ])
         .setup(|app| {

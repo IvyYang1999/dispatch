@@ -415,6 +415,17 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
     Ok(json!({ "replied_to": orig.id, "to": { "id": target.id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail }))
 }
 
+/// A reply from the command line or MCP: as `reply`, except that a message written to the
+/// person is answered only in the app. A reply goes out as the one the message was for, so
+/// answering a message to the person from outside the app would speak as the person.
+pub fn reply_as_agent(store: &Store, id: &str, text: &str) -> Result<Value> {
+    let orig = store.find(id)?.ok_or_else(|| anyhow!("no message whose id starts with \"{id}\""))?;
+    if orig.to.eq_ignore_ascii_case("app") {
+        return Err(anyhow!("{}", t("reply.person_only_in_app")));
+    }
+    reply(store, id, text)
+}
+
 /// `claude` / `codex` / `grok` / `human` as the label a person reads; None for anything else.
 fn harness_label(code: Option<&str>) -> Option<&'static str> {
     use crate::model::Harness;
@@ -670,8 +681,16 @@ pub fn feed(store: &Store, limit: usize) -> Result<Value> {
 /// One side of a conversation: a session (here or on a paired machine), the person at the app or
 /// the command line (on any machine: one person), or a process that did not say who it is.
 fn party_of(id: &str, stored_name: &str, harness: Option<&str>, host: Option<(&str, &str)>, index: &std::collections::HashMap<String, Session>, book: &[crate::contacts::Contact]) -> (String, Value) {
-    if send::is_person(id) && id != "mcp" {
-        return ("you".into(), json!({ "key": "you", "id": id, "name": t("party.you"), "app_name": null, "harness": crate::model::Harness::Human.label(), "host_id": null, "host_name": null, "person": true, "address": null, "running": false, "status": null, "cwd_short": null, "avatar": null, "contact": null, "about": null }));
+    if id == "app" {
+        let me = crate::contacts::me();
+        return ("you".into(), json!({ "key": "you", "id": id, "name": me.name.unwrap_or_else(|| t("party.you").to_string()), "app_name": null, "harness": crate::model::Harness::Human.label(), "host_id": null, "host_name": null, "person": true, "address": null, "running": false, "status": null, "cwd_short": null, "avatar": me.avatar, "contact": null, "about": null }));
+    }
+    // the command line or an MCP caller that no session was recognized behind: a person typing
+    // or an agent, Dispatch cannot tell, so it is never shown as the person
+    if id == "cli" || id == "mcp" {
+        let key = format!("unknown|{id}");
+        let name = t(if id == "cli" { "party.cli" } else { "party.mcp" });
+        return (key.clone(), json!({ "key": key, "id": id, "name": name, "app_name": null, "harness": null, "host_id": null, "host_name": null, "person": false, "unknown": true, "address": null, "running": false, "status": null, "cwd_short": null, "avatar": null, "contact": null, "about": null }));
     }
     let host_id = host.map(|h| h.0).unwrap_or("");
     let key = format!("{host_id}|{}", id.to_lowercase());
@@ -897,9 +916,10 @@ mod tests {
     fn conversations_are_pairs_whatever_the_dispatch() {
         use crate::store::{DELIVERED_INBOX, REPLIED};
         let dir = std::env::temp_dir().join(format!("dispatch-ops-threads-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
         let s = Store::at(dir.clone());
         let (a, b, c) = ("aaaaaaaa-1111-4222-8333-444455556666", "bbbbbbbb-1111-4222-8333-444455556666", "cccccccc-1111-4222-8333-444455556666");
-        let mk = |did: &str, from: &str, from_name: &str, to: &str, to_name: &str, body: &str, created: &str, status: &str| {
+        let mk = |did: &str, from: &str, from_name: &str, to: &str, to_name: &str, body: &str, created: &str, status: &str| -> String {
             let mut l = Letter {
                 id: uuid::Uuid::new_v4().to_string(),
                 dispatch_id: did.into(),
@@ -923,6 +943,7 @@ mod tests {
                 path: String::new(),
             };
             s.write_letter(&mut l).unwrap();
+            l.id
         };
         mk("d0", "app", "me", a, "A", "from you", "2026-11-08 08:00", DELIVERED_INBOX);
         mk("d1", a, "A", b, "B", "hello", "2026-11-08 09:00", REPLIED);
@@ -946,6 +967,27 @@ mod tests {
         let you = list.iter().find(|t| t["a"]["person"] == true).unwrap();
         assert_eq!(you["a"]["name"], t("party.you"));
         assert_eq!(you["a"]["address"], Value::Null, "the person is not a session to write to");
+
+        // the command line with no session behind it is not the person
+        mk("d4", "cli", "cli", a, "A", "from a terminal", "2026-11-08 12:00", DELIVERED_INBOX);
+        let to_you = mk("d5", a, "A", "app", "me", "to you", "2026-11-08 12:30", DELIVERED_INBOX);
+        let v = threads(&s, 10).unwrap();
+        let list = v["threads"].as_array().unwrap();
+        assert_eq!(list.len(), 4, "the unrecognized command line is a party of its own: {v:#}");
+        let unknown = list.iter().find(|t| t["a"]["id"] == "cli").unwrap();
+        assert_eq!(unknown["a"]["name"], t("party.cli"));
+        assert_eq!(unknown["a"]["person"], false);
+        assert_eq!(list.iter().filter(|t| t["a"]["person"] == true || t["b"]["person"] == true).count(), 1, "you and A, both ways, one conversation");
+        crate::contacts::set_me(Some("yyt".into()), crate::contacts::Look { emoji: Some("🦊".into()), color: None }).unwrap();
+        let v = threads(&s, 10).unwrap();
+        let you = v["threads"].as_array().unwrap().iter().find(|t| t["a"]["person"] == true || t["b"]["person"] == true).unwrap().clone();
+        let me = if you["a"]["person"] == true { &you["a"] } else { &you["b"] };
+        assert_eq!((me["name"].as_str(), me["avatar"]["emoji"].as_str()), (Some("yyt"), Some("🦊")), "the person's own name and picture");
+
+        // a message to the person is answered in the app only, never as the person from outside
+        let e = reply_as_agent(&s, &to_you, "as you").unwrap_err().to_string();
+        assert_eq!(e, t("reply.person_only_in_app"));
+        crate::store::set_thread_root(None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

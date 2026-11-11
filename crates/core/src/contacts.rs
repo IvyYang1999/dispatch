@@ -65,6 +65,30 @@ impl Look {
     }
 }
 
+/// What the person at the app is called and looks like in the feed: kept in the settings file.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Me {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<Look>,
+}
+
+pub fn me() -> Me {
+    crate::settings::get("me").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+/// Name the person and pick their picture; empty clears either.
+pub fn set_me(name: Option<String>, look: Look) -> Result<Me> {
+    let name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    if name.as_ref().is_some_and(|n| n.chars().count() > 40) {
+        bail!("a name is at most 40 characters");
+    }
+    let me = Me { name, avatar: look.clean()? };
+    crate::settings::set("me", serde_json::to_value(&me)?)?;
+    Ok(me)
+}
+
 /// Give a named session a picture (or take it away with an empty one).
 pub fn set_avatar(name: &str, look: Look) -> Result<Contact> {
     let look = look.clean()?;

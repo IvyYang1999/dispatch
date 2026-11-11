@@ -303,6 +303,10 @@ pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
         "harness.human" => ("人", "Human"),
         "me" => ("我", "me"),
         "party.you" => ("你", "You"),
+        "party.cli" => ("未认出的命令行", "Unrecognized command line"),
+        "party.mcp" => ("未认出的 MCP 调用方", "Unrecognized MCP caller"),
+        "reply.person_only_in_app" => ("这封信是写给用户的，只能由用户在 Dispatch App 里回；命令行和 MCP 不能以用户的名义回信", "This message was written to the user, who answers it in the Dispatch app; the command line and MCP cannot reply as the user"),
+        "cli.from_app" => ("--from app 只有 Dispatch App 自己能用：App 发的信算用户本人写的、不经审核。去掉 --from，或写你自己的会话 id", "--from app is reserved for the Dispatch app: what the app sends counts as the user's own and skips review. Leave out --from, or give your own session id"),
 
         // the command line
         "cli.codex_cmd" => ("codex 命令：{v}", "codex command: {v}"),

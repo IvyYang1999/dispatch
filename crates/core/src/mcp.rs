@@ -86,7 +86,7 @@ fn call(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
             ops::send_many_opts(store, &to, &text, &s("urgency").unwrap_or_else(|| "normal".into()), None, false, s("deadline").as_deref()).map_err(|e| format!("{e:#}"))
         }
         "dispatch_inbox" => ops::inbox(store, s("session").as_deref(), b("all").unwrap_or(false)).map_err(|e| format!("{e:#}")),
-        "dispatch_reply" => ops::reply(store, &s("id").ok_or("id is required")?, &s("text").ok_or("text is required")?).map_err(|e| format!("{e:#}")),
+        "dispatch_reply" => ops::reply_as_agent(store, &s("id").ok_or("id is required")?, &s("text").ok_or("text is required")?).map_err(|e| format!("{e:#}")),
         "dispatch_status" => ops::status_wait(store, &s("id").ok_or("id is required")?, args.get("wait").and_then(|v| v.as_u64()).unwrap_or(0)).map_err(|e| format!("{e:#}")),
         "dispatch_register" => ops::register(&s("name").ok_or("name is required")?, s("session").as_deref(), "self", s("description").as_deref()).map_err(|e| format!("{e:#}")),
         "dispatch_retry" => ops::retry(store, &s("id").ok_or("id is required")?).map_err(|e| format!("{e:#}")),
