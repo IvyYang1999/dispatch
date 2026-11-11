@@ -370,6 +370,11 @@ async fn review_close(app: AppHandle) -> Result<(), String> {
 /// What the review window held when it was put away: still held, not brought back on its own,
 /// its senders told the window was closed, and the feed offers Review to bring it back.
 fn put_away(app: &AppHandle, held: Vec<String>) {
+    // nothing held: say nothing, or the empty window, which closes itself on every change,
+    // would hear this change and close again, for ever
+    if held.is_empty() {
+        return;
+    }
     let store = Store::open();
     for id in &held {
         let _ = review::mark_closed(&store, id);
@@ -684,6 +689,11 @@ fn show_main(app: &AppHandle) {
 /// Bring up the review window: above every other window and on every desktop, and, unless
 /// the user asked for it, without taking the keyboard from what they are typing in.
 fn show_review(app: &AppHandle, focus: bool) {
+    // back after the user put it away: its senders hear it is on screen again
+    let store = Store::open();
+    for id in review::queued(&store) {
+        let _ = review::mark_reopened(&store, &id);
+    }
     if let Some(w) = app.get_webview_window(REVIEW_WINDOW) {
         let _ = w.show();
         let _ = w.unminimize();

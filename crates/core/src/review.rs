@@ -224,6 +224,14 @@ pub fn mark_shown(store: &Store, letter_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// The window came back with this copy in it after the user had put it away.
+pub fn mark_reopened(store: &Store, letter_id: &str) -> Result<()> {
+    if state(&store.runs(letter_id)).map(|(s, _)| s == "closed").unwrap_or(false) {
+        store.append_run(letter_id, "review", "shown", "again")?;
+    }
+    Ok(())
+}
+
 /// The user put the window away with this copy still in it: it stays held, and the sender is
 /// told so, so it can ask the user to open the window again from the feed.
 pub fn mark_closed(store: &Store, letter_id: &str) -> Result<()> {
@@ -482,6 +490,8 @@ mod tests {
         assert_eq!(queued(&store), vec![rep.letter_id.clone()], "still in the queue");
         let v = crate::ops::status(&store, &rep.letter_id).unwrap();
         assert_eq!(v["copies"][0]["review"]["app_running"], true, "still waiting: whether the app runs is said");
+        mark_reopened(&store, &rep.letter_id).unwrap();
+        mark_reopened(&store, &rep.letter_id).unwrap();
         mark_shown(&store, &rep.letter_id).unwrap();
         assert_eq!(stage(&rep.letter_id).2.as_deref(), Some("shown"), "opened again from the feed");
         let steps: Vec<String> = store.runs(&rep.letter_id).iter().filter(|r| r.action == "review").map(|r| r.result.clone()).collect();
