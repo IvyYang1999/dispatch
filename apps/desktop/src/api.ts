@@ -53,7 +53,7 @@ export interface Session {
 export type Kind = 'review' | 'queued' | 'delivered' | 'working' | 'replied' | 'failed' | 'cancelled' | 'held'
 /** Where the user's review of a held copy stands, as the sender sees it too. */
 export interface ReviewState {
-  state: 'asked' | 'shown' | 'approved' | 'trusted' | 'declined' | 'withdrawn' | 'expired'
+  state: 'asked' | 'shown' | 'closed' | 'approved' | 'trusted' | 'declined' | 'withdrawn' | 'expired'
   at: string
   app_running?: boolean | null
   steps: { step: string; at: string }[]

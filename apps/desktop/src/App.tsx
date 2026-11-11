@@ -353,6 +353,33 @@ const passes = (th: Thread, f: Filter) => f === 'all' || (f === 'failed' ? th.at
 
 // The feed: one row per pair who wrote to each other, both as equals; the conversation between
 // them on the right, oldest first, each message with where it stands.
+/** Messages held for the user's review, at the top of the feed: the way back to the review
+ *  window after it was closed, which keeps them held. */
+function ReviewStrip() {
+  useLang()
+  const [n, setN] = useState(0)
+  useEffect(() => {
+    const load = () => api.reviewList().then((l) => setN(l.length)).catch(() => {})
+    load()
+    const h = setInterval(load, 5000)
+    const uns = ['review:changed', 'dispatch:changed'].map((e) => listen(e, () => load()))
+    return () => {
+      clearInterval(h)
+      uns.forEach((un) => un.then((f) => f()))
+    }
+  }, [])
+  if (n === 0) return null
+  return (
+    <div className="callout callout--strip">
+      <div className="callout__text">
+        <span className="callout__title">{n === 1 ? t('feed.reviewOne') : t('feed.reviewMany', { n })}</span>
+        <span className="callout__sub">{t('feed.reviewSub')}</span>
+      </div>
+      <button className="btn btn--primary btn--small" onClick={() => api.reviewOpen().catch(() => {})}>{t('action.review')}</button>
+    </div>
+  )
+}
+
 function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: string | null }) {
   const lang = useLang()
   const [items, setItems] = useState<Thread[]>([])
@@ -435,6 +462,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
         <span className="bar__spacer" />
         <button className="btn btn--primary" onClick={() => onCompose()}>{t('feed.send')}</button>
       </header>
+      <ReviewStrip />
       <div className="split">
         <div className="list tlist">
           <FirstRun />

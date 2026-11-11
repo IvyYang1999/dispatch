@@ -57,9 +57,11 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
    queued, delivered, started, finished, replied). Pass `wait` (seconds, up to
    120) to have it answer as soon as something moves. A held copy carries
    `review`: `state` is `asked`, `shown` (the window is in front of the user),
-   `approved`, `trusted`, `declined`, `withdrawn` or `expired`, and
-   `app_running: false` means the window cannot come up until the user opens
-   Dispatch. Replies land in your own inbox: `dispatch_inbox`.
+   `closed` (the user closed the window; still held: ask them to press Review
+   at the top of Dispatch's feed), `approved`, `trusted`, `declined`,
+   `withdrawn` or `expired`, and `app_running: false` means the window cannot
+   come up until the user opens Dispatch. Replies land in your own inbox:
+   `dispatch_inbox`.
 6. To answer a message you received, `dispatch_reply` with its id.
 7. Names beat searching. When the user asks you to register or name yourself
    ("you are in charge of X, register with Dispatch"), call `dispatch_register`

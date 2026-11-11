@@ -450,7 +450,7 @@ fn stage_by_status(status: &str) -> (&'static str, &'static str) {
     }
 }
 
-const STAGE_KEYS: [&str; 23] = ["stage.review_asked", "stage.review_no_app", "stage.review_shown", "stage.review_declined", "stage.review_expired", "stage.held", "stage.held_there", "stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
+const STAGE_KEYS: [&str; 24] = ["stage.review_asked", "stage.review_no_app", "stage.review_shown", "stage.review_closed", "stage.review_declined", "stage.review_expired", "stage.held", "stage.held_there", "stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
 
 /// Why a pending copy waits, from the recipient's state right now: the session is closed, busy
 /// (the hook hands it over when the turn ends), idle (its next turn), a Codex thread not on the

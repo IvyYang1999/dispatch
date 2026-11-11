@@ -176,6 +176,7 @@ pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
         "stage.review_asked" => ("等用户审核：审核弹窗马上弹出", "Waiting for the user's review: the review window is coming up"),
         "stage.review_no_app" => ("等用户审核，但这台电脑上的 Dispatch 没在运行，审核弹窗弹不出来：请用户打开 Dispatch", "Waiting for the user's review, but Dispatch is not running on this machine, so the review window cannot come up: ask the user to open Dispatch"),
         "stage.review_shown" => ("审核弹窗已弹出，等用户点「发送」或「不发」", "The review window is up; waiting for the user to choose Send or Don't send"),
+        "stage.review_closed" => ("用户把审核窗口关了，信还扣着：请用户在 Dispatch 派发页顶上点「审核」重新打开", "The user closed the review window and the message is still held: ask the user to open it again with Review at the top of Dispatch's feed"),
         "stage.review_declined" => ("用户没同意发，没有发出", "The user chose not to send it; it was not sent"),
         "stage.review_expired" => ("等审核过了期限，没有发出", "Its review ran past the deadline; it was not sent"),
         "send.review" => ("先扣在这台电脑上，等用户在 Dispatch 的审核弹窗里点「发送」才发出。用 dispatch_status（加 wait 等它变化）看审核和送达进度，不要重发。", "Held on this machine until the user chooses Send in Dispatch's review window. Follow the review and the delivery with dispatch_status (add wait to wait for a change); do not send it again."),

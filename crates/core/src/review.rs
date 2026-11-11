@@ -184,8 +184,9 @@ fn steps(runs: &[Run]) -> Vec<(String, String)> {
     runs.iter().filter(|r| r.action == "review").map(|r| (r.result.clone(), r.at.clone())).collect()
 }
 
-/// Where the review of a copy stands: `asked`, `shown`, `approved`, `trusted`, `declined`,
-/// `withdrawn` or `expired`, with when; None when it was never held.
+/// Where the review of a copy stands: `asked`, `shown`, `closed` (the user put the window away;
+/// still held), `approved`, `trusted`, `declined`, `withdrawn` or `expired`, with when; None
+/// when it was never held.
 pub fn state(runs: &[Run]) -> Option<(String, String)> {
     steps(runs).into_iter().last()
 }
@@ -195,7 +196,7 @@ pub fn state(runs: &[Run]) -> Option<(String, String)> {
 pub fn summary(store: &Store, runs: &[Run]) -> Option<Value> {
     let all = steps(runs);
     let (state, at) = all.last().cloned()?;
-    let waiting = matches!(state.as_str(), "asked" | "shown");
+    let waiting = matches!(state.as_str(), "asked" | "shown" | "closed");
     Some(json!({
         "state": state,
         "at": at,
@@ -209,15 +210,26 @@ pub fn waiting_stage(store: &Store, runs: &[Run]) -> &'static str {
     match state(runs).map(|(s, _)| s).as_deref() {
         Some("shown") => "stage.review_shown",
         _ if !app_alive(store) => "stage.review_no_app",
+        Some("closed") => "stage.review_closed",
         _ => "stage.review_asked",
     }
 }
 
-/// The window put this copy in front of the user (logged once).
+/// The window put this copy in front of the user (logged once each time it comes up).
 pub fn mark_shown(store: &Store, letter_id: &str) -> Result<()> {
     let runs = store.runs(letter_id);
-    if state(&runs).map(|(s, _)| s == "asked").unwrap_or(false) {
+    if state(&runs).map(|(s, _)| s == "asked" || s == "closed").unwrap_or(false) {
         store.append_run(letter_id, "review", "shown", "")?;
+    }
+    Ok(())
+}
+
+/// The user put the window away with this copy still in it: it stays held, and the sender is
+/// told so, so it can ask the user to open the window again from the feed.
+pub fn mark_closed(store: &Store, letter_id: &str) -> Result<()> {
+    let runs = store.runs(letter_id);
+    if state(&runs).map(|(s, _)| s == "asked" || s == "shown").unwrap_or(false) {
+        store.append_run(letter_id, "review", "closed", "by the user")?;
     }
     Ok(())
 }
@@ -464,6 +476,16 @@ mod tests {
         mark_shown(&store, &rep.letter_id).unwrap();
         assert_eq!(stage(&rep.letter_id), ("review".into(), t("stage.review_shown").into(), Some("shown".into())));
         assert_eq!(store.runs(&rep.letter_id).iter().filter(|r| r.result == "shown").count(), 1, "shown is logged once");
+        mark_closed(&store, &rep.letter_id).unwrap();
+        mark_closed(&store, &rep.letter_id).unwrap();
+        assert_eq!(stage(&rep.letter_id), ("review".into(), t("stage.review_closed").into(), Some("closed".into())), "closing keeps it held, and the sender hears so");
+        assert_eq!(queued(&store), vec![rep.letter_id.clone()], "still in the queue");
+        let v = crate::ops::status(&store, &rep.letter_id).unwrap();
+        assert_eq!(v["copies"][0]["review"]["app_running"], true, "still waiting: whether the app runs is said");
+        mark_shown(&store, &rep.letter_id).unwrap();
+        assert_eq!(stage(&rep.letter_id).2.as_deref(), Some("shown"), "opened again from the feed");
+        let steps: Vec<String> = store.runs(&rep.letter_id).iter().filter(|r| r.action == "review").map(|r| r.result.clone()).collect();
+        assert_eq!(steps, ["asked", "shown", "closed", "shown"]);
         assert!(crate::ops::retry(&store, &rep.letter_id).is_err(), "retrying a held copy does not approve it");
 
         let out = decide(&store, &rep.letter_id, "trust").unwrap();

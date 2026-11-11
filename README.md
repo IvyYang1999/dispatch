@@ -137,7 +137,7 @@ dispatch mcp                                        # the MCP server over stdio 
 </p>
 
 - **Feed.** One row per pair who wrote to each other, both shown as equals (you count as one side when you write from the app): every message between them joins that row, whatever the dispatch. On the right, their conversation, oldest first, each message with where it stands and who else it went to. Filters for waiting and failed. Queued and failed messages carry Retry and Cancel; one held for review carries Review.
-- **Review window.** Comes up by itself when a session's message is held for you, floating above other windows without taking the keyboard; closing it leaves the message held until something new comes or you press Review in the feed.
+- **Review window.** Comes up by itself when a session's message is held for you, floating above other windows without taking the keyboard; closing it leaves the message held until something new comes or you press Review in the strip at the top of the feed, and the sending agent sees that the window was closed. It also comes back when Dispatch restarts.
 - **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now. Paired machines' sessions follow, each group under its machine's name. The pencil on a row (also on a conversation and on a session's page) gives the session a name, a one-line role and a picture (an emoji and a color; by default the emoji its name starts with); Open brings the session up in its own app.
 - **Send.** The recipient box is the finder. Urgency. Several recipients at once.
 - **Settings.** One-click install, the plugin commands to copy, other machines (pairing), the language, notifications, where the messages live, check for updates.

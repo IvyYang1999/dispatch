@@ -359,14 +359,26 @@ async fn review_decide(app: AppHandle, id: String, decision: String) -> Result<V
 /// back for it until something new is held or the user opens it from the feed.
 #[tauri::command]
 async fn review_close(app: AppHandle) -> Result<(), String> {
-    let held: HashSet<String> = blocking(|| Ok(review::queued(&Store::open()).into_iter().collect())).await?;
-    if let Ok(mut d) = app.state::<Reviews>().dismissed.lock() {
-        d.extend(held);
-    }
+    let held = blocking(|| Ok(review::queued(&Store::open()))).await?;
+    put_away(&app, held);
     if let Some(w) = app.get_webview_window(REVIEW_WINDOW) {
         let _ = w.hide();
     }
     Ok(())
+}
+
+/// What the review window held when it was put away: still held, not brought back on its own,
+/// its senders told the window was closed, and the feed offers Review to bring it back.
+fn put_away(app: &AppHandle, held: Vec<String>) {
+    let store = Store::open();
+    for id in &held {
+        let _ = review::mark_closed(&store, id);
+    }
+    if let Ok(mut d) = app.state::<Reviews>().dismissed.lock() {
+        d.extend(held);
+    }
+    let _ = app.emit("review:changed", ());
+    let _ = app.emit("dispatch:changed", ());
 }
 
 /// Open the review window now, in front and with the keyboard (the user asked for it).
@@ -871,10 +883,7 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 if window.label() == REVIEW_WINDOW {
-                    let held = review::queued(&Store::open());
-                    if let Ok(mut d) = window.app_handle().state::<Reviews>().dismissed.lock() {
-                        d.extend(held);
-                    }
+                    put_away(window.app_handle(), review::queued(&Store::open()));
                 }
                 let _ = window.hide();
             }
