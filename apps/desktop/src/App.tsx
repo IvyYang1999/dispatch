@@ -37,7 +37,22 @@ export function plain(name: string): string {
 /** A session's picture: the emoji the user chose (or the one its name, or its name in its own
  *  app, starts with) on a soft tint, else its initial on a color of its own; the user's color
  *  wins either way. */
-export function Avatar({ name, look, appName, size = 24 }: { name: string; look?: Look | null; appName?: string | null; size?: number }) {
+export function Avatar({ name, look, appName, size = 24, harness, unknown }: { name: string; look?: Look | null; appName?: string | null; size?: number; harness?: string | null; unknown?: boolean }) {
+  if (harness) {
+    return (
+      <span className="avatar-wrap" style={{ width: size, height: size }}>
+        <Avatar name={name} look={look} appName={appName} size={size} unknown={unknown} />
+        <span className="avatar-badge"><HarnessMark harness={harness} size={Math.max(9, Math.round(size * 0.5))} /></span>
+      </span>
+    )
+  }
+  if (unknown) {
+    return (
+      <span className="avatar avatar--unknown" style={{ width: size, height: size, fontSize: size * 0.5 }}>
+        ?
+      </span>
+    )
+  }
   const emoji = look?.emoji || leadingEmoji(name) || (appName ? leadingEmoji(appName) : null)
   const color = look?.color || null
   if (emoji) {
@@ -80,18 +95,33 @@ export interface EditTarget {
   contact?: string | null
   about?: string | null
   avatar?: Look | null
+  /** the person themself: a name and a picture, nothing to remove */
+  me?: boolean
 }
 
 /** Name a session, say what it is for, and pick its picture: one sheet, wherever it opens. */
 export function ContactEditor({ target, onClose, onSaved }: { target: EditTarget; onClose: () => void; onSaved: (text: string) => void }) {
   useLang()
-  const [name, setName] = useState(target.contact ?? target.name)
+  const [name, setName] = useState(target.me ? (target.name === t('party.you') ? '' : target.name) : (target.contact ?? target.name))
   const [about, setAbout] = useState(target.about ?? '')
   const [emoji, setEmoji] = useState(target.avatar?.emoji ?? '')
   const [color, setColor] = useState(target.avatar?.color ?? '')
   const [err, setErr] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const save = async () => {
+    if (target.me) {
+      setBusy(true)
+      try {
+        await api.meSet(name.trim() || null, { emoji: emoji.trim() || null, color: color || null })
+        onSaved('')
+        onClose()
+      } catch (e) {
+        setErr(String(e))
+      } finally {
+        setBusy(false)
+      }
+      return
+    }
     if (!name.trim()) {
       setErr(t('editor.needName'))
       return
@@ -130,18 +160,18 @@ export function ContactEditor({ target, onClose, onSaved }: { target: EditTarget
         <div className="sheet__head">
           <Avatar name={name || target.name} look={{ emoji: emoji || null, color: color || null }} size={44} />
           <div className="sheet__title">
-            <span>{t('editor.title')}</span>
-            <span className="sheet__sub">{t('editor.sub')}</span>
+            <span>{target.me ? t('editor.meTitle') : t('editor.title')}</span>
+            <span className="sheet__sub">{target.me ? t('editor.meSub') : t('editor.sub')}</span>
           </div>
         </div>
         <label className="field">
           <span className="field__label">{t('editor.name')}</span>
-          <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} onKeyDown={onKey} />
+          <input className="input" autoFocus placeholder={target.me ? t('party.you') : undefined} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={onKey} />
         </label>
-        <label className="field">
+        {!target.me && <label className="field">
           <span className="field__label">{t('editor.about')}</span>
           <input className="input" placeholder={t('contact.about')} value={about} onChange={(e) => setAbout(e.target.value)} onKeyDown={onKey} />
-        </label>
+        </label>}
         <div className="field">
           <span className="field__label">{t('editor.emoji')}</span>
           <div className="picks">
@@ -235,7 +265,7 @@ export function HarnessMark({ harness, size = 14 }: { harness?: string | null; s
     )
   }
   const src = all[key]
-  if (!src) return <span className="tag">{harness}</span>
+  if (!src) return <span className="hmark hmark--text" style={{ width: size, height: size, fontSize: Math.round(size * 0.62) }} title={harness}>{harness.slice(0, 1)}</span>
   return <img className="hmark" width={size} height={size} src={src} alt={harness} title={harness} />
 }
 
@@ -322,24 +352,29 @@ function partySub(p: Party): string {
 function PartyCard({ p, onCompose, onOpen, onEdit }: { p: Party; onCompose: (to: string) => void; onOpen: (address: string) => void; onEdit: (p: Party) => void }) {
   return (
     <div className="party">
-      <Avatar name={p.name} look={p.avatar} appName={p.app_name} size={30} />
+      <Avatar name={p.name} look={p.avatar} appName={p.app_name} size={28} unknown={p.unknown} />
       <div className="party__names">
         <span className="party__name">
           <span className="party__label">{plain(p.name)}</span>
           <HarnessMark harness={p.harness} />
         </span>
-        {!p.person && <span className="party__sub" title={partySub(p)}>{partySub(p)}</span>}
+        {!p.person && <span className="party__sub" title={p.unknown ? t('party.unknownSub') : partySub(p)}>{p.unknown ? t('party.unknownSub') : partySub(p)}</span>}
+        {p.person && <span className="party__sub">{t('party.youSub')}</span>}
       </div>
-      {p.address && (
+      {(p.address || p.person) && (
         <span className="party__acts">
-          <button className="btn btn--ghost btn--small btn--with-icon" title={t('thread.open')} onClick={() => onOpen(p.address!)}>
-            <Icon name="open" size={13} />
-            {t('action.openShort')}
-          </button>
-          <button className="btn btn--ghost btn--icon" title={t('thread.write')} onClick={() => onCompose(p.address!)}>
-            <Icon name="write" size={14} />
-          </button>
-          <button className="btn btn--ghost btn--icon" title={t('thread.edit')} onClick={() => onEdit(p)}>
+          {p.address && (
+            <>
+              <button className="btn btn--ghost btn--small btn--with-icon" title={t('thread.open')} onClick={() => onOpen(p.address!)}>
+                <Icon name="open" size={13} />
+                {t('action.openShort')}
+              </button>
+              <button className="btn btn--ghost btn--icon" title={t('thread.write')} onClick={() => onCompose(p.address!)}>
+                <Icon name="write" size={14} />
+              </button>
+            </>
+          )}
+          <button className="btn btn--ghost btn--icon" title={p.person ? t('editor.meTitle') : t('thread.edit')} onClick={() => onEdit(p)}>
             <Icon name="edit" size={14} />
           </button>
         </span>
@@ -391,7 +426,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
   const [editing, setEditing] = useState<EditTarget | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
-  const edit = (p: Party) => setEditing({ address: p.address!, name: p.app_name ?? p.name, contact: p.contact, about: p.about, avatar: p.avatar })
+  const edit = (p: Party) => setEditing(p.person ? { address: '', name: p.name, me: true, avatar: p.avatar } : { address: p.address!, name: p.app_name ?? p.name, contact: p.contact, about: p.about, avatar: p.avatar })
   // picked in the menu bar (a dispatch): show the conversation it is in, whatever the filter
   useEffect(() => {
     if (pick) {
@@ -473,8 +508,8 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
             return (
               <div key={th.key} className="row trow" data-selected={current?.key === th.key || undefined} onClick={() => setSelected(th.key)}>
                 <span className="pair">
-                  <Avatar name={th.a.name} look={th.a.avatar} appName={th.a.app_name} size={22} />
-                  <Avatar name={th.b.name} look={th.b.avatar} appName={th.b.app_name} size={22} />
+                  <Avatar name={th.a.name} look={th.a.avatar} appName={th.a.app_name} size={22} unknown={th.a.unknown} />
+                  <Avatar name={th.b.name} look={th.b.avatar} appName={th.b.app_name} size={22} unknown={th.b.unknown} />
                 </span>
                 <div className="row__main">
                   <div className="row__line">
@@ -519,7 +554,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                   const who = m.side === 'a' ? current.a : current.b
                   return (
                     <div key={m.letter_id} className="tmsg">
-                      <Avatar name={who.name} look={who.avatar} appName={who.app_name} size={26} />
+                      <Avatar name={who.name} look={who.avatar} appName={who.app_name} size={28} unknown={who.unknown} />
                       <div className="tmsg__main">
                       <div className="tmsg__head">
                         <span className="tmsg__who">{plain(who.name)}</span>
@@ -614,7 +649,8 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
   }, [query, search, lang])
   const base = results ?? sessions
   const tools = useMemo(() => Array.from(new Set(base.map((s) => s.harness))), [base])
-  const shown = base.filter((s) => tool === 'all' || s.harness === tool)
+  const isContact = (s: Session) => !!s.contact && !s.provisional
+  const shown = base.filter((s) => tool === 'all' || (tool === 'contacts' ? isContact(s) : s.harness === tool))
   // this machine first, then each paired machine under its own name
   const groups = useMemo(() => {
     const m = new Map<string, { key: string; title: string; items: Session[] }>()
@@ -631,12 +667,13 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
         <span className="bar__title" data-tauri-drag-region>{t('nav.agents')}</span>
         <span className="tabs">
           <button className="tab" data-active={tool === 'all' || undefined} onClick={() => setTool('all')}>{t('tabs.all')} <i>{base.length}</i></button>
+          <button className="tab" data-active={tool === 'contacts' || undefined} title={t('agents.contactsTip')} onClick={() => setTool('contacts')}>{t('agents.contacts')} <i>{base.filter(isContact).length}</i></button>
           {tools.map((h) => (
             <button key={h} className="tab" data-active={tool === h || undefined} onClick={() => setTool(h)}>{h} <i>{base.filter((s) => s.harness === h).length}</i></button>
           ))}
         </span>
         <span className="bar__spacer" />
-        <input className="input input--search" placeholder={t('agents.search')} value={query} onChange={(e) => setQuery(e.target.value)} />
+        <input className="input input--search" placeholder={t('agents.search')} title={t('agents.searchTip')} value={query} onChange={(e) => setQuery(e.target.value)} />
       </header>
       <div className="lines">
         {groups.map((g) => (
@@ -656,15 +693,14 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
                   <>
                     <span className="line__who" title={s.id}>
                       <span className="line__name">
-                        {s.contact && !s.provisional && <span className="line__star">★</span>}
-                        {s.name}
+                        {plain(s.name)}
                         {s.contact && s.provisional && <span className="line__prov" title={t('contact.provisional')}>≈ {s.contact}</span>}
                       </span>
                       {s.about && <span className="line__about">{s.about}</span>}
                     </span>
                     <HarnessMark harness={s.harness} size={16} />
                     <span className="line__where" title={s.cwd ?? ''}>{s.cwd_short ?? ''}</span>
-                    <span className="line__presence" data-presence={s.running ? (s.status ?? 'idle') : 'offline'}>
+                    <span className="line__presence" data-presence={s.running ? (s.status ?? 'idle') : 'offline'} title={s.running ? undefined : t('presence.offlineTip')}>
                       <span className="line__dot" />
                       {presence(s)}
                     </span>
@@ -767,7 +803,7 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
               <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={40} />
               <div className="who__text">
                 <div className="who__line">
-                  <span className="who__name">{s.contact && !s.provisional && <span className="line__star">★</span>}{s.name}</span>
+                  <span className="who__name">{plain(s.name)}</span>
                   <HarnessMark harness={s.harness} size={16} />
                   {s.host && <span className="tag">{s.host.name}</span>}
                 </div>
@@ -1206,7 +1242,7 @@ function Settings() {
   const grokState = !st ? '' : !st.grok_app ? t('settings.grokMissing') : !st.grok_signed_in ? t('settings.grokSignIn') : !st.gbot ? t('settings.grokNoGbot') : st.grok_error ? t('settings.grokOffline', { e: st.grok_error }) : t('settings.grokReady', { n: st.grok_bots })
   return (
     <>
-      <header className="bar" data-tauri-drag-region>
+      <header className="bar bar--page" data-tauri-drag-region>
         <span className="bar__title" data-tauri-drag-region>{t('nav.settings')}</span>
       </header>
       <div className="settings">
@@ -1453,9 +1489,9 @@ export function App() {
           <div className="section">{t('side.local')}</div>
           {live.filter((s) => !s.host).slice(0, 8).map((s) => (
             <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
-              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={18} />
+              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={20} harness={s.harness} />
               <span className="agent__name">{plain(s.name)}</span>
-              <span className="presence" data-on={s.running || undefined} />
+              <span className="presence" data-on={s.running || undefined} title={s.running ? t('presence.onTip') : t('presence.offlineTip')} />
             </div>
           ))}
         </div>
@@ -1464,9 +1500,9 @@ export function App() {
             <div className="section">{h.name}</div>
             {live.filter((s) => s.host?.id === h.id).slice(0, 5).map((s) => (
               <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
-                <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={18} />
+                <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={20} harness={s.harness} />
                 <span className="agent__name">{plain(s.name)}</span>
-                <span className="presence" data-on={s.running || undefined} />
+                <span className="presence" data-on={s.running || undefined} title={s.running ? t('presence.onTip') : t('presence.offlineTip')} />
               </div>
             ))}
           </div>

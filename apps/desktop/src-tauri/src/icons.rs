@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
-const APPS: [(&str, &str); 3] = [("claude", "Claude"), ("codex", "Codex"), ("grok", "Grok Bot")];
+const APPS: [(&str, &str, &str); 3] = [("claude", "Claude", "com.anthropic.claudefordesktop"), ("codex", "Codex", "com.openai.codex"), ("grok", "Grok Bot", "")];
 
 pub fn harness_icons(store_root: &Path) -> Value {
     let mut v = json!({});
@@ -14,8 +14,8 @@ pub fn harness_icons(store_root: &Path) -> Value {
     {
         let dir = store_root.join("icons");
         let _ = std::fs::create_dir_all(&dir);
-        for (key, app) in APPS {
-            let Some(bundle) = app_bundle(app) else { continue };
+        for (key, app, id) in APPS {
+            let Some(bundle) = app_bundle(app, id) else { continue };
             let out = dir.join(format!("{key}.png"));
             if !fresh(&out, &bundle) {
                 let _ = std::fs::remove_file(&out);
@@ -33,9 +33,10 @@ pub fn harness_icons(store_root: &Path) -> Value {
     v
 }
 
-/// `/Applications/<name>.app`, `~/Applications/<name>.app`, else wherever Spotlight has it.
+/// `/Applications/<name>.app`, `~/Applications/<name>.app`, else wherever Spotlight has the
+/// bundle id, else the display name.
 #[cfg(target_os = "macos")]
-fn app_bundle(name: &str) -> Option<std::path::PathBuf> {
+fn app_bundle(name: &str, id: &str) -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     let home = dispatch_core::model::home_dir();
     for dir in [PathBuf::from("/Applications"), home.join("Applications")] {
@@ -44,8 +45,11 @@ fn app_bundle(name: &str) -> Option<std::path::PathBuf> {
             return Some(p);
         }
     }
-    let out = std::process::Command::new("mdfind").args(["-onlyin", "/", &format!("kMDItemKind == 'Application' && kMDItemDisplayName == '{name}'")]).output().ok()?;
-    String::from_utf8_lossy(&out.stdout).lines().map(PathBuf::from).find(|p| p.extension().map(|e| e == "app").unwrap_or(false) && p.join("Contents/Info.plist").is_file())
+    let queries = [(!id.is_empty()).then(|| format!("kMDItemCFBundleIdentifier == '{id}'")), Some(format!("kMDItemKind == 'Application' && kMDItemDisplayName == '{name}'"))];
+    queries.into_iter().flatten().find_map(|q| {
+        let out = std::process::Command::new("mdfind").args(["-onlyin", "/", &q]).output().ok()?;
+        String::from_utf8_lossy(&out.stdout).lines().map(PathBuf::from).find(|p| p.extension().map(|e| e == "app").unwrap_or(false) && p.join("Contents/Info.plist").is_file())
+    })
 }
 
 /// Good for a week, and only while the app has not changed since.
@@ -60,9 +64,21 @@ fn fresh(out: &Path, bundle: &Path) -> bool {
     }
 }
 
-/// The icns the bundle names (or any icns in its resources), scaled to 64 px with `sips`.
+/// The icon macOS itself shows for the app (whatever form the app keeps it in), scaled to 64 px;
+/// else the icns the bundle names, or any icns in its resources.
 #[cfg(target_os = "macos")]
 fn render(bundle: &Path, out: &Path) {
+    const SYSTEM_ICON: &str = "ObjC.import('AppKit'); function run(a) { const i = $.NSWorkspace.sharedWorkspace.iconForFile(a[0]); i.setSize({ width: 64, height: 64 }); const r = $.NSBitmapImageRep.alloc.initWithData(i.TIFFRepresentation); return r.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $({})).writeToFileAtomically(a[1], true) ? 'ok' : 'no' }";
+    let made = std::process::Command::new("osascript").args(["-l", "JavaScript", "-e", SYSTEM_ICON]).arg(bundle).arg(out).output().map(|o| o.status.success()).unwrap_or(false);
+    if made && out.is_file() {
+        let _ = std::process::Command::new("sips").args(["-Z", "64"]).arg(out).output();
+        return;
+    }
+    render_icns(bundle, out);
+}
+
+#[cfg(target_os = "macos")]
+fn render_icns(bundle: &Path, out: &Path) {
     let resources = bundle.join("Contents/Resources");
     let plist = bundle.join("Contents/Info.plist");
     let named = std::process::Command::new("/usr/libexec/PlistBuddy")
@@ -91,4 +107,23 @@ fn base64(bytes: &[u8]) -> String {
         s.push(if chunk.len() > 2 { T[n as usize & 63] as char } else { '=' });
     }
     s
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    /// Every client installed here gets its icon, whatever form the app keeps it in.
+    #[test]
+    fn an_installed_client_gets_its_icon() {
+        let dir = std::env::temp_dir().join(format!("dispatch-icons-{}", std::process::id()));
+        let v = harness_icons(&dir);
+        for (key, app, id) in APPS {
+            if app_bundle(app, id).is_some() {
+                let url = v[key].as_str().unwrap_or_else(|| panic!("{app} is installed but has no icon: {v}"));
+                assert!(url.starts_with("data:image/png;base64,") && url.len() > 200, "{app}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

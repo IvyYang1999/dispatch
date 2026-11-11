@@ -128,7 +128,7 @@ dispatch install                                    # CLI to ~/.dispatch/bin, Cl
 dispatch mcp                                        # the MCP server over stdio (what the plugins start)
 ```
 
-`--to` takes a session id, an id prefix, the session's desktop name or a fragment of its title. `--from` names the sender when you are not inside a session (a Claude Code session or a Codex thread that runs the command is recognized by itself).
+`--to` takes a session id, an id prefix, the session's desktop name or a fragment of its title. `--from` names the sender when you are not inside a session (a Claude Code session or a Codex thread that runs the command is recognized by itself). `--from app` is refused: only the app writes as you, and what it sends is not held for review. A sender with no session recognized behind it shows as *Unrecognized command line*, never as you, and a message written to you is answered only in the app.
 
 ## The desktop app
 
@@ -137,8 +137,10 @@ dispatch mcp                                        # the MCP server over stdio 
 </p>
 
 - **Feed.** One row per pair who wrote to each other, both shown as equals (you count as one side when you write from the app): every message between them joins that row, whatever the dispatch. On the right, their conversation, oldest first, each message with where it stands and who else it went to. Filters for waiting and failed. Queued and failed messages carry Retry and Cancel; one held for review carries Review.
-- **Review window.** Comes up by itself when a session's message is held for you, floating above other windows without taking the keyboard; closing it leaves the message held until something new comes or you press Review in the strip at the top of the feed, and the sending agent sees that the window was closed. It also comes back when Dispatch restarts.
-- **Directory.** Every session on the Mac: harness, folder, idle or working, and the delivery path it would get right now. Paired machines' sessions follow, each group under its machine's name. The pencil on a row (also on a conversation and on a session's page) gives the session a name, a one-line role and a picture (an emoji and a color; by default the emoji its name starts with); Open brings the session up in its own app.
+- **Review window.** Comes up by itself when a session's message is held for you, floating above other windows without taking the keyboard; closing it leaves the message held until something new comes or you press Review in the strip at the top of the feed, and the sending agent sees that the window was closed. It also comes back when Dispatch restarts. After Send or Don't send the window folds into a small card with the result, which closes by itself after five seconds (not while the pointer is on it).
+- **Directory.** Every session on the Mac: harness, folder, idle, working or not open (a session that is not open still takes messages; they arrive when you open it), and the delivery path it would get right now. The Address book tab lists the sessions you named. Paired machines' sessions follow, each group under its machine's name. The pencil on a row (also on a conversation and on a session's page) gives the session a name, a one-line role and a picture (an emoji and a color; by default the emoji its name starts with); Open brings the session up in its own app.
+- **Sidebar.** Sessions with a green dot are open, gray ones are not; the corner of each picture shows whether it is Claude or Codex.
+- **You.** The pencil on your side of a conversation sets your own name and picture.
 - **Send.** The recipient box is the finder. Urgency. Several recipients at once.
 - **Settings.** One-click install, the plugin commands to copy, other machines (pairing), the language, notifications, where the messages live, check for updates.
 - **Other machines.** Machines running Dispatch on your network appear in Settings; press Pair and enter the code the other one shows. Their sessions join the directory and the composer, and a reply from one of them lands in your feed.

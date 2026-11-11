@@ -56,6 +56,11 @@ export function Review() {
   const [info, setInfo] = useState<ReviewInfo | null>(null)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState<string | null>(null)
+  // what the user just decided, shown on its own small card until closed or timed out
+  const [result, setResult] = useState<{ sent: boolean; title: string; detail: string; to: string; more: boolean } | null>(null)
+  const showing = useRef(false)
+  const [left, setLeft] = useState(5)
+  const [hold, setHold] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const current = useRef<string | null>(null)
   const closing = useRef<number | null>(null)
@@ -70,6 +75,7 @@ export function Review() {
       const list = await api.reviewList()
       setIds(list)
       const head = list[0] ?? null
+      if (showing.current) return
       if (!head) {
         // nothing left: the result stays a moment, then the window goes away
         if (closing.current == null) {
@@ -114,14 +120,14 @@ export function Review() {
     const fit = () => {
       const content = (bar.current?.offsetHeight ?? 0) + (body.current?.scrollHeight ?? 0) + (foot.current?.offsetHeight ?? 0)
       const most = Math.max(420, (window.screen?.availHeight ?? 900) - 120)
-      const h = Math.min(most, Math.max(360, Math.ceil(content)))
+      const h = Math.min(most, Math.max(showing.current ? 180 : 360, Math.ceil(content)))
       getCurrentWindow()
         .setSize(new LogicalSize(window.innerWidth || 480, h))
         .catch(() => {})
     }
     const raf = requestAnimationFrame(fit)
     return () => cancelAnimationFrame(raf)
-  }, [info, done])
+  }, [info, done, result])
 
   const openIt = async () => {
     if (!info) return
@@ -138,16 +144,74 @@ export function Review() {
     setBusy(true)
     try {
       const r = await api.reviewDecide(info.letter_id, decision)
-      setDone(decision === 'decline' ? t('review.notSent') : t('review.sent', { detail: r.detail ?? '' }))
+      const sent = decision !== 'decline'
       current.current = info.letter_id
-      // the next one comes up on the next look
-      window.setTimeout(load, 900)
+      showing.current = true
+      setLeft(5)
+      setHold(false)
+      setResult({
+        sent,
+        title: !sent ? t('review.notSent') : decision === 'trust' ? t('review.sentTrusted') : t('review.sentTitle'),
+        detail: sent ? r.detail ?? '' : t('review.notSentDetail'),
+        to: info.session?.name ?? info.to_name,
+        more: ids.length > 1,
+      })
     } catch (e) {
       setErr(String(e))
       load()
     } finally {
       setBusy(false)
     }
+  }
+
+  // the result card: the next held message after a moment, else close after a few seconds
+  const closeResult = useCallback(() => {
+    showing.current = false
+    setResult(null)
+    setInfo(null)
+    setDone(null)
+    current.current = null
+    api.reviewClose().catch(() => {})
+    load()
+  }, [load])
+  useEffect(() => {
+    if (!result) return
+    if (result.more) {
+      const h = window.setTimeout(() => {
+        showing.current = false
+        setResult(null)
+        load()
+      }, 1600)
+      return () => window.clearTimeout(h)
+    }
+    if (hold) return
+    if (left <= 0) {
+      closeResult()
+      return
+    }
+    const h = window.setTimeout(() => setLeft((n) => n - 1), 1000)
+    return () => window.clearTimeout(h)
+  }, [result, left, hold, closeResult, load])
+
+  if (result) {
+    return (
+      <div className="review review--result" onMouseEnter={() => setHold(true)} onMouseLeave={() => setHold(false)}>
+        <div className="review__bar" data-tauri-drag-region ref={bar} />
+        <div className="review__body review__result" ref={body}>
+          <svg className="tick" data-sent={result.sent || undefined} width="44" height="44" viewBox="0 0 44 44" aria-hidden="true">
+            <circle className="tick__ring" cx="22" cy="22" r="20" />
+            {result.sent ? <path className="tick__mark" d="M13 22.5l6 6 12-13" /> : <path className="tick__mark" d="M15 22h14" />}
+          </svg>
+          <div className="review__result-title">{result.title}</div>
+          <div className="review__result-to">{t('review.resultTo', { to: plain(result.to) })}</div>
+          {result.detail && <div className="review__result-detail">{result.detail}</div>}
+        </div>
+        <div className="review__foot review__foot--result" ref={foot}>
+          <span className="review__result-left">{result.more ? t('review.nextComing') : hold ? t('review.resultHeld') : t('review.closingIn', { n: left })}</span>
+          {!result.more && <button className="btn btn--primary" autoFocus onClick={closeResult}>{t('action.close')}</button>}
+        </div>
+      </div>
+    )
   }
 
   const s = info?.session ?? null
@@ -172,7 +236,7 @@ export function Review() {
         <div className="review__body" ref={body}>
           <div className="review__who">
             <div className="review__party">
-              <Avatar name={info.from_name} look={info.from_avatar} size={30} />
+              <Avatar name={info.from_name} look={info.from_avatar} size={30} unknown={info.from_unknown} />
               <div className="review__names">
                 <span className="review__name">{plain(info.from_name)} <HarnessMark harness={harnessLabel(info.from_harness)} /></span>
                 <span className="review__sub">{t('review.wantsTo')}</span>
@@ -183,8 +247,8 @@ export function Review() {
               <Avatar name={shown} look={s?.avatar} appName={s?.app_name} size={30} />
               <div className="review__names">
                 <span className="review__name">{plain(shown)} <HarnessMark harness={s?.harness ?? harnessLabel(info.to_harness)} /></span>
-                <span className="review__sub">
-                  {where}
+                <span className="review__sub review__sub--open">
+                  <span className="review__where" title={where ?? undefined}>{where}</span>
                   <button className="review__open" title={t('review.open')} onClick={openIt}>
                     {t('review.open')}
                     <Icon name="open" size={11} />

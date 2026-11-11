@@ -148,6 +148,8 @@ export interface Party {
   /** Its name in the address book, when the user gave it one. */
   contact: string | null
   about: string | null
+  /** The command line or an MCP caller with no recognized session behind it: not the person. */
+  unknown?: boolean
 }
 /** One message in a conversation: a stored copy with the side that wrote it. */
 export interface ThreadMessage extends Copy {
@@ -196,6 +198,7 @@ export interface ReviewInfo {
   from_name: string
   from_harness: string | null
   from_avatar?: Look | null
+  from_unknown?: boolean
   to: string
   to_name: string
   to_harness: string | null
@@ -301,6 +304,7 @@ export const api = {
   searchSessions: (query: string) => invoke<{ sessions: Session[] }>('search_sessions', { query }),
   sessionPage: (id: string) => invoke<SessionPageData>('session_page', { id }),
   harnessIcons: () => invoke<Record<string, string>>('harness_icons'),
+  meSet: (name: string | null, avatar: Look) => invoke<{ name?: string; avatar?: Look }>('me_set', { name, avatar }),
   contactRemove: (name: string) => invoke<{ removed: string }>('contact_remove', { name }),
   reviewList: () => invoke<string[]>('review_list'),
   reviewInfo: (id: string) => invoke<ReviewInfo>('review_info', { id }),
