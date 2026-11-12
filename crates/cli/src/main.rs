@@ -503,11 +503,16 @@ fn run() -> Result<i32> {
             let hook_on = hook::installed();
             let list: Vec<model::Session> = discover::sessions().into_iter().filter(|s| all || s.running).collect();
             if json {
+                // what each session shares with other sessions (agents read this too)
                 let rows: Vec<serde_json::Value> = list
                     .iter()
                     .map(|s| {
-                        let r = reach::decide(s, hook_on);
-                        serde_json::json!({ "session": s, "reach": r })
+                        let mut r = serde_json::to_value(reach::decide(s, hook_on)).unwrap_or_default();
+                        if let Some(o) = r.as_object_mut() {
+                            o.remove("mode");
+                            o.remove("client");
+                        }
+                        serde_json::json!({ "session": dispatch_core::share::for_agents(serde_json::to_value(s).unwrap_or_default()), "reach": r })
                     })
                     .collect();
                 println!("{}", serde_json::to_string_pretty(&rows)?);
@@ -517,13 +522,14 @@ fn run() -> Result<i32> {
                 }
                 for s in &list {
                     let r = reach::decide(s, hook_on);
+                    let shown = dispatch_core::share::for_agents(serde_json::to_value(s).unwrap_or_default());
                     println!(
                         "{:<18} {:<7} {:<4} {:<26} {:<32} {}",
                         truncate(&s.short_address(), 18),
                         s.harness.label(),
                         if s.running { t("cli.running_mark") } else { "  " },
-                        truncate(&s.display_name(), 26),
-                        truncate(&s.cwd.as_deref().map(model::short_cwd).unwrap_or_default(), 32),
+                        truncate(shown["name"].as_str().unwrap_or(""), 26),
+                        truncate(shown["cwd"].as_str().map(model::short_cwd).or_else(|| shown["project"].as_str().map(str::to_string)).as_deref().unwrap_or(""), 32),
                         r.text
                     );
                 }
@@ -532,7 +538,7 @@ fn run() -> Result<i32> {
         Cmd::Find { query, json } => {
             let q = query.join(" ");
             if json {
-                println!("{}", serde_json::to_string_pretty(&dispatch_core::ops::search(&q))?);
+                println!("{}", serde_json::to_string_pretty(&dispatch_core::share::list_for_agents(dispatch_core::ops::search(&q), "sessions"))?);
             } else {
                 let hook_on = hook::installed();
                 let found = dispatch_core::ops::find_sessions(&q);
@@ -541,14 +547,15 @@ fn run() -> Result<i32> {
                 }
                 for (s, _) in &found {
                     let r = reach::decide(s, hook_on);
+                    let shown = dispatch_core::share::for_agents(serde_json::to_value(s).unwrap_or_default());
                     println!(
                         "{:<26} {:<7} {:<4} {:<11} {:<26} {:<32} {}",
                         truncate(&s.short_address(), 26),
                         s.harness.label(),
                         if s.running { t("cli.running_mark") } else { "  " },
                         model::local_minute(s.last_active),
-                        truncate(&s.display_name(), 26),
-                        truncate(&s.cwd.as_deref().map(model::short_cwd).unwrap_or_default(), 32),
+                        truncate(shown["name"].as_str().unwrap_or(""), 26),
+                        truncate(shown["cwd"].as_str().map(model::short_cwd).or_else(|| shown["project"].as_str().map(str::to_string)).as_deref().unwrap_or(""), 32),
                         r.text
                     );
                 }

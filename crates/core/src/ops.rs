@@ -42,7 +42,8 @@ fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Co
         "last_active": s.last_active,
         "host": s.host,
         "address": s.address(),
-        "reach": { "level": r.level, "text": r.text, "fix": r.fix, "mode": r.mode, "client": r.client },
+        "reach": { "level": r.level, "text": r.text, "fix": r.fix, "mode": r.mode, "client": r.client, "plain": reach::plain(s, &r) },
+        "share": crate::share::level(&s.id, host_id),
     })
 }
 

@@ -28,6 +28,7 @@ pub mod reach;
 pub mod review;
 pub mod send;
 pub mod settings;
+pub mod share;
 pub mod store;
 pub mod transcript;
 pub mod wake;

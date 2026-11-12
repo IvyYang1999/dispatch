@@ -14,8 +14,9 @@
 //! up the review window: on top of everything, but without taking the keyboard.
 //!
 //! A third looks every few seconds for messages waiting for their session to be opened (see
-//! `dispatch_core::wake`): it brings up a small reminder with Open, and when nobody has touched
-//! this Mac for a while it opens the session itself, in its own app, behind the user's windows.
+//! `dispatch_core::wake`) and opens each such session itself, at once, behind the user's
+//! windows: in its own app, else in a Terminal window. A small reminder with Open comes up only
+//! for what it could not do.
 
 use dispatch_core::i18n::{self, t};
 use dispatch_core::{hook, model, ops, peer, review, settings, store::Store, wake, watch};
@@ -58,24 +59,60 @@ struct Waits {
     current: Mutex<Vec<String>>,
     dismissed: Mutex<HashSet<String>>,
     opened: Mutex<std::collections::HashMap<String, Instant>>,
+    /// Sessions the app tried to open and could not.
+    failed: Mutex<HashSet<String>>,
 }
 
 const WAIT_WINDOW: &str = "waiting";
-/// Nobody has touched this Mac for this long: the app opens a waiting session itself.
-const AWAY_SECS: u64 = 90;
+/// Nobody typed or clicked for this long: a window that comes up now cannot catch a keystroke.
+const QUIET_SECS: u64 = 3;
 /// A session the app opened itself is not opened again for this long.
 const REOPEN_SECS: u64 = 600;
 
-/// The messages waiting for their session to be opened, and what the app does about them.
+/// Why a waiting message needs the user, or None when the app takes care of it: the setting says
+/// remind only (`ask`), opening failed (`failed`), it was opened and still has not taken the
+/// message (`stuck`), or there is no way to open it here (`manual`).
+fn needs_you(app: &AppHandle, mode: &str, w: &Value) -> Option<&'static str> {
+    let sid = w["session"]["id"].as_str().unwrap_or("");
+    if mode != "auto" {
+        return Some("ask");
+    }
+    if app.state::<Waits>().failed.lock().map(|f| f.contains(sid)).unwrap_or(false) {
+        return Some("failed");
+    }
+    if w["stuck"] == true {
+        return Some("stuck");
+    }
+    if w["session"]["url"].is_null() && w["session"]["command"].is_null() {
+        return Some("manual");
+    }
+    None
+}
+
+/// The messages waiting for their session that need the user, each with why.
 #[tauri::command]
-async fn wait_list() -> Result<Value, String> {
-    blocking(|| Ok(json!({ "mode": wake::mode(), "waiting": wake::waiting(&Store::open()) }))).await
+async fn wait_list(app: AppHandle) -> Result<Value, String> {
+    let list = blocking(|| Ok(wake::waiting(&Store::open()))).await?;
+    let mode = wake::mode();
+    let need: Vec<Value> = list
+        .into_iter()
+        .filter_map(|mut w| {
+            let why = needs_you(&app, mode, &w)?;
+            w["why"] = json!(why);
+            Some(w)
+        })
+        .collect();
+    Ok(json!({ "mode": mode, "waiting": need }))
 }
 
 /// Open a waiting session from the reminder, in front: the user asked for it.
 #[tauri::command]
 async fn wait_open(app: AppHandle, id: String) -> Result<Value, String> {
     let v = open_session(id.clone()).await?;
+    // opened by the user now: no longer one the app could not open
+    if let Ok(mut f) = app.state::<Waits>().failed.lock() {
+        f.retain(|s| !s.eq_ignore_ascii_case(&id));
+    }
     blocking(move || {
         wake::opened(&Store::open(), &id, "user");
         Ok(())
@@ -101,6 +138,12 @@ fn put_off(app: &AppHandle) {
     if let Ok(mut d) = app.state::<Waits>().dismissed.lock() {
         d.extend(now);
     }
+}
+
+/// What a session on this machine shares with other sessions: none, basic, asks or rounds.
+#[tauri::command]
+async fn share_set(id: String, level: String) -> Result<String, String> {
+    blocking(move || dispatch_core::share::set_level(&id, None, &level).map(str::to_string).map_err(err)).await
 }
 
 /// `auto`, `ask` or `off`: what happens when a message waits for its session to be opened.
@@ -545,16 +588,17 @@ fn open_app(name: &str) -> Result<(), String> {
     }
 }
 
-/// A closed terminal session: open Terminal in its folder and resume it there (macOS).
+/// A closed terminal session: open Terminal in its folder and resume it there (macOS). `front`:
+/// the user asked for it, so Terminal comes forward; otherwise it opens behind their windows.
 #[cfg(target_os = "macos")]
-fn open_in_terminal(command: &str, cwd: Option<&str>) -> Result<(), String> {
+fn open_in_terminal(command: &str, cwd: Option<&str>, front: bool) -> Result<(), String> {
     let sh_quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let shell = match cwd {
         Some(d) if !d.is_empty() => format!("cd {} && {}", sh_quote(d), command),
         _ => command.to_string(),
     };
     let as_quote = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-    let script = format!("tell application \"Terminal\"\nactivate\ndo script \"{}\"\nend tell", as_quote(&shell));
+    let script = format!("tell application \"Terminal\"\n{}do script \"{}\"\nend tell", if front { "activate\n" } else { "" }, as_quote(&shell));
     let status = std::process::Command::new("osascript").args(["-e", &script]).status().map_err(|e| e.to_string())?;
     if status.success() {
         Ok(())
@@ -565,7 +609,7 @@ fn open_in_terminal(command: &str, cwd: Option<&str>) -> Result<(), String> {
 
 /// Linux: the first terminal emulator on PATH runs the command in a login shell and stays open.
 #[cfg(target_os = "linux")]
-fn open_in_terminal(command: &str, cwd: Option<&str>) -> Result<(), String> {
+fn open_in_terminal(command: &str, cwd: Option<&str>, _front: bool) -> Result<(), String> {
     let sh_quote = |s: &str| format!("'{}'", s.replace('\'', "'\\''"));
     let shell = match cwd {
         Some(d) if !d.is_empty() => format!("cd {} && {}; exec bash", sh_quote(d), command),
@@ -587,7 +631,7 @@ fn open_in_terminal(command: &str, cwd: Option<&str>) -> Result<(), String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn open_in_terminal(_command: &str, _cwd: Option<&str>) -> Result<(), String> {
+fn open_in_terminal(_command: &str, _cwd: Option<&str>, _front: bool) -> Result<(), String> {
     Err("no terminal launcher on this system".into())
 }
 
@@ -606,7 +650,7 @@ async fn open_session(id: String) -> Result<Value, String> {
             if v["running"] == true {
                 v["kind"] = json!("note");
                 v["note"] = json!(t("open.terminal_running"));
-            } else if open_in_terminal(v["command"].as_str().unwrap_or(""), v["cwd"].as_str()).is_ok() {
+            } else if open_in_terminal(v["command"].as_str().unwrap_or(""), v["cwd"].as_str(), true).is_ok() {
                 v["kind"] = json!("note");
                 v["note"] = json!(t("open.terminal_opened"));
             }
@@ -787,7 +831,8 @@ fn show_review(app: &AppHandle, focus: bool) {
     let builder = tauri::WebviewWindowBuilder::new(app, REVIEW_WINDOW, tauri::WebviewUrl::App("index.html#review".into()))
         .title(t("review.window_title"))
         .inner_size(480.0, 600.0)
-        .min_inner_size(400.0, 440.0)
+        // small enough for the card that stays after Send; the window sizes itself to what it shows
+        .min_inner_size(400.0, 160.0)
         .center()
         .always_on_top(true)
         .visible_on_all_workspaces(true)
@@ -848,9 +893,10 @@ fn open_url_behind(url: &str) -> bool {
     }
 }
 
-/// Every five seconds: the messages waiting for their session to be opened. Bring up the
-/// reminder for a new one; when nobody is at this Mac (and the setting allows), open each
-/// such session in its own app, once, and note it on the messages.
+/// Every five seconds: the messages waiting for their session to be opened. Open each such
+/// session at once (the setting allowing), in its own app or else a Terminal window, once per
+/// message, note it on the messages and say so in a notification; bring up the reminder only for
+/// what needs the user.
 fn start_wake_watcher(app: AppHandle) {
     std::thread::Builder::new()
         .name("dispatch-wake".into())
@@ -871,35 +917,59 @@ fn start_wake_watcher(app: AppHandle) {
                 if let Ok(mut c) = app.state::<Waits>().current.lock() {
                     *c = ids.clone();
                 }
-                if mode == "auto" && idle_secs().map(|s| s >= AWAY_SECS).unwrap_or(false) {
+                // only while nobody is typing, so a window that comes up cannot take a keystroke
+                if mode == "auto" && idle_secs().map(|s| s >= QUIET_SECS).unwrap_or(true) {
                     let mut seen = HashSet::new();
                     for w in &list {
-                        let (Some(sid), Some(url)) = (w["session"]["id"].as_str(), w["session"]["url"].as_str()) else { continue };
+                        let Some(sid) = w["session"]["id"].as_str() else { continue };
                         // once per message: a session opened for it that still did not take it is left to the user
                         if w["woken"] == true || !seen.insert(sid.to_string()) {
                             continue;
                         }
+                        let tried = app.state::<Waits>().failed.lock().map(|f| f.contains(sid)).unwrap_or(false);
                         let recent = app.state::<Waits>().opened.lock().ok().and_then(|m| m.get(sid).map(|t| t.elapsed() < Duration::from_secs(REOPEN_SECS))).unwrap_or(false);
-                        if recent {
+                        if tried || recent {
                             continue;
                         }
-                        if open_url_behind(url) {
-                            wake::opened(&store, sid, "auto");
-                            if let Ok(mut m) = app.state::<Waits>().opened.lock() {
-                                m.insert(sid.to_string(), Instant::now());
+                        let s = &w["session"];
+                        let how = if s["url"].as_str().map(open_url_behind).unwrap_or(false) {
+                            Some("app")
+                        } else if s["command"].as_str().map(|c| open_in_terminal(c, s["cwd"].as_str(), false).is_ok()).unwrap_or(false) {
+                            Some("terminal")
+                        } else {
+                            None
+                        };
+                        match how {
+                            Some(how) => {
+                                wake::opened(&store, sid, &format!("auto, {how}"));
+                                if let Ok(mut m) = app.state::<Waits>().opened.lock() {
+                                    m.insert(sid.to_string(), Instant::now());
+                                }
+                                if settings::notify_enabled() {
+                                    let name = s["name"].as_str().unwrap_or("");
+                                    let body = if how == "app" { t("wake.opened_app").replace("{app}", s["harness"].as_str().unwrap_or("")) } else { t("wake.opened_terminal").to_string() };
+                                    let _ = app.notification().builder().title(t("wake.opened_title").replace("{name}", name)).body(body).show();
+                                }
                             }
-                            forget_feed(&app);
-                            let _ = app.emit("wait:changed", ());
-                            let _ = app.emit("dispatch:changed", ());
+                            None => {
+                                if let Ok(mut f) = app.state::<Waits>().failed.lock() {
+                                    f.insert(sid.to_string());
+                                }
+                            }
                         }
+                        forget_feed(&app);
+                        let _ = app.emit("wait:changed", ());
+                        let _ = app.emit("dispatch:changed", ());
                     }
                 }
-                let fresh = app.state::<Waits>().dismissed.lock().map(|d| ids.iter().any(|id| !d.contains(id))).unwrap_or(true);
+                // the reminder: only what the app could not take care of
+                let need: Vec<String> = list.iter().filter(|w| needs_you(&app, mode, w).is_some()).filter_map(|w| w["letter_id"].as_str().map(str::to_string)).collect();
+                let fresh = app.state::<Waits>().dismissed.lock().map(|d| need.iter().any(|id| !d.contains(id))).unwrap_or(true);
                 let window = app.get_webview_window(WAIT_WINDOW);
                 let visible = window.as_ref().map(|w| w.is_visible().unwrap_or(false)).unwrap_or(false);
                 if fresh && !visible {
                     show_waiting(&app);
-                } else if ids.is_empty() && visible {
+                } else if need.is_empty() && visible {
                     if let Some(w) = window {
                         let _ = w.hide();
                     }
@@ -1069,7 +1139,7 @@ pub fn run() {
             sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget,
-            wait_list, wait_open, wait_dismiss, set_wake
+            wait_list, wait_open, wait_dismiss, set_wake, share_set
         ])
         .setup(|app| {
             let handle = app.handle().clone();

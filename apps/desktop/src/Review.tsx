@@ -152,7 +152,7 @@ export function Review() {
       setResult({
         sent,
         title: !sent ? t('review.notSent') : decision === 'trust' ? t('review.sentTrusted') : t('review.sentTitle'),
-        detail: sent ? r.detail ?? '' : t('review.notSentDetail'),
+        detail: sent ? r.plain ?? r.detail ?? '' : t('review.notSentDetail'),
         to: info.session?.name ?? info.to_name,
         more: ids.length > 1,
       })
@@ -289,10 +289,24 @@ export function Review() {
                 </dd>
               </>
             )}
-            <dt>{t('review.runs')}</dt>
-            <dd>{runs}</dd>
+            {running && (
+              <>
+                <dt>{t('review.runs')}</dt>
+                <dd>{runs}</dd>
+              </>
+            )}
             <dt>{t('review.after')}</dt>
-            <dd className="review__reach" data-reach={level}>{s?.reach.text ?? t('review.unknown')}</dd>
+            <dd className="review__plain" data-kind={s?.reach.plain?.kind ?? level}>
+              {s?.reach.plain ? (
+                <>
+                  <span className="review__plaintitle">{s.reach.plain.title}</span>
+                  <span className="review__plaindetail">{s.reach.plain.detail}</span>
+                  {s.reach.plain.todo && <span className="review__plaintodo">{s.reach.plain.todo}</span>}
+                </>
+              ) : (
+                s?.reach.text ?? t('review.unknown')
+              )}
+            </dd>
           </dl>
 
           <div className="section-title">{t('review.message')}</div>

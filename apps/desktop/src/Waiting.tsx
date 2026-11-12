@@ -1,7 +1,7 @@
 // The reminder for messages waiting for their session to be opened: a Claude Code session that
-// is not running, or a Codex thread no window has open. One row per session, with Open; Later
-// puts it away until a new message waits. When the setting says so and nobody is at this Mac,
-// the app opens the session itself (see dispatch_core::wake); the row then says it did.
+// is not running, or a Codex thread no window has open. The app opens such sessions itself (see
+// dispatch_core::wake); this lists only what needs the user, one row per session with why and
+// Open. Later puts it away until a new one needs them.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
@@ -89,7 +89,6 @@ export function Waiting() {
         {all.map((g) => {
           const first = g.items[0]
           const from = first.from_host_name ? `${plain(first.from_name)} @ ${first.from_host_name}` : plain(first.from_name)
-          const woken = g.items.some((w) => w.woken)
           return (
             <div key={g.session.id} className="wait__row">
               <Avatar name={g.session.name} look={g.session.avatar} appName={g.session.app_name} size={30} harness={g.session.harness} />
@@ -100,7 +99,7 @@ export function Waiting() {
                   {' · '}
                   {ago(Date.parse(first.since))}
                 </span>
-                <span className="wait__sub">{woken ? t('wait.woken') : g.session.url ? t('wait.howUrl', { app: g.session.harness }) : t('wait.howTerminal')}</span>
+                <span className="wait__sub wait__why">{t(`wait.why.${first.why ?? 'ask'}` as const)}</span>
               </div>
               <button className="btn btn--primary btn--small btn--with-icon" disabled={busy !== null} onClick={() => open(g)}>
                 <Icon name="open" size={13} />

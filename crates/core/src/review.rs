@@ -271,8 +271,11 @@ pub fn decide(store: &Store, letter_id: &str, decision: &str) -> Result<Value> {
             let fresh = store::deadline_text(&store::now_text(), store::default_wait(&l.urgency));
             store.set_deadline(&mut l, &fresh)?;
             let to = send::target_of(&l);
+            // what sending does, worked out before it goes (delivering changes the session's state)
+            let plain = crate::reach::plain(&to, &crate::reach::decide(&to, crate::hook::installed()));
             let rep = send::deliver(store, &to, &mut l, true, false)?;
-            Ok(json!({ "letter_id": l.id, "decision": if trusting { "trusted" } else { "approved" }, "route": rep.route, "detail": rep.detail, "text": rep.detail }))
+            let after = crate::reach::after_send(&plain, &rep.route, &rep.detail);
+            Ok(json!({ "letter_id": l.id, "decision": if trusting { "trusted" } else { "approved" }, "route": rep.route, "detail": rep.detail, "text": rep.detail, "plain": after }))
         }
         other => Err(anyhow!("a review is decided with send, trust or decline, not \"{other}\"")),
     }

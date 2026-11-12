@@ -259,6 +259,8 @@ input, textarea { font: inherit; }
 .sp__about[data-empty] { color: var(--text-faint); }
 .sp__about:hover { color: var(--text-strong); }
 .sp__chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 5px; }
+.sp__share { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.sp__sharelabel { font-size: 11.5px; color: var(--text-faint); }
 .sp__chip { height: 20px; padding: 0 7px; border-radius: 5px; display: inline-flex; align-items: center; font-size: 11.5px; color: var(--text); background: var(--tag); }
 .sp__chip--project { color: var(--accent); background: var(--accent-soft); }
 .sp__chip--path { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; line-height: 20px; }
@@ -501,6 +503,13 @@ input, textarea { font: inherit; }
 .review__always--note { color: var(--text-faint); }
 .review__sub .review__open { display: inline-flex; align-items: center; gap: 3px; margin-left: 8px; font-size: 11.5px; color: var(--accent); }
 .review__sub .review__open:hover { text-decoration: underline; }
+.review__plain { display: flex; flex-direction: column; gap: 2px; }
+.review__plaintitle { font-weight: 600; color: var(--text-strong); }
+.review__plain[data-kind='now'] .review__plaintitle { color: var(--text-ok); }
+.review__plain[data-kind='you'] .review__plaintitle, .review__plain[data-kind='speak'] .review__plaintitle { color: var(--text-warn); }
+.review__plain[data-kind='off'] .review__plaintitle { color: var(--failed); }
+.review__plaindetail { color: var(--text); line-height: 1.5; }
+.review__plaintodo { margin-top: 2px; padding: 5px 8px; border-radius: 6px; font-size: 12px; line-height: 1.5; color: var(--text-strong); background: var(--working-soft); }
 .review__deadline { font-size: 11.5px; color: var(--text-faint); }
 .review__done { font-size: 12.5px; color: var(--text-strong); user-select: text; }
 

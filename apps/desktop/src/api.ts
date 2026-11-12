@@ -14,12 +14,24 @@ export interface Reach {
   mode?: string | null
   /** desktop, terminal, exec (Codex without a person), or what Codex calls its front end. */
   client?: string | null
+  /** What sending does, in a person's words (see dispatch_core::reach::plain). */
+  plain?: Plain
+}
+/** What a session lets other sessions see: its name only, name and about, plus recent questions, plus recent rounds. */
+export type ShareLevel = 'none' | 'basic' | 'asks' | 'rounds'
+export interface Plain {
+  kind: 'now' | 'auto' | 'you' | 'turn' | 'speak' | 'machine' | 'off'
+  title: string
+  detail: string
+  todo?: string | null
 }
 export interface Host {
   id: string
   name: string
 }
 export interface Session {
+  /** What it shares with other sessions (on this machine's sessions). */
+  share?: ShareLevel
   id: string
   short_id: string
   name: string
@@ -272,6 +284,8 @@ export interface WaitItem {
   since: string
   /** The session was already opened for it, by the user or by the app. */
   woken: boolean
+  /** Why it needs the user: remind only is set (ask), opening failed, opened and still waiting (stuck), no way to open it here (manual). */
+  why?: 'ask' | 'failed' | 'stuck' | 'manual'
   session: { id: string; name: string; app_name: string | null; harness: string; desktop: boolean; avatar: Look | null; url: string | null }
 }
 
@@ -326,7 +340,7 @@ export const api = {
   contactRemove: (name: string) => invoke<{ removed: string }>('contact_remove', { name }),
   reviewList: () => invoke<string[]>('review_list'),
   reviewInfo: (id: string) => invoke<ReviewInfo>('review_info', { id }),
-  reviewDecide: (id: string, decision: 'send' | 'trust' | 'decline') => invoke<{ letter_id: string; decision: string; route?: string; detail?: string; text: string }>('review_decide', { id, decision }),
+  reviewDecide: (id: string, decision: 'send' | 'trust' | 'decline') => invoke<{ letter_id: string; decision: string; route?: string; detail?: string; text: string; plain?: string }>('review_decide', { id, decision }),
   reviewClose: () => invoke<void>('review_close'),
   reviewOpen: () => invoke<void>('review_open'),
   reviewSettings: () => invoke<ReviewSettings>('review_settings'),
@@ -336,5 +350,6 @@ export const api = {
   waitOpen: (id: string) => invoke<OpenResult>('wait_open', { id }),
   waitDismiss: () => invoke<void>('wait_dismiss'),
   setWake: (mode: 'auto' | 'ask' | 'off') => invoke<string>('set_wake', { mode }),
+  shareSet: (id: string, level: ShareLevel) => invoke<string>('share_set', { id, level }),
   peerSetAddress: (name: string, address: string | null) => invoke<{ id: string; name: string; address: string | null }>('peer_set_address', { name, address }),
 }

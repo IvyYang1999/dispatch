@@ -1,8 +1,10 @@
 //! A message that waits for its session to be opened. A Claude Code session that is not
 //! running takes nothing until it runs again; a Codex thread takes what is in its queue only
 //! while some Codex window (or terminal) has it open. On the machine where the session lives,
-//! the app lists these, asks the user to open the session and, when nobody is at that machine,
-//! opens it in its own app: the same as the Open button.
+//! the app opens such a session itself, at once: in its own app when it has one (the Codex
+//! app, the Claude app), else in a Terminal window behind the user's windows. It asks the user
+//! only when it cannot: the setting says remind only, opening failed, or the session was opened
+//! and still has not taken the message.
 //!
 //! Opening never starts a second copy of a session: a Claude Code session counts only when no
 //! process runs it, and a Codex thread whose log changed in the last two minutes is being run
@@ -14,8 +16,12 @@ use serde_json::{json, Value};
 use std::time::{Duration, SystemTime};
 
 /// How long a message waits before it counts as waiting for its session to be opened. A Codex
-/// thread that is open and idle takes its queue within about ten seconds.
-pub const AFTER_SECS: i64 = 20;
+/// thread that is open and idle takes its queue within about ten seconds; a Claude Code session
+/// that is not running is known at once.
+pub const AFTER_SECS: i64 = 15;
+const AFTER_SECS_CLAUDE: i64 = 3;
+/// Opened for its message this long ago and still has not taken it: the user is asked.
+pub const STUCK_SECS: i64 = 120;
 /// A Codex thread whose log changed this recently is open and working somewhere.
 const BUSY_SECS: u64 = 120;
 
@@ -54,6 +60,11 @@ pub fn woken(runs: &[Run]) -> bool {
     runs.iter().any(|r| r.action == "wake" && r.result == "opened")
 }
 
+/// When it was last opened for this copy.
+fn woken_at(runs: &[Run]) -> Option<&str> {
+    runs.iter().rev().find(|r| r.action == "wake" && r.result == "opened").map(|r| r.at.as_str())
+}
+
 /// Whether some Codex process is running this thread now: its log changed in the last two minutes.
 pub fn codex_busy(thread_id: &str) -> bool {
     crate::codex::rollout_path(thread_id)
@@ -89,6 +100,17 @@ pub fn open_url(s: &Session) -> Option<String> {
     }
 }
 
+/// The command that resumes this session in a terminal, and the folder to run it in: what is
+/// left when it has no app to open in (or that app is missing). None when its folder is gone.
+pub fn open_command(s: &Session) -> Option<(String, Option<String>)> {
+    let cwd = s.cwd.clone().filter(|c| std::path::Path::new(c).is_dir());
+    match s.harness {
+        Harness::Claude => cwd.map(|c| (format!("claude --resume {}", s.id), Some(c))),
+        Harness::Codex => Some((format!("codex resume {}", s.id), cwd)),
+        _ => None,
+    }
+}
+
 /// The copies on this machine waiting for their session to be opened, oldest first.
 pub fn waiting(store: &Store) -> Vec<Value> {
     let Ok(letters) = store.list(None, false) else { return vec![] };
@@ -103,7 +125,7 @@ pub fn waiting(store: &Store) -> Vec<Value> {
         let runs = store.runs(&l.id);
         let since = match s.harness {
             Harness::Codex if codex_waiting(&l, &runs) => queued_at(&runs).map(str::to_string),
-            Harness::Claude if l.status == store::UNREAD && !s.running => runs.first().map(|r| r.at.clone()).filter(|at| age_secs(at) >= AFTER_SECS),
+            Harness::Claude if l.status == store::UNREAD && !s.running => runs.first().map(|r| r.at.clone()).filter(|at| age_secs(at) >= AFTER_SECS_CLAUDE),
             _ => None,
         };
         let Some(since) = since else { continue };
@@ -113,6 +135,8 @@ pub fn waiting(store: &Store) -> Vec<Value> {
             "from_host_name": l.from_host_name,
             "since": since,
             "woken": woken(&runs),
+            // opened for it a while ago and still waiting: something is off, the user is asked
+            "stuck": woken_at(&runs).map(|at| age_secs(at) >= STUCK_SECS).unwrap_or(false),
             "session": {
                 "id": s.id,
                 "name": s.display_name(),
@@ -121,6 +145,8 @@ pub fn waiting(store: &Store) -> Vec<Value> {
                 "desktop": s.desktop,
                 "avatar": crate::contacts::for_session(&s.id, None).and_then(|c| c.avatar),
                 "url": open_url(&s),
+                "command": open_command(&s).map(|(c, _)| c),
+                "cwd": open_command(&s).and_then(|(_, d)| d),
             },
         }));
     }

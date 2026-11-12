@@ -808,6 +808,11 @@ export function Clamp({ text }: { text: string }) {
  *  what, if anything, the user has to do. `ok` it gets it at once; `auto` Dispatch opens it;
  *  `wait` it gets it when its turn ends; `you` the user has to act; `off` it cannot get it. */
 function plainReach(s: Session): { tone: 'ok' | 'auto' | 'wait' | 'you' | 'off'; title: string; detail: string; todo?: string } {
+  const p = s.reach.plain
+  if (p) {
+    const tone = ({ now: 'ok', auto: 'auto', you: 'you', turn: 'wait', speak: 'you', machine: 'wait', off: 'off' } as const)[p.kind]
+    return { tone, title: p.title, detail: p.detail, todo: p.todo ?? undefined }
+  }
   if (s.reach.level === 'now') return { tone: 'ok', title: t('reach2.nowTitle'), detail: t('reach2.now') }
   if (s.reach.level === 'none') return { tone: 'off', title: t('reach2.offTitle'), detail: s.reach.text }
   if (s.harness === 'Codex') return { tone: 'auto', title: t('reach2.autoTitle'), detail: t('reach2.codex') }
@@ -996,6 +1001,18 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
                 <span className="sp__chip">{s.harness}{s.host ? ` · ${s.host.name}` : ` · ${t('side.local')}`}</span>
                 {s.cwd_short && <span className="sp__chip sp__chip--path" title={s.cwd ?? ''}>{s.cwd_short}</span>}
               </div>
+              {!s.host && (
+                <div className="sp__share">
+                  <span className="sp__sharelabel">{t('share.label')}</span>
+                  <span className="seg seg--small">
+                    {(['none', 'basic', 'asks', 'rounds'] as const).map((l) => (
+                      <button key={l} data-active={(s.share ?? 'basic') === l || undefined} title={t(`share.tip.${l}` as const)} onClick={() => api.shareSet(s.id, l).then(load)}>
+                        {t(`share.${l}` as const)}
+                      </button>
+                    ))}
+                  </span>
+                </div>
+              )}
             </div>
             <button className="btn btn--small btn--with-icon" onClick={() => open(addressOf(s))}>
               <Icon name="open" size={13} />
