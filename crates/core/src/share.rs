@@ -59,13 +59,35 @@ fn clip(text: &str) -> String {
     }
 }
 
+// Display names can fall back to the first prompt. Shared identities must use only an
+// explicit name (the address book takes precedence), or the short id when none was given.
+fn shared_name(id: &str, lvl: &str, explicit: Option<&str>, contact: Option<&str>) -> String {
+    contact.or_else(|| if lvl == "none" { None } else { explicit })
+        .map(str::to_string).unwrap_or_else(|| short_id(id))
+}
+
+// Both the local and paired-machine resolvers accept ids; a routing address never needs a
+// display name or a private prompt. A peer id also avoids ambiguous same-name computers.
+fn shared_address(id: &str, host: Option<&str>) -> String {
+    host.map(|h| format!("{h}/{id}")).unwrap_or_else(|| id.to_string())
+}
+
 /// A session as `ops::session_json` describes it, cut down to what it shares with agents.
 pub fn for_agents(mut v: Value) -> Value {
     let id = v["id"].as_str().unwrap_or("").to_string();
     let host = v["host"]["id"].as_str().map(str::to_string);
     let lvl = level(&id, host.as_deref());
+    let contact = v["contact"].as_str().map(str::to_string)
+        .or_else(|| crate::contacts::for_session(&id, host.as_deref()).map(|c| c.name));
+    // ops::session_json's `name` has already fallen back to the title; its `app_name`
+    // preserves the explicit name. A raw serialized Session (CLI) has no `contact` field
+    // and its `name` is still explicit, with no title fallback.
+    let explicit = if v.get("contact").is_some() { v["app_name"].as_str() } else { v["name"].as_str() };
+    let name = shared_name(&id, lvl, explicit, contact.as_deref());
+    let address = shared_address(&id, host.as_deref());
     let project = v["project"].as_str().map(str::to_string).or_else(|| v["cwd"].as_str().and_then(last_folder));
     let Some(o) = v.as_object_mut() else { return v };
+    o.insert("address".into(), json!(address));
     // how it runs and where its record lives are nobody else's business
     o.remove("host_session_id");
     o.remove("transcript");
@@ -75,13 +97,13 @@ pub fn for_agents(mut v: Value) -> Value {
     }
     match lvl {
         "none" => {
-            let name = o.get("contact").and_then(|c| c.as_str()).map(str::to_string).or_else(|| crate::contacts::for_session(&id, host.as_deref()).map(|c| c.name)).unwrap_or_else(|| short_id(&id));
             o.insert("name".into(), json!(name));
             for k in ["about", "avatar", "app_name", "title", "project", "cwd", "cwd_short"] {
                 o.remove(k);
             }
         }
         "basic" => {
+            o.insert("name".into(), json!(name));
             for k in ["app_name", "title", "cwd", "cwd_short"] {
                 o.remove(k);
             }
@@ -112,10 +134,10 @@ pub fn context(s: &Session) -> Value {
     let lvl = level(&s.id, host);
     let contact = crate::contacts::for_session(&s.id, host);
     let name = match lvl {
-        "none" => contact.as_ref().map(|c| c.name.clone()).unwrap_or_else(|| short_id(&s.id)),
+        "none" | "basic" => shared_name(&s.id, lvl, s.name.as_deref(), contact.as_ref().map(|c| c.name.as_str())),
         _ => s.display_name(),
     };
-    let mut v = json!({ "address": s.address(), "name": name, "harness": s.harness.label(), "share": lvl });
+    let mut v = json!({ "address": shared_address(&s.id, host), "name": name, "harness": s.harness.label(), "share": lvl });
     if lvl == "none" {
         v["note"] = json!(crate::i18n::t("share.none_note"));
         return v;
@@ -150,6 +172,71 @@ pub fn context(s: &Session) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unnamed_session() -> Session {
+        Session {
+            harness: crate::model::Harness::Claude,
+            id: "aaaaaaaa-1111-4222-8333-444455556666".into(), short_id: "aaaaaaaa".into(),
+            name: None, title: Some("PRIVATE_PROMPT_SENTINEL".into()),
+            cwd: Some("/synthetic/project".into()), project: Some("PublicProject".into()),
+            last_active: 0, running: false, desktop: false, host_session_id: None,
+            status: None, transcript: None, host: None, app_name: None,
+        }
+    }
+
+    #[test]
+    fn restricted_identity_never_falls_back_to_a_private_prompt() {
+        let dir = std::env::temp_dir().join(format!("dispatch-share-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let mut s = unnamed_session();
+        for host in [None, Some(crate::model::Host { id: "bbbbbbbb-1111-4222-8333-444455556666".into(), name: "Other computer".into() })] {
+            s.host = host;
+            let host_id = s.host.as_ref().map(|h| h.id.as_str());
+            let expected_address = host_id.map(|h| format!("{h}/{}", s.id)).unwrap_or_else(|| s.id.clone());
+            for lvl in ["basic", "none"] {
+                set_level(&s.id, host_id, lvl).unwrap();
+                // Exercise the actual App/MCP projection and the CLI's raw Session shape.
+                let values = [for_agents(crate::ops::session_json(&s)), for_agents(serde_json::to_value(&s).unwrap()), context(&s)];
+                for v in values {
+                    assert!(!v.to_string().contains("PRIVATE_PROMPT_SENTINEL"), "{lvl} leaked: {v}");
+                    assert_eq!(v["name"], "aaaaaaaa");
+                    assert_eq!(v["address"], expected_address);
+                    assert!(v.get("title").is_none());
+                    if lvl == "none" {
+                        assert!(v.get("about").is_none() && v.get("project").is_none());
+                    }
+                }
+            }
+        }
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shared_identity_preserves_explicit_names_and_contact_priority() {
+        let dir = std::env::temp_dir().join(format!("dispatch-share-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let mut s = unnamed_session();
+        s.name = Some("Public nickname".into());
+        for v in [for_agents(crate::ops::session_json(&s)), for_agents(serde_json::to_value(&s).unwrap()), context(&s)] {
+            assert_eq!(v["name"], "Public nickname");
+            assert_eq!(v["address"], s.id);
+            assert!(!v.to_string().contains("PRIVATE_PROMPT_SENTINEL"));
+        }
+        set_level(&s.id, None, "none").unwrap();
+        assert_eq!(context(&s)["name"], s.short_id);
+        crate::contacts::set("Directory name", &s, "app", Some("Public description"), false).unwrap();
+        for lvl in ["none", "basic"] {
+            set_level(&s.id, None, lvl).unwrap();
+            for v in [for_agents(crate::ops::session_json(&s)), for_agents(serde_json::to_value(&s).unwrap()), context(&s)] {
+                assert_eq!(v["name"], "Directory name");
+                assert_eq!(v["address"], s.id);
+                assert!(!v.to_string().contains("PRIVATE_PROMPT_SENTINEL"));
+            }
+        }
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn session_json(id: &str) -> Value {
         json!({ "id": id, "name": "目前用下来，我感觉有几个问题", "contact": "日历", "about": "日历小插件", "app_name": "目前用下来", "title": "目前用下来，我感觉有几个问题：周视图…", "project": null, "cwd": "/Users/me/clients/acme/日历小插件", "cwd_short": "~/…/acme/日历小插件", "host_session_id": "local_x", "reach": { "level": "now", "text": "x", "mode": "bypassPermissions", "client": "desktop" } })
