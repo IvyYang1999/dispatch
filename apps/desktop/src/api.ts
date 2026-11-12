@@ -119,6 +119,12 @@ export interface SetupStatus {
   /** When a session's message waits for the user's review: off, new (first time per pair), all. */
   review: 'off' | 'new' | 'all'
   review_trusted: number
+  /** The Dispatch MCP server is registered in ~/.codex/config.toml. */
+  codex_mcp?: boolean
+  /** The Dispatch plugin is installed in Codex. */
+  codex_plugin?: boolean
+  /** A message waiting for its session to be opened: auto (remind, open it when nobody is here), ask, off. */
+  wake: 'auto' | 'ask' | 'off'
   version: string
   cli_sync_error: string | null
 }
@@ -257,6 +263,18 @@ export interface PeerOverview {
   seen: SeenRow[]
   code: { code: string; seconds_left: number } | null
 }
+/** A message waiting for its session to be opened, on the machine where the session lives. */
+export interface WaitItem {
+  letter_id: string
+  from_name: string
+  from_host_name: string | null
+  /** When it started waiting (RFC 3339). */
+  since: string
+  /** The session was already opened for it, by the user or by the app. */
+  woken: boolean
+  session: { id: string; name: string; app_name: string | null; harness: string; desktop: boolean; avatar: Look | null; url: string | null }
+}
+
 export interface OpenResult {
   kind: 'url' | 'command' | 'app' | 'note'
   url?: string
@@ -314,5 +332,9 @@ export const api = {
   reviewSettings: () => invoke<ReviewSettings>('review_settings'),
   setReview: (mode: 'off' | 'new' | 'all') => invoke<ReviewSettings>('set_review', { mode }),
   reviewForget: () => invoke<ReviewSettings>('review_forget'),
+  waitList: () => invoke<{ mode: string; waiting: WaitItem[] }>('wait_list'),
+  waitOpen: (id: string) => invoke<OpenResult>('wait_open', { id }),
+  waitDismiss: () => invoke<void>('wait_dismiss'),
+  setWake: (mode: 'auto' | 'ask' | 'off') => invoke<string>('set_wake', { mode }),
   peerSetAddress: (name: string, address: string | null) => invoke<{ id: string; name: string; address: string | null }>('peer_set_address', { name, address }),
 }

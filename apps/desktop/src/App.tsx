@@ -269,6 +269,51 @@ export function HarnessMark({ harness, size = 14 }: { harness?: string | null; s
   return <img className="hmark" width={size} height={size} src={src} alt={harness} title={harness} />
 }
 
+/** The head of one agent's setup card: its mark, its name, and whether it is ready. */
+function SetupHead({ harness, name, ready }: { harness: string; name: string; ready: boolean }) {
+  return (
+    <div className="setup__head">
+      <HarnessMark harness={harness} size={18} />
+      <span className="setup__name">{name}</span>
+      <span className="setup__state" data-ready={ready || undefined}>{ready ? t('setup.ready') : t('setup.todo')}</span>
+    </div>
+  )
+}
+
+/** One setup step: done (a check), not done (its number), or one Dispatch cannot check (its
+ *  number, plain). A command shows in full with Copy, and the step says where it goes. */
+function Step({ n, done, optional, title, sub, cmd, children }: { n: number; done: boolean | null; optional?: boolean; title: string; sub?: string; cmd?: string; children?: React.ReactNode }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(cmd ?? '')
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* the text stays selectable */
+    }
+  }
+  return (
+    <div className="step">
+      <span className="step__mark" data-done={done === true || undefined} data-todo={done === false || undefined}>{done ? '✓' : n}</span>
+      <div className="step__body">
+        <div className="step__title">
+          {title}
+          {optional && <span className="step__optional">{t('setup.optional')}</span>}
+        </div>
+        {sub && <div className="step__sub">{sub}</div>}
+        {cmd && (
+          <div className="copy">
+            <code className="copy__text">{cmd}</code>
+            <button className="btn btn--small" onClick={copy}>{copied ? t('setup.copied') : t('setup.copy')}</button>
+          </div>
+        )}
+        {children && <div className="step__act">{children}</div>}
+      </div>
+    </div>
+  )
+}
+
 /** In the address book: named by the user, not just remembered for a reply. */
 const isContact = (s: Session) => !!s.contact && !s.provisional
 
@@ -1235,8 +1280,8 @@ function Settings() {
   }
   const check = () => run('check', async () => { setUpd(await api.updateCheck()) })
   const cliText = st?.binary ? t('settings.cliInstalled', { p: st.binary }) : st?.bundled_cli ? t('settings.cliBundled') : t('settings.cliNone')
-  const codexText = st?.codex ? (st.codex_daemon ? t('settings.codexDaemon', { p: st.codex, n: st.codex_loaded }) : t('settings.codexNoDaemon', { p: st.codex })) : t('settings.codexMissing')
-  const grokState = !st ? '' : !st.grok_app ? t('settings.grokMissing') : !st.grok_signed_in ? t('settings.grokSignIn') : !st.gbot ? t('settings.grokNoGbot') : st.grok_error ? t('settings.grokOffline', { e: st.grok_error }) : t('settings.grokReady', { n: st.grok_bots })
+  // the app and its sign-in only: gbot is a step of its own
+  const grokState = !st ? '' : !st.grok_app ? t('settings.grokMissing') : !st.grok_signed_in ? t('settings.grokSignIn') : st.grok_error ? t('settings.grokOffline', { e: st.grok_error }) : st.gbot ? t('settings.grokReady', { n: st.grok_bots }) : t('setup.grokSignedIn')
   return (
     <>
       <header className="bar bar--page" data-tauri-drag-region>
@@ -1245,57 +1290,43 @@ function Settings() {
       <div className="settings">
         <div className="section-head">
           <div className="section-head__title">{t('settings.agents')}</div>
-          <div className="section-head__sub">{t('settings.agentsSub')}</div>
+          <div className="section-head__sub">{t('setup.sub')}</div>
         </div>
         <div className="card">
           <div className="host">
             <div className="host__who">
               <span className="host__name">{t('settings.cli')}</span>
-              <span className="host__found">{cliText}</span>
+              <span className="host__found host__found--wrap">{cliText}</span>
+              <span className="host__found host__found--wrap">{t('setup.cliWhat')}</span>
             </div>
             <button className="btn btn--primary btn--small" disabled={busy !== null || !st?.bundled_cli} onClick={() => run('install', api.installCli)}>{st?.binary ? t('settings.reinstall') : t('settings.install')}</button>
           </div>
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">Claude Code</span>
-              <span className="host__found">{st?.hook_installed ? t('settings.hookOn') : t('settings.hookOff')}</span>
-            </div>
-            {st?.hook_installed ? <Badge kind="replied" text={st.claude_plugin ? t('settings.pluginAndHook') : t('settings.hookOn')} /> : <button className="btn btn--small" disabled={busy !== null} onClick={() => run('hook', api.installHook)}>{t('settings.hookOnly')}</button>}
-          </div>
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{t('settings.inbound')}</span>
-              <span className="host__found host__found--wrap">
-                {st?.inbound && st.inbound !== 'accept' ? `${t('settings.inboundOther', { v: st.inbound })} ` : ''}
-                {t('settings.inboundSub')}
-              </span>
-            </div>
+        </div>
+        <div className="card setup">
+          <SetupHead harness="Claude" name="Claude Code" ready={!!st?.hook_installed && !!st?.claude_plugin} />
+          <Step n={1} done={!!st?.hook_installed} title={t('setup.claudeHook')} sub={t('setup.claudeHookSub')}>
+            {st && !st.hook_installed && st.binary && <button className="btn btn--small" disabled={busy !== null} onClick={() => run('hook', api.installHook)}>{t('settings.hookOnly')}</button>}
+          </Step>
+          <Step n={2} done={!!st?.claude_plugin} title={t('setup.claudePlugin')} sub={t('setup.claudePluginWhere')} cmd="/plugin install dispatch --marketplace IvyYang1999/dispatch" />
+          <Step n={3} done={null} optional title={t('settings.inbound')} sub={`${st?.inbound && st.inbound !== 'accept' ? `${t('settings.inboundOther', { v: st.inbound })} ` : ''}${t('settings.inboundSub')}`}>
             <span className="seg">
               <button data-active={st?.inbound === 'accept' || undefined} onClick={() => run('inbound', async () => { await api.setInbound(true) })}>{t('settings.notifyOn')}</button>
               <button data-active={st?.inbound !== 'accept' || undefined} onClick={() => run('inbound', async () => { await api.setInbound(false) })}>{t('settings.notifyOff')}</button>
             </span>
-          </div>
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">Codex</span>
-              <span className="host__found">{codexText}</span>
-            </div>
-            <code className="cmd">codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch</code>
-          </div>
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{t('settings.claudePlugin')}</span>
-              <span className="host__found">{t('settings.claudePluginSub')}</span>
-            </div>
-            <code className="cmd">/plugin install dispatch --marketplace IvyYang1999/dispatch</code>
-          </div>
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{t('settings.grok')}</span>
-              <span className="host__found">{grokState} {t('settings.grokSub')}</span>
-            </div>
-            <code className="cmd">{t('settings.grokCmd')}</code>
-          </div>
+          </Step>
+        </div>
+        <div className="card setup">
+          <SetupHead harness="Codex" name="Codex" ready={!!st?.codex && !!st?.codex_mcp} />
+          <Step n={1} done={!!st?.codex} title={t('setup.codexFound')} sub={st?.codex ?? t('settings.codexMissing')} />
+          <Step n={2} done={!!st?.codex_mcp} title={t('setup.codexMcp')} sub={t('setup.codexMcpSub')} />
+          <Step n={3} done={!!st?.codex_plugin} optional title={t('setup.codexPlugin')} sub={t('setup.inTerminal')} cmd="codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch" />
+        </div>
+        <div className="card setup">
+          <SetupHead harness="Grok Bot" name="Grok Bot" ready={!!st?.grok_app && !!st?.grok_signed_in && !!st?.gbot} />
+          <Step n={1} done={!!st?.grok_app && !!st?.grok_signed_in} title={t('setup.grokApp')} sub={grokState} />
+          <Step n={2} done={!!st?.gbot} title={t('setup.grokGbot')} sub={t('setup.inTerminal')} cmd="npm i -g grok-bot-cli" />
+          <Step n={3} done={null} title={t('setup.grokComputer')} sub={t('setup.grokComputerSub')} />
+          <Step n={4} done={null} title={t('setup.grokSkill')} sub={t('setup.grokSkillSub')} cmd={t('settings.grokCmd')} />
         </div>
         <Peers />
         <div className="section-head">
@@ -1353,6 +1384,22 @@ function Settings() {
               <button className="btn btn--small" onClick={() => run('review', async () => { await api.reviewForget() })}>{t('settings.reviewForget')}</button>
             </div>
           )}
+        </div>
+        <div className="section-head">
+          <div className="section-head__title">{t('settings.wakeSection')}</div>
+        </div>
+        <div className="card">
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">{t('settings.wake')}</span>
+              <span className="host__found host__found--wrap">{t('settings.wakeSub')}</span>
+            </div>
+            <span className="seg">
+              {(['auto', 'ask', 'off'] as const).map((m) => (
+                <button key={m} data-active={(st?.wake ?? 'auto') === m || undefined} onClick={() => run('wake', async () => { await api.setWake(m) })}>{t(m === 'auto' ? 'settings.wakeAuto' : m === 'ask' ? 'settings.wakeAsk' : 'settings.wakeOff')}</button>
+              ))}
+            </span>
+          </div>
         </div>
         <div className="section-head">
           <div className="section-head__title">{t('settings.notify')}</div>

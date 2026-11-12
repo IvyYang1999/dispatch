@@ -60,8 +60,10 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
    `closed` (the user closed the window; still held: ask them to press Review
    at the top of Dispatch's feed), `approved`, `trusted`, `declined`,
    `withdrawn` or `expired`, and `app_running: false` means the window cannot
-   come up until the user opens Dispatch. Replies land in your own inbox:
-   `dispatch_inbox`.
+   come up until the user opens Dispatch. A stage saying it waits for the
+   recipient to be opened means that session is not open: the machine it lives
+   on reminds the user and, when nobody is there, opens it itself. Do not send
+   it again. Replies land in your own inbox: `dispatch_inbox`.
 6. To answer a message you received, `dispatch_reply` with its id.
 7. Names beat searching. When the user asks you to register or name yourself
    ("you are in charge of X, register with Dispatch"), call `dispatch_register`

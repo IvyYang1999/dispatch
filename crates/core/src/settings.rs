@@ -2,7 +2,8 @@
 //! command line and the hook read it, so one switch covers all three.
 //!
 //! Keys: `lang` (`en` / `zh`), `notify` (system notifications for replies and failed
-//! deliveries; default on), `theme` (`system` / `light` / `dark`; the app's appearance).
+//! deliveries; default on), `theme` (`system` / `light` / `dark`; the app's appearance),
+//! `wake` (`auto` / `ask` / `off`: a message waiting for its session to be opened; see `wake`).
 
 use serde_json::{Map, Value};
 use std::path::PathBuf;

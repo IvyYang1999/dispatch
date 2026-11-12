@@ -96,6 +96,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Messages on this machine waiting for their session to be opened (a Claude Code session
+    /// that is not running, a Codex thread no window has open), and how the app would open each
+    Waiting {
+        #[arg(long)]
+        json: bool,
+    },
     /// The conversations: one per pair who wrote to each other, newest first
     Threads {
         #[arg(long, default_value_t = 30)]
@@ -639,6 +645,18 @@ fn run() -> Result<i32> {
                         let at = r["at"].as_str().unwrap_or("");
                         println!("    {} {} {} {}", at.get(11..19).unwrap_or(at), r["action"].as_str().unwrap_or(""), r["result"].as_str().unwrap_or(""), r["detail"].as_str().unwrap_or(""));
                     }
+                }
+            }
+        }
+        Cmd::Waiting { json } => {
+            let list = dispatch_core::wake::waiting(&st);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&serde_json::json!({ "mode": dispatch_core::wake::mode(), "waiting": list }))?);
+            } else {
+                for w in &list {
+                    let s = &w["session"];
+                    let how = s["url"].as_str().unwrap_or("-");
+                    println!("{}  {} ({})  from {}  since {}{}\n    {}", model::short_id(w["letter_id"].as_str().unwrap_or("")), s["name"].as_str().unwrap_or(""), s["harness"].as_str().unwrap_or(""), w["from_name"].as_str().unwrap_or(""), w["since"].as_str().unwrap_or(""), if w["woken"] == true { "  [opened]" } else { "" }, how);
                 }
             }
         }

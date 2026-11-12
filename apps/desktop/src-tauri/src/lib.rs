@@ -12,9 +12,13 @@
 //!
 //! A second watcher looks every second for messages held for the user's review and brings
 //! up the review window: on top of everything, but without taking the keyboard.
+//!
+//! A third looks every few seconds for messages waiting for their session to be opened (see
+//! `dispatch_core::wake`): it brings up a small reminder with Open, and when nobody has touched
+//! this Mac for a while it opens the session itself, in its own app, behind the user's windows.
 
 use dispatch_core::i18n::{self, t};
-use dispatch_core::{hook, model, ops, peer, review, settings, store::Store, watch};
+use dispatch_core::{hook, model, ops, peer, review, settings, store::Store, wake, watch};
 use std::collections::HashSet;
 use serde_json::{json, Value};
 use std::path::PathBuf;
@@ -45,6 +49,65 @@ struct Reviews {
 }
 
 const REVIEW_WINDOW: &str = "review";
+
+/// Messages waiting for their session to be opened: what the reminder shows now, what the user
+/// put off with Later (the reminder comes back only for a new one), and when the app last
+/// opened each session itself (it does not open one again and again).
+#[derive(Default)]
+struct Waits {
+    current: Mutex<Vec<String>>,
+    dismissed: Mutex<HashSet<String>>,
+    opened: Mutex<std::collections::HashMap<String, Instant>>,
+}
+
+const WAIT_WINDOW: &str = "waiting";
+/// Nobody has touched this Mac for this long: the app opens a waiting session itself.
+const AWAY_SECS: u64 = 90;
+/// A session the app opened itself is not opened again for this long.
+const REOPEN_SECS: u64 = 600;
+
+/// The messages waiting for their session to be opened, and what the app does about them.
+#[tauri::command]
+async fn wait_list() -> Result<Value, String> {
+    blocking(|| Ok(json!({ "mode": wake::mode(), "waiting": wake::waiting(&Store::open()) }))).await
+}
+
+/// Open a waiting session from the reminder, in front: the user asked for it.
+#[tauri::command]
+async fn wait_open(app: AppHandle, id: String) -> Result<Value, String> {
+    let v = open_session(id.clone()).await?;
+    blocking(move || {
+        wake::opened(&Store::open(), &id, "user");
+        Ok(())
+    })
+    .await?;
+    forget_feed(&app);
+    let _ = app.emit("dispatch:changed", ());
+    Ok(v)
+}
+
+/// Later: put the reminder away for what it shows now.
+#[tauri::command]
+async fn wait_dismiss(app: AppHandle) -> Result<(), String> {
+    put_off(&app);
+    if let Some(w) = app.get_webview_window(WAIT_WINDOW) {
+        let _ = w.hide();
+    }
+    Ok(())
+}
+
+fn put_off(app: &AppHandle) {
+    let now = app.state::<Waits>().current.lock().map(|c| c.clone()).unwrap_or_default();
+    if let Ok(mut d) = app.state::<Waits>().dismissed.lock() {
+        d.extend(now);
+    }
+}
+
+/// `auto`, `ask` or `off`: what happens when a message waits for its session to be opened.
+#[tauri::command]
+async fn set_wake(mode: String) -> Result<String, String> {
+    blocking(move || wake::set_mode(&mode).map(str::to_string).map_err(err)).await
+}
 
 fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
@@ -592,6 +655,10 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             || std::fs::read_dir(&plugins).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().contains("dispatch"))).unwrap_or(false);
         let codex = dispatch_core::codex::state();
         let grok = dispatch_core::grok::state();
+        let codex_home = home.join(".codex");
+        // `dispatch install` registers the MCP server here; the Codex plugin lands under plugins/
+        let codex_mcp = std::fs::read_to_string(codex_home.join("config.toml")).map(|t| t.contains("[mcp_servers.dispatch]")).unwrap_or(false);
+        let codex_plugin = names_dispatch(&codex_home.join("plugins"), 3);
         Ok(json!({
             "hook_installed": hook::installed(),
             "binary": bin.is_file().then(|| bin.to_string_lossy().to_string()),
@@ -600,6 +667,8 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "codex": dispatch_core::codex::executable().map(|p| p.to_string_lossy().to_string()),
             "codex_daemon": codex.daemon,
             "codex_loaded": codex.loaded.len(),
+            "codex_mcp": codex_mcp,
+            "codex_plugin": codex_plugin,
             "grok_app": grok.app,
             "grok_signed_in": grok.signed_in,
             "gbot": grok.cli.map(|p| p.to_string_lossy().to_string()),
@@ -611,11 +680,18 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "theme": theme_setting(),
             "inbound": dispatch_core::claude::inbound_setting(),
             "review": review::mode(),
+            "wake": wake::mode(),
             "review_trusted": review::trusted_count(&Store::open()),
             "version": env!("CARGO_PKG_VERSION"),
         }))
     })
     .await
+}
+
+/// Whether a folder within `depth` levels of `dir` is named for Dispatch (an installed plugin).
+fn names_dispatch(dir: &std::path::Path, depth: u32) -> bool {
+    let Ok(rd) = std::fs::read_dir(dir) else { return false };
+    rd.flatten().filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false)).any(|e| e.file_name().to_string_lossy().to_lowercase().contains("dispatch") || (depth > 1 && names_dispatch(&e.path(), depth - 1)))
 }
 
 /// One click: put the bundled CLI at ~/.dispatch/bin, install the Claude Code hook from there,
@@ -720,6 +796,118 @@ fn show_review(app: &AppHandle, focus: bool) {
     #[cfg(target_os = "macos")]
     let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
     let _ = builder.build();
+}
+
+/// The reminder for messages waiting for their session: small, above every window and on every
+/// desktop, never taking the keyboard.
+fn show_waiting(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(WAIT_WINDOW) {
+        let _ = w.show();
+        let _ = w.unminimize();
+        return;
+    }
+    let builder = tauri::WebviewWindowBuilder::new(app, WAIT_WINDOW, tauri::WebviewUrl::App("index.html#waiting".into()))
+        .title(t("wait.window_title"))
+        .inner_size(420.0, 220.0)
+        .min_inner_size(360.0, 160.0)
+        .center()
+        .always_on_top(true)
+        .visible_on_all_workspaces(true)
+        .focused(false)
+        .theme(theme_now());
+    #[cfg(target_os = "macos")]
+    let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    let _ = builder.build();
+}
+
+/// Seconds since anyone touched this Mac's keyboard, mouse or trackpad.
+#[cfg(target_os = "macos")]
+fn idle_secs() -> Option<u64> {
+    let out = std::process::Command::new("ioreg").args(["-c", "IOHIDSystem", "-d", "4"]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line = text.lines().find(|l| l.contains("\"HIDIdleTime\""))?;
+    let ns: u64 = line.rsplit('=').next()?.trim().parse().ok()?;
+    Some(ns / 1_000_000_000)
+}
+
+/// Elsewhere the app cannot tell, so it never opens a session on its own.
+#[cfg(not(target_os = "macos"))]
+fn idle_secs() -> Option<u64> {
+    None
+}
+
+/// Open a link without bringing its app to the front.
+fn open_url_behind(url: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").args(["-g", url]).status().map(|s| s.success()).unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        open_url(url).is_ok()
+    }
+}
+
+/// Every five seconds: the messages waiting for their session to be opened. Bring up the
+/// reminder for a new one; when nobody is at this Mac (and the setting allows), open each
+/// such session in its own app, once, and note it on the messages.
+fn start_wake_watcher(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("dispatch-wake".into())
+        .spawn(move || {
+            let mut last: Vec<String> = vec![];
+            loop {
+                std::thread::sleep(Duration::from_secs(5));
+                let mode = wake::mode();
+                let store = Store::open();
+                let list = if mode == "off" { vec![] } else { wake::waiting(&store) };
+                let ids: Vec<String> = list.iter().filter_map(|w| w["letter_id"].as_str().map(str::to_string)).collect();
+                if ids != last {
+                    let _ = app.emit("wait:changed", ());
+                    if let Ok(mut d) = app.state::<Waits>().dismissed.lock() {
+                        d.retain(|id| ids.contains(id));
+                    }
+                }
+                if let Ok(mut c) = app.state::<Waits>().current.lock() {
+                    *c = ids.clone();
+                }
+                if mode == "auto" && idle_secs().map(|s| s >= AWAY_SECS).unwrap_or(false) {
+                    let mut seen = HashSet::new();
+                    for w in &list {
+                        let (Some(sid), Some(url)) = (w["session"]["id"].as_str(), w["session"]["url"].as_str()) else { continue };
+                        // once per message: a session opened for it that still did not take it is left to the user
+                        if w["woken"] == true || !seen.insert(sid.to_string()) {
+                            continue;
+                        }
+                        let recent = app.state::<Waits>().opened.lock().ok().and_then(|m| m.get(sid).map(|t| t.elapsed() < Duration::from_secs(REOPEN_SECS))).unwrap_or(false);
+                        if recent {
+                            continue;
+                        }
+                        if open_url_behind(url) {
+                            wake::opened(&store, sid, "auto");
+                            if let Ok(mut m) = app.state::<Waits>().opened.lock() {
+                                m.insert(sid.to_string(), Instant::now());
+                            }
+                            forget_feed(&app);
+                            let _ = app.emit("wait:changed", ());
+                            let _ = app.emit("dispatch:changed", ());
+                        }
+                    }
+                }
+                let fresh = app.state::<Waits>().dismissed.lock().map(|d| ids.iter().any(|id| !d.contains(id))).unwrap_or(true);
+                let window = app.get_webview_window(WAIT_WINDOW);
+                let visible = window.as_ref().map(|w| w.is_visible().unwrap_or(false)).unwrap_or(false);
+                if fresh && !visible {
+                    show_waiting(&app);
+                } else if ids.is_empty() && visible {
+                    if let Some(w) = window {
+                        let _ = w.hide();
+                    }
+                }
+                last = ids;
+            }
+        })
+        .expect("spawn the wake watcher");
 }
 
 /// Every second: tell senders the app is up, and bring the review window up when a held copy
@@ -875,11 +1063,13 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .manage(Cache::default())
         .manage(Reviews::default())
+        .manage(Waits::default())
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
             sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
-            peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget
+            peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget,
+            wait_list, wait_open, wait_dismiss, set_wake
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -891,6 +1081,7 @@ pub fn run() {
             start_listener();
             start_watcher(app.handle().clone());
             start_review_watcher(app.handle().clone());
+            start_wake_watcher(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -900,6 +1091,10 @@ pub fn run() {
                 api.prevent_close();
                 if window.label() == REVIEW_WINDOW {
                     put_away(window.app_handle(), review::queued(&Store::open()));
+                }
+                // closing the reminder is Later
+                if window.label() == WAIT_WINDOW {
+                    put_off(window.app_handle());
                 }
                 let _ = window.hide();
             }

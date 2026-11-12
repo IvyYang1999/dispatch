@@ -30,6 +30,7 @@ pub mod send;
 pub mod settings;
 pub mod store;
 pub mod transcript;
+pub mod wake;
 pub mod watch;
 
 pub use model::*;

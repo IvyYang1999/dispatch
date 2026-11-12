@@ -367,7 +367,9 @@ pub fn sweep(store: &Store) -> Result<Value> {
                 continue;
             }
             let runs = store.runs(&l.id);
-            if was_handed(&runs) || last_run_age_secs(&runs) < 300 {
+            // not again within five minutes, unless the session was just opened for this message
+            let just_opened = runs.last().map(|r| r.action == "wake").unwrap_or(false);
+            if was_handed(&runs) || (last_run_age_secs(&runs) < 300 && !just_opened) {
                 continue;
             }
             let mut l = l.clone();
@@ -461,7 +463,7 @@ fn stage_by_status(status: &str) -> (&'static str, &'static str) {
     }
 }
 
-const STAGE_KEYS: [&str; 24] = ["stage.review_asked", "stage.review_no_app", "stage.review_shown", "stage.review_closed", "stage.review_declined", "stage.review_expired", "stage.held", "stage.held_there", "stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
+const STAGE_KEYS: [&str; 26] = ["stage.wait_open_codex", "stage.woken", "stage.review_asked", "stage.review_no_app", "stage.review_shown", "stage.review_closed", "stage.review_declined", "stage.review_expired", "stage.held", "stage.held_there", "stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
 
 /// Why a pending copy waits, from the recipient's state right now: the session is closed, busy
 /// (the hook hands it over when the turn ends), idle (its next turn), a Codex thread not on the
@@ -552,7 +554,21 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
         (Some(claude::Receipt::Queued), _) => ("stage.queued_after_turn", "delivered"),
         _ => stage_by_status(&c.status),
     };
-    let key = if kind == "queued" { waiting_key(c) } else { key };
+    // in Codex's queue and untaken: nobody has the thread open (said once it is clear, after a while)
+    let woken = crate::wake::woken(&runs);
+    let key = if queued_codex && matches!(receipt, Some(claude::Receipt::NotFound)) && crate::wake::codex_waiting(c, &runs) {
+        if woken { "stage.woken" } else { "stage.wait_open_codex" }
+    } else {
+        key
+    };
+    let key = if kind == "queued" {
+        match waiting_key(c) {
+            "stage.wait_open" if woken => "stage.woken",
+            k => k,
+        }
+    } else {
+        key
+    };
     (kind.into(), key.into())
 }
 
