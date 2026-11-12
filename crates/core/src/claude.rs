@@ -283,6 +283,30 @@ pub fn transcript_path(session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
     best.map(|(p, _)| p)
 }
 
+/// The `claude` program: on PATH or in the usual install folders, else the copy the Claude
+/// desktop app keeps for its own Code sessions (the newest one). The app is started by Finder
+/// without the terminal's PATH, so the folders are looked in directly.
+pub fn executable() -> Option<PathBuf> {
+    let home = home_dir();
+    let names = crate::codex::command_names("claude");
+    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH").map(|paths| std::env::split_paths(&paths).flat_map(|dir| names.iter().map(move |n| dir.join(n)).collect::<Vec<_>>()).collect()).unwrap_or_default();
+    for dir in [".local/bin", ".claude/local", ".local/node/bin", ".npm-global/bin", ".volta/bin", ".bun/bin"] {
+        candidates.push(home.join(dir).join("claude"));
+    }
+    candidates.extend([PathBuf::from("/opt/homebrew/bin/claude"), PathBuf::from("/usr/local/bin/claude")]);
+    if let Some(p) = candidates.into_iter().find(|p| crate::codex::is_executable(p)) {
+        return Some(p);
+    }
+    let kept = home.join("Library/Application Support/Claude/claude-code");
+    walkdir::WalkDir::new(kept)
+        .max_depth(6)
+        .into_iter()
+        .flatten()
+        .filter(|e| e.file_type().is_file() && e.file_name() == "claude" && crate::codex::is_executable(e.path()))
+        .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
+        .map(|e| e.path().to_path_buf())
+}
+
 /// The end of a file, whole lines only.
 pub fn read_tail(path: &Path, bytes: u64) -> std::io::Result<String> {
     let mut f = fs::File::open(path)?;

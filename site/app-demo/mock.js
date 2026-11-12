@@ -478,7 +478,8 @@
         changed()
         return store().me
       case 'setup_status':
-        return {
+        // hub.setupOverride: a few fields swapped in while looking at how unfinished setups read
+        return Object.assign({
           hook_installed: true,
           binary: '/Users/you/.dispatch/bin/dispatch',
           bundled_cli: '/Applications/Dispatch.app/Contents/MacOS/dispatch',
@@ -495,6 +496,8 @@
           grok_error: null,
           store_root: '/Users/you/Library/Application Support/Dispatch',
           claude_plugin: true,
+          claude_cli: '/usr/local/bin/claude',
+          setup_done: settings.setupDone || (settings.setupDone = ['grok_computer', 'grok_skill']),
           notify: settings.notify,
           theme: settings.theme,
           inbound: settings.inbound,
@@ -502,9 +505,13 @@
           review_trusted: 2,
           wake: settings.wake,
           version,
-        }
+        }, hub.setupOverride || {})
+      case 'setup_mark':
+        settings.setupDone = (settings.setupDone || []).filter((k) => k !== args.key).concat(args.done ? [args.key] : [])
+        return settings.setupDone
       case 'install_cli':
       case 'install_hook':
+      case 'install_plugin':
         return L('This is a demo: nothing was installed.', '这里是演示，没有真的安装任何东西。')
       case 'update_check':
         return { available: false, current: version }

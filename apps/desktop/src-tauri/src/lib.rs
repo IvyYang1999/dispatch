@@ -702,7 +702,7 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
         let codex_home = home.join(".codex");
         // `dispatch install` registers the MCP server here; the Codex plugin lands under plugins/
         let codex_mcp = std::fs::read_to_string(codex_home.join("config.toml")).map(|t| t.contains("[mcp_servers.dispatch]")).unwrap_or(false);
-        let codex_plugin = names_dispatch(&codex_home.join("plugins"), 3);
+        let codex_plugin = std::fs::read_to_string(codex_home.join("config.toml")).map(|t| t.contains("[plugins.\"dispatch@")).unwrap_or(false) || names_dispatch(&codex_home.join("plugins"), 3);
         Ok(json!({
             "hook_installed": hook::installed(),
             "binary": bin.is_file().then(|| bin.to_string_lossy().to_string()),
@@ -720,6 +720,8 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "grok_error": grok.error,
             "store_root": Store::open().root().to_string_lossy(),
             "claude_plugin": plugin_installed,
+            "claude_cli": dispatch_core::claude::executable().map(|p| p.to_string_lossy().to_string()),
+            "setup_done": settings::get("setup_done").filter(|v| v.is_array()).unwrap_or_else(|| json!([])),
             "notify": settings::notify_enabled(),
             "theme": theme_setting(),
             "inbound": dispatch_core::claude::inbound_setting(),
@@ -753,6 +755,86 @@ async fn install_cli(app: AppHandle) -> Result<String, String> {
         } else {
             Err(text)
         }
+    })
+    .await
+}
+
+/// Run a program to its end or to a deadline; whether it succeeded, and what it printed.
+fn run_to_end(program: &std::path::Path, args: &[&str], secs: u64) -> (bool, String) {
+    use std::io::Read;
+    let mut command = std::process::Command::new(program);
+    command.args(args).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let Ok(mut child) = command.spawn() else { return (false, format!("{}: could not start", program.display())) };
+    let drain = |stream: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut text = String::new();
+            if let Some(mut s) = stream {
+                let mut bytes = vec![];
+                let _ = s.read_to_end(&mut bytes);
+                text = String::from_utf8_lossy(&bytes).into_owned();
+            }
+            text
+        })
+    };
+    let out = drain(child.stdout.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let errs = drain(child.stderr.take().map(|s| Box::new(s) as Box<dyn Read + Send>));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let ok = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(50)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    let text = [out.join().unwrap_or_default(), errs.join().unwrap_or_default()].iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n");
+    (ok, text)
+}
+
+/// Where the plugin comes from: this repository is its own marketplace, named `dispatch`.
+const PLUGIN_SOURCE: &str = "IvyYang1999/dispatch";
+
+/// Install the Dispatch plugin into Claude Code or Codex with that program's own plugin
+/// commands: add this repository as a marketplace, then install `dispatch` from it. Adding a
+/// marketplace that is already there fails harmlessly, so only the install decides the result.
+#[tauri::command]
+async fn install_plugin(harness: String) -> Result<String, String> {
+    blocking(move || {
+        let (program, install) = match harness.as_str() {
+            "claude" => (dispatch_core::claude::executable().ok_or("claude")?, "install"),
+            "codex" => (dispatch_core::codex::executable().ok_or("codex")?, "add"),
+            other => return Err(format!("no plugin for {other}")),
+        };
+        let (_, added) = run_to_end(&program, &["plugin", "marketplace", "add", PLUGIN_SOURCE], 150);
+        let (ok, installed) = run_to_end(&program, &["plugin", install, "dispatch@dispatch"], 150);
+        if ok {
+            Ok(installed)
+        } else {
+            Err([added, installed].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("\n"))
+        }
+    })
+    .await
+}
+
+/// Tick or untick a setup step Dispatch cannot check for itself (a switch inside another app).
+#[tauri::command]
+async fn setup_mark(key: String, done: bool) -> Result<Value, String> {
+    blocking(move || {
+        let mut keys: Vec<String> = settings::get("setup_done").and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        keys.retain(|k| k != &key);
+        if done {
+            keys.push(key);
+        }
+        settings::set("setup_done", json!(keys)).map_err(|e| e.to_string())?;
+        Ok(json!(keys))
     })
     .await
 }
@@ -1136,7 +1218,7 @@ pub fn run() {
         .manage(Waits::default())
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
-            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
+            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, setup_mark, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget,
             wait_list, wait_open, wait_dismiss, set_wake, share_set

@@ -45,11 +45,12 @@
 
 1. 到[最新 Release](https://github.com/IvyYang1999/dispatch/releases/latest) 下载 `Dispatch-<版本>-macos-arm64-signed.zip`，解压，把 `Dispatch.app` 拖进 `/Applications`。App 和包里的命令行都用 Developer ID 签名并经过苹果公证。 macOS 问「是否允许 Dispatch 查找并连接本地网络上的设备」时点允许，跨电脑靠的就是它（以后在「系统设置 → 隐私与安全性 → 本地网络」里也能改）。
 2. 打开 Dispatch，在「设置」里点 **一键安装**：命令行装到 `~/.dispatch/bin/dispatch`，装好 Claude Code 的 hook，把 MCP 注册给 Codex。
-3. 给每个 Agent 装插件（MCP 工具、skill、hook 一步到位）：
+3. 给每个 Agent 装插件（MCP 工具、skill、hook 一步到位）。「设置 → Agent」里 Claude Code 和 Codex 各有一个 **安装插件** 按钮；自己动手是这几句：
 
 ```
-/plugin install dispatch --marketplace IvyYang1999/dispatch                     # 在 Claude Code 里
-codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch   # Codex
+/plugin marketplace add IvyYang1999/dispatch                                          # 在 Claude Code 里
+/plugin install dispatch@dispatch
+codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch@dispatch   # Codex
 ```
 
 更新：设置 → **检查更新**。App 用内置公钥校验更新包，自己替换、自己重启。重启后会自动同步已安装的 CLI，保留原有 hook 和 MCP 注册。

@@ -124,6 +124,10 @@ export interface SetupStatus {
   grok_error: string | null
   store_root: string
   claude_plugin: boolean
+  /** Where the `claude` program is, when Dispatch can run it to install the plugin. */
+  claude_cli?: string | null
+  /** Setup steps the user ticked by hand: Dispatch cannot see them. */
+  setup_done?: string[]
   notify: boolean
   theme: 'system' | 'light' | 'dark'
   /** Claude Code's crossSessionInbound in the user's settings: accept / hold / refuse, or null. */
@@ -313,6 +317,8 @@ export const api = {
   setupStatus: () => invoke<SetupStatus>('setup_status'),
   installHook: () => invoke<string>('install_hook'),
   installCli: () => invoke<string>('install_cli'),
+  installPlugin: (harness: 'claude' | 'codex') => invoke<string>('install_plugin', { harness }),
+  setupMark: (key: string, done: boolean) => invoke<string[]>('setup_mark', { key, done }),
   updateCheck: () => invoke<UpdateCheck>('update_check'),
   updateInstall: () => invoke<void>('update_install'),
   getLang: () => invoke<string>('get_lang'),

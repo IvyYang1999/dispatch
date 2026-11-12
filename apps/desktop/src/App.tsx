@@ -269,24 +269,12 @@ export function HarnessMark({ harness, size = 14 }: { harness?: string | null; s
   return <img className="hmark" width={size} height={size} src={src} alt={harness} title={harness} />
 }
 
-/** The head of one agent's setup card: its mark, its name, and whether it is ready. */
-function SetupHead({ harness, name, ready }: { harness: string; name: string; ready: boolean }) {
-  return (
-    <div className="setup__head">
-      <HarnessMark harness={harness} size={18} />
-      <span className="setup__name">{name}</span>
-      <span className="setup__state" data-ready={ready || undefined}>{ready ? t('setup.ready') : t('setup.todo')}</span>
-    </div>
-  )
-}
-
-/** One setup step: done (a check), not done (its number), or one Dispatch cannot check (its
- *  number, plain). A command shows in full with Copy, and the step says where it goes. */
-function Step({ n, done, optional, title, sub, cmd, children }: { n: number; done: boolean | null; optional?: boolean; title: string; sub?: string; cmd?: string; children?: React.ReactNode }) {
+/** One line to copy: a command, or a sentence to send. */
+function Cmd({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(cmd ?? '')
+      await navigator.clipboard.writeText(text)
       setCopied(true)
       setTimeout(() => setCopied(false), 1500)
     } catch {
@@ -294,21 +282,70 @@ function Step({ n, done, optional, title, sub, cmd, children }: { n: number; don
     }
   }
   return (
-    <div className="step">
-      <span className="step__mark" data-done={done === true || undefined} data-todo={done === false || undefined}>{done ? '✓' : n}</span>
+    <div className="copy">
+      <code className="copy__text">{text}</code>
+      <button className="btn btn--small" onClick={copy}>{copied ? t('setup.copied') : t('setup.copy')}</button>
+    </div>
+  )
+}
+
+/** Something most people never need to read: closed until asked for. */
+function More({ label, children }: { label: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="more" data-open={open || undefined}>
+      <button className="more__head" onClick={() => setOpen(!open)}>
+        <svg width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 3 7.5 6 4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+        {label}
+      </button>
+      {open && <div className="more__body">{children}</div>}
+    </div>
+  )
+}
+
+/** One agent's setup. Ready: a single line that opens on a click. Not ready: open, with what is
+ *  left. `tone` none is an agent that is not on this machine at all. */
+function SetupCard({ harness, name, state, tone, children }: { harness?: string; name: string; state: string; tone: 'ok' | 'todo' | 'none'; children?: React.ReactNode }) {
+  const [open, setOpen] = useState<boolean | null>(null)
+  const shown = open ?? tone === 'todo'
+  return (
+    <div className="card setup" data-open={shown || undefined}>
+      <button className="setup__head" onClick={() => setOpen(!shown)}>
+        {harness && <HarnessMark harness={harness} size={18} />}
+        <span className="setup__name">{name}</span>
+        <span className="setup__state" data-tone={tone}>{state}</span>
+        <svg className="setup__chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 3 7.5 6 4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </button>
+      {shown && children && <div className="setup__steps">{children}</div>}
+    </div>
+  )
+}
+
+/** One setup step. Done: a check and its title, nothing else. Not done: its number, what it is
+ *  for and the one thing to press. A step Dispatch cannot check (`onTick`) is ticked by hand:
+ *  its mark is the checkbox. */
+function Step({ n, done, optional, title, note, sub, onTick, children }: { n: number; done: boolean; optional?: boolean; title: string; note?: string; sub?: string; onTick?: (done: boolean) => void; children?: React.ReactNode }) {
+  const mark = <span className="step__mark" data-done={done || undefined} data-todo={(!done && !optional) || undefined}>{done ? '✓' : n}</span>
+  return (
+    <div className="step" data-done={done || undefined}>
+      {onTick ? (
+        <button className="step__tick" title={done ? t('setup.untick') : t('setup.tick')} onClick={() => onTick(!done)}>{mark}</button>
+      ) : (
+        mark
+      )}
       <div className="step__body">
         <div className="step__title">
           {title}
           {optional && <span className="step__optional">{t('setup.optional')}</span>}
+          {done && note && <span className="step__note">{note}</span>}
         </div>
-        {sub && <div className="step__sub">{sub}</div>}
-        {cmd && (
-          <div className="copy">
-            <code className="copy__text">{cmd}</code>
-            <button className="btn btn--small" onClick={copy}>{copied ? t('setup.copied') : t('setup.copy')}</button>
+        {!done && sub && <div className="step__sub">{sub}</div>}
+        {!done && children}
+        {!done && onTick && (
+          <div className="step__act">
+            <button className="btn btn--small" onClick={() => onTick(true)}>{t('setup.tick')}</button>
           </div>
         )}
-        {children && <div className="step__act">{children}</div>}
       </div>
     </div>
   )
@@ -986,82 +1023,79 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
       {err && <div className="empty">{err}</div>}
       {s && page && reach && (
         <div className="sp">
-          <section className="sp__card sp__id">
-            <button className="sp__face" title={t('action.edit')} onClick={edit}>
-              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={48} harness={s.harness} />
-            </button>
-            <div className="sp__who">
-              <button className="sp__name" onClick={edit}>
-                {plain(s.name)}
-                <Icon name="edit" size={13} />
+          <section className="sp__card sp__idcard">
+            <div className="sp__id">
+              <button className="sp__face" title={t('action.edit')} onClick={edit}>
+                <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={48} harness={s.harness} />
               </button>
-              <button className="sp__about" data-empty={!s.about || undefined} onClick={edit}>{s.about || t('sp.addAbout')}</button>
-              <div className="sp__chips">
-                <span className="sp__chip sp__chip--project">{s.project ?? s.cwd_short?.split('/').filter(Boolean).pop() ?? t('sp.noProject')}</span>
-                <span className="sp__chip">{s.harness}{s.host ? ` · ${s.host.name}` : ` · ${t('side.local')}`}</span>
-                {s.cwd_short && <span className="sp__chip sp__chip--path" title={s.cwd ?? ''}>{s.cwd_short}</span>}
-              </div>
-              {!s.host && (
-                <div className="sp__share">
-                  <span className="sp__sharelabel">{t('share.label')}</span>
-                  <span className="seg seg--small">
-                    {(['none', 'basic', 'asks', 'rounds'] as const).map((l) => (
-                      <button key={l} data-active={(s.share ?? 'basic') === l || undefined} title={t(`share.tip.${l}` as const)} onClick={() => api.shareSet(s.id, l).then(load)}>
-                        {t(`share.${l}` as const)}
-                      </button>
-                    ))}
-                  </span>
+              <div className="sp__who">
+                <button className="sp__name" onClick={edit}>
+                  {plain(s.name)}
+                  <Icon name="edit" size={13} />
+                </button>
+                <button className="sp__about" data-empty={!s.about || undefined} onClick={edit}>{s.about || t('sp.addAbout')}</button>
+                <div className="sp__chips">
+                  <span className="sp__chip sp__chip--project">{s.project ?? s.cwd_short?.split('/').filter(Boolean).pop() ?? t('sp.noProject')}</span>
+                  <span className="sp__chip">{s.harness}{s.host ? ` · ${s.host.name}` : ` · ${t('side.local')}`}</span>
+                  {s.cwd_short && <span className="sp__chip sp__chip--path" title={s.cwd ?? ''}>{s.cwd_short}</span>}
                 </div>
-              )}
+                {!s.host && (
+                  <div className="sp__share">
+                    <span className="sp__sharelabel">{t('share.label')}</span>
+                    <span className="seg seg--small">
+                      {(['none', 'basic', 'asks', 'rounds'] as const).map((l) => (
+                        <button key={l} data-active={(s.share ?? 'basic') === l || undefined} title={t(`share.tip.${l}` as const)} onClick={() => api.shareSet(s.id, l).then(load)}>
+                          {t(`share.${l}` as const)}
+                        </button>
+                      ))}
+                    </span>
+                  </div>
+                )}
+              </div>
+              <button className="btn btn--small btn--with-icon" onClick={() => open(addressOf(s))}>
+                <Icon name="open" size={13} />
+                {t('action.open')}
+              </button>
             </div>
-            <button className="btn btn--small btn--with-icon" onClick={() => open(addressOf(s))}>
-              <Icon name="open" size={13} />
-              {t('action.open')}
-            </button>
+            <div className="sp__reach" data-tone={reach.tone}>
+              <span className="sp__dot" />
+              <div className="sp__reachtext">
+                <div className="sp__label">{t('sp.ifSent')}</div>
+                <div className="sp__state">{reach.title}</div>
+                <p className="sp__detail">{reach.detail}</p>
+                {reach.todo && <p className="sp__todo">{reach.todo}</p>}
+              </div>
+              <div className="sp__reachside">
+                <span className="sp__seen">{presence(s)}{s.last_active ? ` · ${t('sp.lastActive')} ${localStamp(new Date(s.last_active).toISOString())}` : ''}</span>
+                {(reach.tone === 'auto' || reach.tone === 'you') && (
+                  <button className="btn btn--small btn--with-icon" onClick={() => open(addressOf(s))}>
+                    <Icon name="open" size={13} />
+                    {t('sp.wake')}
+                  </button>
+                )}
+              </div>
+            </div>
           </section>
 
-          <div className="sp__row">
-            <section className="sp__card sp__reach" data-tone={reach.tone}>
-              <div className="sp__label">{t('sp.ifSent')}</div>
-              <div className="sp__state">
-                <span className="sp__dot" />
-                {reach.title}
+          <section className="sp__card sp__ties">
+            <div className="sp__label">{t('sp.ties')}</div>
+            {ties.length === 0 ? (
+              <p className="sp__detail">{t('sp.noTies')}</p>
+            ) : (
+              <div className="sp__tiesbody">
+                <TieMap s={s} ties={ties} hot={hotTie} onHot={setHotTie} onPick={(x) => onFeedPick(x.dispatch)} />
+                <div className="sp__tielist" onMouseLeave={() => setHotTie(null)}>
+                  {ties.map((x) => (
+                    <button key={x.key} className="sp__tie" data-hot={x.key === hotTie || undefined} onMouseEnter={() => setHotTie(x.key)} onClick={() => onFeedPick(x.dispatch)}>
+                      <Avatar name={x.name} size={18} />
+                      <span className="sp__tiename">{withHost(plain(x.name), x.host)}</span>
+                      <span className="sp__tiecount">{x.sent > 0 && <span title={t('sp.sentTip')}>→ {x.sent}</span>}{x.got > 0 && <span title={t('sp.gotTip')}>← {x.got}</span>}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-              <p className="sp__detail">{reach.detail}</p>
-              {reach.todo && <p className="sp__todo">{reach.todo}</p>}
-              <div className="sp__facts">
-                <span>{t('sp.lastActive')}</span>
-                <span>{s.last_active ? localStamp(new Date(s.last_active).toISOString()) : '—'}</span>
-                <span>{t('sp.now')}</span>
-                <span>{presence(s)}</span>
-              </div>
-              {(reach.tone === 'auto' || reach.tone === 'you') && (
-                <button className="btn btn--small btn--with-icon sp__wake" onClick={() => open(addressOf(s))}>
-                  <Icon name="open" size={13} />
-                  {t('sp.wake')}
-                </button>
-              )}
-            </section>
-            <section className="sp__card sp__ties">
-              <div className="sp__label">{t('sp.ties')}</div>
-              {ties.length === 0 ? (
-                <p className="sp__detail">{t('sp.noTies')}</p>
-              ) : (
-                <>
-                  <TieMap s={s} ties={ties} hot={hotTie} onHot={setHotTie} onPick={(x) => onFeedPick(x.dispatch)} />
-                  <div className="sp__tielist" onMouseLeave={() => setHotTie(null)}>
-                    {ties.slice(0, 6).map((x) => (
-                      <button key={x.key} className="sp__tie" data-hot={x.key === hotTie || undefined} onMouseEnter={() => setHotTie(x.key)} onClick={() => onFeedPick(x.dispatch)}>
-                        <Avatar name={x.name} size={18} />
-                        <span className="sp__tiename">{withHost(plain(x.name), x.host)}</span>
-                        <span className="sp__tiecount">{x.sent > 0 && <span title={t('sp.sentTip')}>→ {x.sent}</span>}{x.got > 0 && <span title={t('sp.gotTip')}>← {x.got}</span>}</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </section>
-          </div>
+            )}
+          </section>
 
           <section className="sp__card sp__history">
             <div className="sp__histhead">
@@ -1256,11 +1290,15 @@ function Peers() {
   const [code, setCode] = useState('')
   const [manual, setManual] = useState('')
   const [manualCode, setManualCode] = useState('')
+  const [link, setLink] = useState('')
   const [shown, setShown] = useState<{ code: string; until: number } | null>(null)
   const [linkShown, setLinkShown] = useState<{ link: string; until: number } | null>(null)
   const [copied, setCopied] = useState(false)
   const [relay, setRelay] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now())
+  const [adding, setAdding] = useState<boolean | null>(null)
+  const [where, setWhere] = useState<'near' | 'far'>('near')
+  const [detail, setDetail] = useState<string | null>(null)
   const load = useCallback(() => api.peersOverview().then(setOv).catch((e) => setMsg(String(e))), [])
   useEffect(() => {
     load()
@@ -1312,16 +1350,21 @@ function Peers() {
       setCode('')
       setManual('')
       setManualCode('')
+      setLink('')
+      setAdding(false)
     })
   const left = shown ? Math.max(0, Math.round((shown.until - now) / 1000)) : 0
   const linkLeft = linkShown ? Math.max(0, Math.round((linkShown.until - now) / 1000)) : 0
-  const isLink = manual.trim().startsWith('dispatch-pair:')
   const addrOf = (s: { addrs: string[]; port: number }) => `${s.addrs.find((a) => !a.includes(':')) ?? s.addrs[0] ?? ''}:${s.port}`
+  const peers = ov?.peers ?? []
+  const seen = ov?.seen ?? []
+  // nothing paired yet: the guide is the page
+  const guide = adding ?? (ov !== null && peers.length === 0)
   return (
     <>
       <div className="section-head">
         <div className="section-head__title">{t('settings.peers')}</div>
-        <div className="section-head__sub">{t('settings.peersSub')}</div>
+        <div className="section-head__sub">{t('peers.intro')}</div>
       </div>
       <div className="card">
         <div className="host">
@@ -1330,124 +1373,207 @@ function Peers() {
               <span className="inline">
                 <input className="input" value={renaming} onChange={(e) => setRenaming(e.target.value)} autoFocus />
                 <button className="btn btn--small" disabled={busy || !renaming.trim()} onClick={() => run(async () => { await api.peerSetName(renaming); setRenaming(null) })}>{t('peers.save')}</button>
+                <button className="btn btn--ghost btn--small" onClick={() => setRenaming(null)}>{t('action.cancel')}</button>
               </span>
             ) : (
               <span className="host__name">{t('peers.me', { name: ov?.me.name ?? '' })}</span>
             )}
-            <span className="host__found">{ov?.me.listening ? t('peers.listening', { p: ov.me.listening }) : t('peers.notListening')}</span>
+            <span className="host__found host__found--wrap">{ov?.me.listening ? t('peers.meSub') : t('peers.notListening')}</span>
           </div>
           {renaming === null && <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => setRenaming(ov?.me.name ?? '')}>{t('peers.rename')}</button>}
-          <button className="btn btn--small" disabled={busy || !ov?.me.listening} onClick={showCode}>{t('peers.showCode')}</button>
-          <button className="btn btn--small" disabled={busy || !ov?.internet || !ov?.me.internet_listening} onClick={makeLink}>{t('peers.makeLink')}</button>
         </div>
-        {linkShown && linkLeft > 0 && (
-          <div className="host host--code host--link">
-            <code className="cmd cmd--wrap">{linkShown.link}</code>
-            <div className="host__row">
-              <span className="host__found host__found--wrap">{t('peers.linkShown', { s: linkLeft })}</span>
-              <button className="btn btn--primary btn--small" onClick={copyLink}>{copied ? t('peers.copied') : t('peers.copy')}</button>
-            </div>
-          </div>
-        )}
-        {shown && left > 0 && (
-          <div className="host host--code">
-            <span className="code">{shown.code}</span>
-            <span className="host__found host__found--wrap">{t('peers.codeShown', { s: left })}</span>
-          </div>
-        )}
-        {ov?.peers.some((p) => p.blocked) && (
+        {peers.some((p) => p.blocked) && (
           <div className="host host--code">
             <span className="host__found host__found--wrap">{t('peers.blocked')}</span>
             <button className="btn btn--small" onClick={() => run(api.openLocalNetworkSettings)}>{t('peers.openPrivacy')}</button>
           </div>
         )}
-        {ov?.peers.map((p) => (
-          <div key={p.id} className="host host--peer">
-            <div className="host__who">
-              <span className="host__name">
-                {p.name} <span className="tag" data-on={p.online || undefined}>{p.online ? t('peers.online') : t('peers.offline')}</span>
-                {p.online && p.link && <span className="tag">{t(`peers.link.${p.link}` as const)}</span>}
+        {peers.map((p) => (
+          <div key={p.id} className="peer" data-open={detail === p.id || undefined}>
+            <button className="peer__head" onClick={() => setDetail(detail === p.id ? null : p.id)}>
+              <span className="presence" data-on={p.online || undefined} />
+              <span className="peer__name">{p.name}</span>
+              <span className="peer__state">
+                {p.online ? (p.link ? t(`peers.link.${p.link}` as const) : t('peers.online')) : t('peers.offline')}
+                {!p.verified && ` · ${t('peers.needsConfirm')}`}
               </span>
-              <span className="host__found host__found--wrap">
-                {p.address ?? (p.seen ? addrOf(p.seen) : t('peers.pairedAt', { t: p.paired_at }))}
-                {!p.online && p.problem ? ` · ${p.problem}` : ''}
-              </span>
-              <span className="host__found host__found--wrap">
-                <span className="fp">{t('peers.fingerprint', { fp: p.fingerprint })}</span>
-                {' · '}
-                {p.verified ? t('peers.confirmed') : t('peers.unconfirmed')}
-              </span>
-              {p.superseded && <span className="host__found host__found--wrap">{t('peers.superseded')}</span>}
-              <span className="host__row">
-                <span className="host__found">{t('peers.rule')}</span>
-                <span className="seg">
-                  {(['all', 'contacts', 'ask'] as const).map((r) => (
-                    <button key={r} data-active={p.rule === r || undefined} onClick={() => run(() => api.peerRule(p.id, r))}>{t(`peers.rule.${r}` as const)}</button>
-                  ))}
-                </span>
-                {!p.verified && <button className="btn btn--primary btn--small" disabled={busy} onClick={() => run(async () => { const r = await api.peerVerify(p.id); setMsg(t('peers.pairedWith', { name: r.name })) })}>{t('peers.confirm')}</button>}
-              </span>
-            </div>
-            <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => run(() => api.peerRemove(p.id))}>{t('peers.remove')}</button>
-          </div>
-        ))}
-        {ov?.seen.map((s) => (
-          <div key={s.id} className="host">
-            <div className="host__who">
-              <span className="host__name">{s.name || s.id.slice(0, 8)}</span>
-              <span className="host__found">{addrOf(s)} · {t('peers.notPaired')}</span>
-            </div>
-            {pairing === s.id ? (
-              <span className="inline">
-                <input className="input input--code" placeholder={t('peers.codePlaceholder')} value={code} onChange={(e) => setCode(e.target.value)} autoFocus />
-                <button className="btn btn--primary btn--small" disabled={busy || code.trim().length !== 6} onClick={() => pair(addrOf(s), code)}>{t('peers.pair')}</button>
-                <button className="btn btn--ghost btn--small" onClick={() => setPairing(null)}>{t('action.cancel')}</button>
-              </span>
-            ) : (
-              <button className="btn btn--primary btn--small" disabled={busy} onClick={() => { setPairing(s.id); setCode('') }}>{t('peers.pair')}</button>
+              <svg className="setup__chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 3 7.5 6 4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            </button>
+            {(detail === p.id || !p.verified) && (
+              <div className="peer__body">
+                {!p.online && p.problem && <div className="peer__line">{p.problem}</div>}
+                {p.superseded && <div className="peer__line">{t('peers.superseded')}</div>}
+                <div className="peer__line">
+                  <span className="fp">{t('peers.fingerprint', { fp: p.fingerprint })}</span>
+                  {' · '}
+                  {p.verified ? t('peers.confirmed') : t('peers.unconfirmed')}
+                  {!p.verified && <button className="btn btn--primary btn--small" disabled={busy} onClick={() => run(async () => { const r = await api.peerVerify(p.id); setMsg(t('peers.pairedWith', { name: r.name })) })}>{t('peers.confirm')}</button>}
+                </div>
+                <div className="peer__line">
+                  <span>{t('peers.rule')}</span>
+                  <span className="seg seg--small">
+                    {(['all', 'contacts', 'ask'] as const).map((r) => (
+                      <button key={r} data-active={p.rule === r || undefined} onClick={() => run(() => api.peerRule(p.id, r))}>{t(`peers.rule.${r}` as const)}</button>
+                    ))}
+                  </span>
+                </div>
+                <div className="peer__line peer__line--faint">
+                  <span>{p.address ?? (p.seen ? addrOf(p.seen) : t('peers.pairedAt', { t: p.paired_at }))}</span>
+                  <button className="btn btn--ghost btn--small btn--danger" disabled={busy} onClick={() => run(() => api.peerRemove(p.id))}>{t('peers.remove')}</button>
+                </div>
+              </div>
             )}
           </div>
         ))}
-        <div className="host">
-          <div className="host__who">
-            <span className="host__name">{t('peers.manual')}</span>
-            <span className="host__found host__found--wrap">{t('peers.manualSub')}</span>
+        {!guide && (
+          <div className="host">
+            <div className="host__who">
+              <span className="host__found host__found--wrap">{t('peers.many')}</span>
+            </div>
+            <button className="btn btn--primary btn--small" onClick={() => setAdding(true)}>{t('peers.add')}</button>
           </div>
-          <span className="inline">
-            <input className="input" placeholder={t('peers.manualTarget')} value={manual} onChange={(e) => setManual(e.target.value)} />
-            {!isLink && <input className="input input--code" placeholder={t('peers.codePlaceholder')} value={manualCode} onChange={(e) => setManualCode(e.target.value)} />}
-            <button className="btn btn--small" disabled={busy || !manual.trim() || (!isLink && manualCode.trim().length !== 6)} onClick={() => pair(manual.trim(), isLink ? null : manualCode)}>{t('peers.pair')}</button>
-          </span>
-          <button className="btn btn--ghost btn--small" disabled={busy} onClick={() => run(api.peerScan)}>{t('peers.scan')}</button>
-        </div>
-        <div className="host">
-          <div className="host__who">
-            <span className="host__name">{t('peers.internet')}</span>
-            <span className="host__found host__found--wrap">{t('peers.internetSub')}</span>
-          </div>
-          <span className="seg">
-            <button data-active={ov?.internet || undefined} onClick={() => run(() => api.setPeerInternet(true))}>{t('settings.notifyOn')}</button>
-            <button data-active={!ov?.internet || undefined} onClick={() => run(() => api.setPeerInternet(false))}>{t('settings.notifyOff')}</button>
-          </span>
-        </div>
-        <div className="host">
-          <div className="host__who">
-            <span className="host__name">{t('peers.relay')}</span>
-            <span className="host__found host__found--wrap">{t('peers.relaySub')}</span>
-          </div>
-          <span className="inline">
-            <input className="input input--relay" placeholder={t('peers.relayDefault')} value={relay ?? ov?.relay ?? ''} onChange={(e) => setRelay(e.target.value)} />
-            <button className="btn btn--small" disabled={busy || relay === null} onClick={() => run(async () => { await api.setPeerRelay(relay?.trim() ? relay.trim() : null); setRelay(null) })}>{t('peers.relaySave')}</button>
-          </span>
-        </div>
-        {msg && <div className="notice" onClick={() => setMsg(null)}>{msg}</div>}
+        )}
       </div>
+
+      {guide && (
+        <div className="card setup" data-open>
+          <div className="setup__head setup__head--plain">
+            <span className="setup__name">{t('peers.add')}</span>
+            <span className="seg seg--small setup__where">
+              <button data-active={where === 'near' || undefined} onClick={() => setWhere('near')}>{t('peers.near')}</button>
+              <button data-active={where === 'far' || undefined} onClick={() => setWhere('far')}>{t('peers.far')}</button>
+            </span>
+            {peers.length > 0 && <button className="btn btn--ghost btn--small" onClick={() => setAdding(false)}>{t('action.cancel')}</button>}
+          </div>
+          <div className="setup__steps">
+            {where === 'near' ? (
+              <>
+                <Step n={1} done={false} title={t('peers.near1')} sub={t('peers.near1Sub')} />
+                <Step n={2} done={false} title={t('peers.near2')} sub={seen.length === 0 ? t('peers.noneSeen') : undefined}>
+                  {seen.map((s) => (
+                    <div key={s.id} className="found">
+                      <span className="found__name">{s.name || s.id.slice(0, 8)}</span>
+                      {pairing === s.id ? (
+                        <span className="inline">
+                          <input className="input input--code" placeholder={t('peers.codePlaceholder')} value={code} onChange={(e) => setCode(e.target.value)} autoFocus />
+                          <button className="btn btn--primary btn--small" disabled={busy || code.replace(/\s/g, '').length !== 6} onClick={() => pair(addrOf(s), code.replace(/\s/g, ''))}>{t('peers.pair')}</button>
+                          <button className="btn btn--ghost btn--small" onClick={() => setPairing(null)}>{t('action.cancel')}</button>
+                        </span>
+                      ) : (
+                        <button className="btn btn--primary btn--small" disabled={busy} onClick={() => { setPairing(s.id); setCode('') }}>{t('peers.pair')}</button>
+                      )}
+                    </div>
+                  ))}
+                  {seen.length === 0 && (
+                    <div className="step__act">
+                      <button className="btn btn--small" disabled={busy} onClick={() => run(api.peerScan)}>{t('peers.scan')}</button>
+                    </div>
+                  )}
+                </Step>
+                <Step n={3} done={false} title={t('peers.near3')} sub={t('peers.near3Sub')} />
+                <div className="step step--aside">
+                  <div className="step__body">
+                    <div className="step__sub">{t('peers.otherWay')}</div>
+                    {shown && left > 0 ? (
+                      <div className="showcode">
+                        <span className="code">{shown.code}</span>
+                        <span className="step__sub">{t('peers.codeShown', { s: left })}</span>
+                      </div>
+                    ) : (
+                      <div className="step__act">
+                        <button className="btn btn--small" disabled={busy || !ov?.me.listening} onClick={showCode}>{t('peers.showCode')}</button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <>
+                <Step n={1} done={!!ov?.internet} title={t('peers.far1')} sub={t('peers.far1Sub')}>
+                  <div className="step__act">
+                    <button className="btn btn--primary btn--small" disabled={busy} onClick={() => run(() => api.setPeerInternet(true))}>{t('peers.far1On')}</button>
+                  </div>
+                </Step>
+                <Step n={2} done={false} title={t('peers.far2')} sub={t('peers.far2Sub')}>
+                  {linkShown && linkLeft > 0 ? (
+                    <>
+                      <div className="copy">
+                        <code className="copy__text">{linkShown.link}</code>
+                        <button className="btn btn--primary btn--small" onClick={copyLink}>{copied ? t('peers.copied') : t('peers.copy')}</button>
+                      </div>
+                      <div className="step__sub">{t('peers.linkShown', { s: linkLeft })}</div>
+                    </>
+                  ) : (
+                    <div className="step__act">
+                      <button className="btn btn--small" disabled={busy || !ov?.internet || !ov?.me.internet_listening} onClick={makeLink}>{t('peers.makeLink')}</button>
+                      {ov?.internet && !ov?.me.internet_listening && <span className="step__sub">{t('peers.restartFirst')}</span>}
+                    </div>
+                  )}
+                </Step>
+                <Step n={3} done={false} title={t('peers.far3')} sub={t('peers.far3Sub')}>
+                  <div className="found">
+                    <input className="input input--wide" placeholder={t('peers.linkPlaceholder')} value={link} onChange={(e) => setLink(e.target.value)} />
+                    <button className="btn btn--small" disabled={busy || !link.trim().startsWith('dispatch-pair:')} onClick={() => pair(link.trim(), null)}>{t('peers.pair')}</button>
+                  </div>
+                </Step>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      <More label={t('peers.advanced')}>
+        <div className="card">
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">{t('peers.internet')}</span>
+              <span className="host__found host__found--wrap">{t('peers.internetSub')}</span>
+            </div>
+            <span className="seg">
+              <button data-active={ov?.internet || undefined} onClick={() => run(() => api.setPeerInternet(true))}>{t('settings.notifyOn')}</button>
+              <button data-active={!ov?.internet || undefined} onClick={() => run(() => api.setPeerInternet(false))}>{t('settings.notifyOff')}</button>
+            </span>
+          </div>
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">{t('peers.manual')}</span>
+              <span className="host__found host__found--wrap">{t('peers.manualSub')}</span>
+            </div>
+            <span className="inline">
+              <input className="input" placeholder={t('peers.manualTarget')} value={manual} onChange={(e) => setManual(e.target.value)} />
+              <input className="input input--code" placeholder={t('peers.codePlaceholder')} value={manualCode} onChange={(e) => setManualCode(e.target.value)} />
+              <button className="btn btn--small" disabled={busy || !manual.trim() || manualCode.replace(/\s/g, '').length !== 6} onClick={() => pair(manual.trim(), manualCode.replace(/\s/g, ''))}>{t('peers.pair')}</button>
+            </span>
+          </div>
+          <div className="host">
+            <div className="host__who">
+              <span className="host__name">{t('peers.relay')}</span>
+              <span className="host__found host__found--wrap">{t('peers.relaySub')}</span>
+            </div>
+            <span className="inline">
+              <input className="input input--relay" placeholder={t('peers.relayDefault')} value={relay ?? ov?.relay ?? ''} onChange={(e) => setRelay(e.target.value)} />
+              <button className="btn btn--small" disabled={busy || relay === null} onClick={() => run(async () => { await api.setPeerRelay(relay?.trim() ? relay.trim() : null); setRelay(null) })}>{t('peers.relaySave')}</button>
+            </span>
+          </div>
+          {ov?.me.listening && (
+            <div className="host">
+              <div className="host__who">
+                <span className="host__found host__found--wrap">{t('peers.listening', { p: ov.me.listening })}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </More>
+      {msg && <div className="notice" onClick={() => setMsg(null)}>{msg}</div>}
     </>
   )
 }
 
+type SettingsTab = 'agents' | 'peers' | 'general'
+
 function Settings() {
   const lang = useLang()
+  const [tab, setTab] = useState<SettingsTab>('agents')
   const [st, setSt] = useState<SetupStatus | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [upd, setUpd] = useState<UpdateCheck | null>(null)
@@ -1459,12 +1585,12 @@ function Settings() {
   useEffect(() => {
     load()
   }, [load])
-  const run = async (what: string, f: () => Promise<string | void>) => {
+  const run = async (what: string, f: () => Promise<string | void>, say?: string) => {
     setBusy(what)
     try {
       const r = await f()
-      if (typeof r === 'string') setMsg(r)
-      load()
+      setMsg(say ?? (typeof r === 'string' ? r : null))
+      await load()
     } catch (e) {
       setMsg(String(e))
     } finally {
@@ -1472,172 +1598,235 @@ function Settings() {
     }
   }
   const check = () => run('check', async () => { setUpd(await api.updateCheck()) })
-  const cliText = st?.binary ? t('settings.cliInstalled', { p: st.binary }) : st?.bundled_cli ? t('settings.cliBundled') : t('settings.cliNone')
-  // the app and its sign-in only: gbot is a step of its own
-  const grokState = !st ? '' : !st.grok_app ? t('settings.grokMissing') : !st.grok_signed_in ? t('settings.grokSignIn') : st.grok_error ? t('settings.grokOffline', { e: st.grok_error }) : st.gbot ? t('settings.grokReady', { n: st.grok_bots }) : t('setup.grokSignedIn')
+  const ticked = (key: string) => !!st?.setup_done?.includes(key)
+  const tick = (key: string) => (done: boolean) => run(key, async () => { await api.setupMark(key, done) })
+  const plugin = (harness: 'claude' | 'codex') => run(`plugin-${harness}`, async () => { await api.installPlugin(harness) }, t(harness === 'claude' ? 'setup.claudePluginDone' : 'setup.codexPluginDone'))
+  const left = (n: number) => t('setup.left', { n })
+  // Claude Code
+  const claudeLeft = [st?.hook_installed, st?.claude_plugin].filter((x) => !x).length
+  // Codex
+  const codexLeft = [st?.codex_mcp].filter((x) => !x).length
+  // Grok Bot: receiving needs the app, its sign-in and gbot; sending needs two things only the user can see
+  const grokIn = !!st?.grok_app && !!st?.grok_signed_in && !!st?.gbot
+  const grokOutLeft = [ticked('grok_computer'), ticked('grok_skill')].filter((x) => !x).length
+  const grokLeft = [st?.grok_signed_in, !!st?.gbot].filter((x) => !x).length + grokOutLeft
   return (
     <>
       <header className="bar bar--page" data-tauri-drag-region>
         <span className="bar__title" data-tauri-drag-region>{t('nav.settings')}</span>
+        <span className="seg seg--small bar__tabs">
+          {(['agents', 'peers', 'general'] as const).map((k) => (
+            <button key={k} data-active={tab === k || undefined} onClick={() => { setTab(k); setMsg(null) }}>{t(`settings.tab.${k}` as const)}</button>
+          ))}
+        </span>
       </header>
       <div className="settings">
-        <div className="section-head">
-          <div className="section-head__title">{t('settings.agents')}</div>
-          <div className="section-head__sub">{t('setup.sub')}</div>
-        </div>
-        <div className="card">
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{t('settings.cli')}</span>
-              <span className="host__found host__found--wrap">{cliText}</span>
-              <span className="host__found host__found--wrap">{t('setup.cliWhat')}</span>
+        {tab === 'agents' && st && (
+          <>
+            <div className="section-head">
+              <div className="section-head__title">{t('settings.agents')}</div>
+              <div className="section-head__sub">{t('setup.sub')}</div>
             </div>
-            <button className="btn btn--primary btn--small" disabled={busy !== null || !st?.bundled_cli} onClick={() => run('install', api.installCli)}>{st?.binary ? t('settings.reinstall') : t('settings.install')}</button>
-          </div>
-        </div>
-        <div className="card setup">
-          <SetupHead harness="Claude" name="Claude Code" ready={!!st?.hook_installed && !!st?.claude_plugin} />
-          <Step n={1} done={!!st?.hook_installed} title={t('setup.claudeHook')} sub={t('setup.claudeHookSub')}>
-            {st && !st.hook_installed && st.binary && <button className="btn btn--small" disabled={busy !== null} onClick={() => run('hook', api.installHook)}>{t('settings.hookOnly')}</button>}
-          </Step>
-          <Step n={2} done={!!st?.claude_plugin} title={t('setup.claudePlugin')} sub={t('setup.claudePluginWhere')} cmd="/plugin install dispatch --marketplace IvyYang1999/dispatch" />
-          <Step n={3} done={null} optional title={t('settings.inbound')} sub={`${st?.inbound && st.inbound !== 'accept' ? `${t('settings.inboundOther', { v: st.inbound })} ` : ''}${t('settings.inboundSub')}`}>
-            <span className="seg">
-              <button data-active={st?.inbound === 'accept' || undefined} onClick={() => run('inbound', async () => { await api.setInbound(true) })}>{t('settings.notifyOn')}</button>
-              <button data-active={st?.inbound !== 'accept' || undefined} onClick={() => run('inbound', async () => { await api.setInbound(false) })}>{t('settings.notifyOff')}</button>
-            </span>
-          </Step>
-        </div>
-        <div className="card setup">
-          <SetupHead harness="Codex" name="Codex" ready={!!st?.codex && !!st?.codex_mcp} />
-          <Step n={1} done={!!st?.codex} title={t('setup.codexFound')} sub={st?.codex ?? t('settings.codexMissing')} />
-          <Step n={2} done={!!st?.codex_mcp} title={t('setup.codexMcp')} sub={t('setup.codexMcpSub')} />
-          <Step n={3} done={!!st?.codex_plugin} optional title={t('setup.codexPlugin')} sub={t('setup.inTerminal')} cmd="codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch" />
-        </div>
-        <div className="card setup">
-          <SetupHead harness="Grok Bot" name="Grok Bot" ready={!!st?.grok_app && !!st?.grok_signed_in && !!st?.gbot} />
-          <Step n={1} done={!!st?.grok_app && !!st?.grok_signed_in} title={t('setup.grokApp')} sub={grokState} />
-          <Step n={2} done={!!st?.gbot} title={t('setup.grokGbot')} sub={t('setup.inTerminal')} cmd="npm i -g grok-bot-cli" />
-          <Step n={3} done={null} title={t('setup.grokComputer')} sub={t('setup.grokComputerSub')} />
-          <Step n={4} done={null} title={t('setup.grokSkill')} sub={t('setup.grokSkillSub')} cmd={t('settings.grokCmd')} />
-        </div>
-        <Peers />
-        <div className="section-head">
-          <div className="section-head__title">{t('settings.language')}</div>
-        </div>
-        <div className="card">
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{LANGS.find((l) => l.key === lang)?.label}</span>
-              <span className="host__found">{t('settings.languageSub')}</span>
-            </div>
-            <span className="seg">
-              {LANGS.map((l) => (
-                <button key={l.key} data-active={lang === l.key || undefined} onClick={() => setLang(l.key)}>{l.label}</button>
-              ))}
-            </span>
-          </div>
-        </div>
-        <div className="section-head">
-          <div className="section-head__title">{t('settings.theme')}</div>
-        </div>
-        <div className="card">
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{t(`theme.${st?.theme ?? 'system'}` as const)}</span>
-              <span className="host__found">{t('settings.themeSub')}</span>
-            </div>
-            <span className="seg">
-              {(['system', 'light', 'dark'] as const).map((th) => (
-                <button key={th} data-active={(st?.theme ?? 'system') === th || undefined} onClick={() => run('theme', async () => { await api.setTheme(th) })}>{t(`theme.${th}` as const)}</button>
-              ))}
-            </span>
-          </div>
-        </div>
-        <div className="section-head">
-          <div className="section-head__title">{t('settings.review')}</div>
-        </div>
-        <div className="card">
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{st?.review === 'off' ? t('settings.reviewOff') : st?.review === 'all' ? t('settings.reviewAll') : t('settings.reviewNew')}</span>
-              <span className="host__found host__found--wrap">{t('settings.reviewSub')}</span>
-            </div>
-            <span className="seg">
-              <button data-active={(st?.review ?? 'new') === 'new' || undefined} onClick={() => run('review', async () => { await api.setReview('new') })}>{t('settings.reviewNew')}</button>
-              <button data-active={st?.review === 'all' || undefined} onClick={() => run('review', async () => { await api.setReview('all') })}>{t('settings.reviewAll')}</button>
-              <button data-active={st?.review === 'off' || undefined} onClick={() => run('review', async () => { await api.setReview('off') })}>{t('settings.reviewOff')}</button>
-            </span>
-          </div>
-          {(st?.review_trusted ?? 0) > 0 && (
+            {!st.binary && (
+              <div className="card">
+                <div className="host host--code">
+                  <div className="host__who">
+                    <span className="host__name">{t('setup.first')}</span>
+                    <span className="host__found host__found--wrap">{st.bundled_cli ? t('setup.cliWhat') : t('settings.cliNone')}</span>
+                  </div>
+                  <button className="btn btn--primary btn--small" disabled={busy !== null || !st.bundled_cli} onClick={() => run('install', api.installCli)}>{busy === 'install' ? t('setup.installing') : t('settings.install')}</button>
+                </div>
+              </div>
+            )}
+
+            <SetupCard harness="Claude" name="Claude Code" tone={claudeLeft === 0 ? 'ok' : 'todo'} state={claudeLeft === 0 ? t('setup.ready') : left(claudeLeft)}>
+              <Step n={1} done={st.hook_installed} title={t('setup.claudeHook')} sub={t('setup.claudeHookSub')}>
+                <div className="step__act">
+                  <button className="btn btn--primary btn--small" disabled={busy !== null || !st.bundled_cli} onClick={() => run('hook', st.binary ? api.installHook : api.installCli)}>{t('settings.install')}</button>
+                </div>
+              </Step>
+              <Step n={2} done={st.claude_plugin} title={t('setup.claudePlugin')} sub={t('setup.claudePluginSub')}>
+                {st.claude_cli ? (
+                  <>
+                    <div className="step__act">
+                      <button className="btn btn--primary btn--small" disabled={busy !== null} onClick={() => plugin('claude')}>{busy === 'plugin-claude' ? t('setup.installing') : t('setup.installPlugin')}</button>
+                    </div>
+                    <More label={t('setup.byHand')}>
+                      <div className="step__sub">{t('setup.claudePluginWhere')}</div>
+                      <Cmd text="/plugin marketplace add IvyYang1999/dispatch" />
+                      <Cmd text="/plugin install dispatch@dispatch" />
+                    </More>
+                  </>
+                ) : (
+                  <>
+                    <div className="step__sub">{t('setup.claudePluginWhere')}</div>
+                    <Cmd text="/plugin marketplace add IvyYang1999/dispatch" />
+                    <Cmd text="/plugin install dispatch@dispatch" />
+                  </>
+                )}
+              </Step>
+              <div className="step step--pref">
+                <div className="step__body">
+                  <div className="step__title">
+                    {t('settings.inbound')}
+                    <span className="step__optional">{t('setup.optional')}</span>
+                  </div>
+                  <div className="step__sub">{st.inbound && st.inbound !== 'accept' ? `${t('settings.inboundOther', { v: st.inbound })} ` : ''}{t('settings.inboundShort')}</div>
+                  <More label={t('setup.details')}>
+                    <div className="step__sub">{t('settings.inboundSub')}</div>
+                  </More>
+                </div>
+                <span className="seg seg--small">
+                  <button data-active={st.inbound === 'accept' || undefined} onClick={() => run('inbound', async () => { await api.setInbound(true) })}>{t('settings.notifyOn')}</button>
+                  <button data-active={st.inbound !== 'accept' || undefined} onClick={() => run('inbound', async () => { await api.setInbound(false) })}>{t('settings.notifyOff')}</button>
+                </span>
+              </div>
+            </SetupCard>
+
+            {st.codex ? (
+              <SetupCard harness="Codex" name="Codex" tone={codexLeft === 0 ? 'ok' : 'todo'} state={codexLeft === 0 ? t('setup.ready') : left(codexLeft)}>
+                <Step n={1} done={!!st.codex_mcp} title={t('setup.codexMcp')} sub={t('setup.codexMcpSub')}>
+                  <div className="step__act">
+                    <button className="btn btn--primary btn--small" disabled={busy !== null || !st.bundled_cli} onClick={() => run('install', api.installCli)}>{t('setup.register')}</button>
+                  </div>
+                </Step>
+                <Step n={2} done={!!st.codex_plugin} optional title={t('setup.codexPlugin')} sub={t('setup.codexPluginSub')}>
+                  <div className="step__act">
+                    <button className="btn btn--small" disabled={busy !== null} onClick={() => plugin('codex')}>{busy === 'plugin-codex' ? t('setup.installing') : t('setup.installPlugin')}</button>
+                  </div>
+                  <More label={t('setup.byHand')}>
+                    <div className="step__sub">{t('setup.inTerminal')}</div>
+                    <Cmd text="codex plugin marketplace add IvyYang1999/dispatch" />
+                    <Cmd text="codex plugin add dispatch@dispatch" />
+                  </More>
+                </Step>
+              </SetupCard>
+            ) : (
+              <SetupCard harness="Codex" name="Codex" tone="none" state={t('setup.notHere')}>
+                <div className="step"><div className="step__body"><div className="step__sub">{t('setup.codexNone')}</div></div></div>
+              </SetupCard>
+            )}
+
+            {st.grok_app ? (
+              <SetupCard harness="Grok Bot" name="Grok Bot" tone={grokLeft === 0 ? 'ok' : 'todo'} state={grokLeft === 0 ? t('setup.ready') : grokIn ? t('setup.grokHalf', { n: grokOutLeft }) : left(grokLeft)}>
+                <div className="setup__part">{t('setup.grokIn')}{grokIn && !st.grok_error && <span className="step__note">{t('setup.grokBots', { n: st.grok_bots })}</span>}</div>
+                <Step n={1} done={st.grok_signed_in} title={t('setup.grokApp')} sub={t('settings.grokSignIn')} />
+                <Step n={2} done={!!st.gbot} title={t('setup.grokGbot')} sub={t('setup.inTerminal')}>
+                  <Cmd text="npm i -g grok-bot-cli" />
+                </Step>
+                {grokIn && st.grok_error && <div className="step"><div className="step__body"><div className="step__sub step__sub--warn">{t('settings.grokOffline', { e: st.grok_error })}</div></div></div>}
+                <div className="setup__part">{t('setup.grokOut')}</div>
+                <Step n={3} done={ticked('grok_computer')} onTick={tick('grok_computer')} title={t('setup.grokComputer')} sub={t('setup.grokComputerSub')} />
+                <Step n={4} done={ticked('grok_skill')} onTick={tick('grok_skill')} title={t('setup.grokSkill')} sub={t('setup.grokSkillSub')}>
+                  <Cmd text={t('settings.grokCmd')} />
+                </Step>
+              </SetupCard>
+            ) : (
+              <SetupCard harness="Grok Bot" name="Grok Bot" tone="none" state={t('setup.notHere')}>
+                <div className="step"><div className="step__body"><div className="step__sub">{t('settings.grokMissing')}</div></div></div>
+              </SetupCard>
+            )}
+
+            {st.binary && (
+              <div className="repair">
+                <span>{t('setup.cliOk', { p: st.binary })}</span>
+                <button className="repair__btn" disabled={busy !== null || !st.bundled_cli} onClick={() => run('install', api.installCli)}>{busy === 'install' ? t('setup.installing') : t('setup.repair')}</button>
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === 'peers' && <Peers />}
+
+        {tab === 'general' && (
+          <div className="card">
             <div className="host">
               <div className="host__who">
-                <span className="host__found host__found--wrap">{t('settings.reviewTrusted', { n: st?.review_trusted ?? 0 })}</span>
+                <span className="host__name">{t('settings.language')}</span>
+                <span className="host__found">{t('settings.languageSub')}</span>
               </div>
-              <button className="btn btn--small" onClick={() => run('review', async () => { await api.reviewForget() })}>{t('settings.reviewForget')}</button>
-            </div>
-          )}
-        </div>
-        <div className="section-head">
-          <div className="section-head__title">{t('settings.wakeSection')}</div>
-        </div>
-        <div className="card">
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{t('settings.wake')}</span>
-              <span className="host__found host__found--wrap">{t('settings.wakeSub')}</span>
-            </div>
-            <span className="seg">
-              {(['auto', 'ask', 'off'] as const).map((m) => (
-                <button key={m} data-active={(st?.wake ?? 'auto') === m || undefined} onClick={() => run('wake', async () => { await api.setWake(m) })}>{t(m === 'auto' ? 'settings.wakeAuto' : m === 'ask' ? 'settings.wakeAsk' : 'settings.wakeOff')}</button>
-              ))}
-            </span>
-          </div>
-        </div>
-        <div className="section-head">
-          <div className="section-head__title">{t('settings.notify')}</div>
-        </div>
-        <div className="card">
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{st?.notify === false ? t('settings.notifyOff') : t('settings.notifyOn')}</span>
-              <span className="host__found host__found--wrap">{t('settings.notifySub')}</span>
-            </div>
-            <span className="seg">
-              <button data-active={st?.notify !== false || undefined} onClick={() => run('notify', async () => { await api.setNotify(true) })}>{t('settings.notifyOn')}</button>
-              <button data-active={st?.notify === false || undefined} onClick={() => run('notify', async () => { await api.setNotify(false) })}>{t('settings.notifyOff')}</button>
-            </span>
-          </div>
-        </div>
-        <div className="section-head">
-          <div className="section-head__title">{t('settings.messages')}</div>
-        </div>
-        <div className="card">
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">{t('settings.storeWhere')}</span>
-              <span className="host__found">{st?.store_root}</span>
-            </div>
-          </div>
-        </div>
-        <div className="section-head">
-          <div className="section-head__title">{t('settings.updates')}</div>
-        </div>
-        <div className="card">
-          <div className="host">
-            <div className="host__who">
-              <span className="host__name">Dispatch {st?.version ?? ''}</span>
-              <span className="host__found">
-                {upd === null ? t('settings.updateIdle') : upd.available ? `${t('settings.updateAvailable', { v: upd.version ?? '' })}${upd.notes ? `: ${upd.notes}` : ''}` : t('settings.upToDate')}
+              <span className="seg">
+                {LANGS.map((l) => (
+                  <button key={l.key} data-active={lang === l.key || undefined} onClick={() => setLang(l.key)}>{l.label}</button>
+                ))}
               </span>
             </div>
-            {upd?.available ? (
-              <button className="btn btn--primary btn--small" disabled={busy !== null} onClick={() => run('update', api.updateInstall)}>{t('settings.updateRestart')}</button>
-            ) : (
-              <button className="btn btn--small" disabled={busy !== null} onClick={check}>{busy === 'check' ? t('settings.checking') : t('settings.check')}</button>
-            )}
+            <div className="host">
+              <div className="host__who">
+                <span className="host__name">{t('settings.theme')}</span>
+                <span className="host__found">{t('settings.themeSub')}</span>
+              </div>
+              <span className="seg">
+                {(['system', 'light', 'dark'] as const).map((th) => (
+                  <button key={th} data-active={(st?.theme ?? 'system') === th || undefined} onClick={() => run('theme', async () => { await api.setTheme(th) })}>{t(`theme.${th}` as const)}</button>
+                ))}
+              </span>
+            </div>
+            <div className="host">
+              <div className="host__who">
+                <span className="host__name">{t('settings.review')}</span>
+                <span className="host__found host__found--wrap">{t('settings.reviewShort')}</span>
+                <More label={t('setup.details')}>
+                  <span className="host__found host__found--wrap">{t('settings.reviewSub')}</span>
+                </More>
+                {(st?.review_trusted ?? 0) > 0 && (
+                  <span className="host__found host__found--wrap">
+                    {t('settings.reviewTrusted', { n: st?.review_trusted ?? 0 })}{' '}
+                    <button className="repair__btn" onClick={() => run('review', async () => { await api.reviewForget() })}>{t('settings.reviewForget')}</button>
+                  </span>
+                )}
+              </div>
+              <span className="seg">
+                <button data-active={(st?.review ?? 'new') === 'new' || undefined} onClick={() => run('review', async () => { await api.setReview('new') })}>{t('settings.reviewNew')}</button>
+                <button data-active={st?.review === 'all' || undefined} onClick={() => run('review', async () => { await api.setReview('all') })}>{t('settings.reviewAll')}</button>
+                <button data-active={st?.review === 'off' || undefined} onClick={() => run('review', async () => { await api.setReview('off') })}>{t('settings.reviewOff')}</button>
+              </span>
+            </div>
+            <div className="host">
+              <div className="host__who">
+                <span className="host__name">{t('settings.wake')}</span>
+                <span className="host__found host__found--wrap">{t('settings.wakeShort')}</span>
+                <More label={t('setup.details')}>
+                  <span className="host__found host__found--wrap">{t('settings.wakeSub')}</span>
+                </More>
+              </div>
+              <span className="seg">
+                {(['auto', 'ask', 'off'] as const).map((m) => (
+                  <button key={m} data-active={(st?.wake ?? 'auto') === m || undefined} onClick={() => run('wake', async () => { await api.setWake(m) })}>{t(m === 'auto' ? 'settings.wakeAuto' : m === 'ask' ? 'settings.wakeAsk' : 'settings.wakeOff')}</button>
+                ))}
+              </span>
+            </div>
+            <div className="host">
+              <div className="host__who">
+                <span className="host__name">{t('settings.notify')}</span>
+                <span className="host__found host__found--wrap">{t('settings.notifySub')}</span>
+              </div>
+              <span className="seg">
+                <button data-active={st?.notify !== false || undefined} onClick={() => run('notify', async () => { await api.setNotify(true) })}>{t('settings.notifyOn')}</button>
+                <button data-active={st?.notify === false || undefined} onClick={() => run('notify', async () => { await api.setNotify(false) })}>{t('settings.notifyOff')}</button>
+              </span>
+            </div>
+            <div className="host">
+              <div className="host__who">
+                <span className="host__name">{t('settings.storeWhere')}</span>
+                <span className="host__found">{st?.store_root}</span>
+              </div>
+            </div>
+            <div className="host">
+              <div className="host__who">
+                <span className="host__name">Dispatch {st?.version ?? ''}</span>
+                <span className="host__found host__found--wrap">
+                  {upd === null ? t('settings.updateIdle') : upd.available ? `${t('settings.updateAvailable', { v: upd.version ?? '' })}${upd.notes ? `: ${upd.notes}` : ''}` : t('settings.upToDate')}
+                </span>
+              </div>
+              {upd?.available ? (
+                <button className="btn btn--primary btn--small" disabled={busy !== null} onClick={() => run('update', api.updateInstall)}>{t('settings.updateRestart')}</button>
+              ) : (
+                <button className="btn btn--small" disabled={busy !== null} onClick={check}>{busy === 'check' ? t('settings.checking') : t('settings.check')}</button>
+              )}
+            </div>
           </div>
-        </div>
+        )}
         {msg && <div className="notice" onClick={() => setMsg(null)}>{msg}</div>}
       </div>
     </>
