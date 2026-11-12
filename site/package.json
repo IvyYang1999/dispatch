@@ -5,12 +5,12 @@
   "type": "module",
   "description": "The Dispatch landing page: a static site built with Vite and React.",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "app": "node scripts/build-app.mjs",
+    "dev": "node scripts/build-app.mjs && vite",
+    "build": "node scripts/build-app.mjs && tsc --noEmit && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
-    "lucide-react": "0.468.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
