@@ -8,10 +8,11 @@
   --text-strong: #1c1c1b;
   --text-faint: #a3a39e;
   --accent: #2f6bf0;
-  --accent-soft: rgba(47, 107, 240, 0.12);
   --tag: #f1f1ef;
   --seg: #ecece9;
   --shadow: rgba(0, 0, 0, 0.08);
+  --window-shadow: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 30px 60px -12px rgba(50, 50, 93, 0.22), 0 18px 36px -18px rgba(0, 0, 0, 0.28);
+  --popup-shadow: 0 0 0 1px rgba(0, 0, 0, 0.08), 0 24px 60px -8px rgba(0, 0, 0, 0.35);
   color-scheme: light dark;
 }
 
@@ -24,10 +25,11 @@
     --text-strong: #ededeb;
     --text-faint: #73736e;
     --accent: #5b8cf7;
-    --accent-soft: rgba(91, 140, 247, 0.2);
     --tag: #31312f;
     --seg: #131312;
     --shadow: rgba(0, 0, 0, 0.35);
+    --window-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 30px 60px -12px rgba(0, 0, 0, 0.7);
+    --popup-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 24px 60px -8px rgba(0, 0, 0, 0.8);
   }
 }
 
@@ -141,13 +143,13 @@ button {
 /* ---- hero ---- */
 
 .hero {
-  padding: 56px 0 44px;
+  padding: 56px 0 40px;
   max-width: 760px;
 }
 
 h1 {
   margin: 0;
-  font-size: 44px;
+  font-size: 46px;
   line-height: 1.12;
   font-weight: 650;
   letter-spacing: -0.02em;
@@ -156,7 +158,7 @@ h1 {
 
 .hero__sub {
   margin: 18px 0 0;
-  max-width: 640px;
+  max-width: 660px;
   font-size: 17px;
   line-height: 1.55;
   color: var(--text);
@@ -210,82 +212,53 @@ h1 {
   color: var(--text);
 }
 
-/* ---- the demo ---- */
+/* ---- what it connects ---- */
 
-.try__tabs {
+.across {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 12px;
 }
 
-.tab {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  text-align: left;
-  transition: background 0.15s ease;
-}
-
-.tab:hover {
-  background: var(--tag);
-}
-
-.tab[data-active] {
+.across__item {
+  padding: 16px;
+  border-radius: 12px;
   background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--line);
 }
 
-.tab__title {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.tab[data-active] .tab__title {
+.across__icons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
   color: var(--text-strong);
 }
 
-.tab__sub {
-  font-size: 12.5px;
-  line-height: 1.5;
-  color: var(--text-faint);
-}
-
-.tab[data-active] .tab__sub {
-  color: var(--text);
-}
-
-.try__foot {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  margin-top: 12px;
-  font-size: 13px;
-  color: var(--text-faint);
-}
-
-.link {
-  margin-left: auto;
+.across__icon {
   flex: none;
-  color: var(--accent);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.link:hover {
-  text-decoration: underline;
-}
-
-/* ---- what it does ---- */
-
-.points {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 28px;
-  padding: 72px 0 0;
+  place-items: center;
+  background: var(--tag);
+}
+
+.across__icon .icon {
+  display: block;
+}
+
+.across__word {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  background: var(--tag);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 h2 {
@@ -295,17 +268,151 @@ h2 {
   font-weight: 600;
 }
 
-.point p {
-  margin: 8px 0 0;
-  font-size: 14px;
+.across__item h2 {
+  margin-top: 14px;
+}
+
+.across__item p {
+  margin: 6px 0 0;
+  font-size: 13.5px;
+  line-height: 1.55;
   color: var(--text);
   text-wrap: pretty;
+}
+
+/* ---- the app itself ---- */
+
+.try {
+  margin-top: 56px;
+}
+
+.try__head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.tabs {
+  flex: none;
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 10px;
+  background: var(--seg);
+}
+
+.tab {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.tab[data-active] {
+  background: var(--surface);
+  color: var(--text-strong);
+  box-shadow: 0 1px 2px var(--shadow);
+}
+
+.try__sub {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.appfit {
+  overflow-x: auto;
+  /* room for the window's shadow, which the scroller would otherwise cut */
+  margin: 0 -24px;
+  padding: 6px 24px 56px;
+}
+
+.appscale {
+  position: relative;
+}
+
+.appwin {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--window-shadow);
+}
+
+.appwin > iframe,
+.revwin > iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 12px;
+  background: var(--canvas);
+}
+
+/* the traffic lights the system draws over the app's own title area */
+.lights {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  z-index: 1;
+  display: flex;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.lights i {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.14);
+}
+
+.lights i:nth-child(1) {
+  background: #ff5f57;
+}
+
+.lights i:nth-child(2) {
+  background: #febc2e;
+}
+
+.lights i:nth-child(3) {
+  background: #28c840;
+}
+
+.revwin {
+  position: absolute;
+  left: 280px;
+  top: 40px;
+  width: 480px;
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--popup-shadow);
+  transition: height 0.26s cubic-bezier(0.2, 0.8, 0.2, 1);
+  animation: revwin-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes revwin-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+.try__foot {
+  margin: -36px 0 0;
+  font-size: 13px;
+  color: var(--text-faint);
 }
 
 /* ---- start ---- */
 
 .start {
-  margin-top: 72px;
+  margin-top: 64px;
   padding: 28px;
   border-radius: 14px;
   background: var(--surface);
@@ -409,11 +516,13 @@ a.out:hover {
 /* ---- narrow ---- */
 
 @media (max-width: 900px) {
-  .points {
+  .across {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .try__tabs {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .try__head {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
   }
 }
 
@@ -425,7 +534,7 @@ a.out:hover {
     padding: 32px 0 32px;
   }
   h1 {
-    font-size: 31px;
+    font-size: 32px;
   }
   .hero__sub {
     font-size: 16px;
@@ -433,20 +542,23 @@ a.out:hover {
   .top__nav {
     gap: 14px;
   }
-  .try__tabs {
+  .across {
     grid-template-columns: 1fr;
-    gap: 4px;
+  }
+  .try {
+    margin-top: 40px;
+  }
+  .tabs {
+    max-width: 100%;
+    overflow-x: auto;
   }
   .tab {
-    padding: 9px 12px;
+    padding: 0 11px;
+    font-size: 13px;
   }
-  .tab:not([data-active]) .tab__sub {
-    display: none;
-  }
-  .points {
-    grid-template-columns: 1fr;
-    gap: 24px;
-    padding-top: 48px;
+  .appfit {
+    margin: 0 -16px;
+    padding: 6px 16px 48px;
   }
   .start {
     margin-top: 48px;

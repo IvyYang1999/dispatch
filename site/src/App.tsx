@@ -1,9 +1,25 @@
-import { useEffect, useState } from 'react'
-import { Demo, type Lang, type ScenarioId } from './Demo'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Icon, type IconName } from './icons'
 import { LINKS } from './links'
-import { PAGE } from './i18n'
+import { PAGE, type Lang, type ScreenId } from './i18n'
 
-const SCENARIOS: ScenarioId[] = ['handoff', 'machines', 'closed', 'unknown']
+// The app itself is embedded twice, as its main window and its review window (public/app, built
+// from apps/desktop by scripts/build-app.mjs), with a stand-in backend that answers from made-up
+// data (app-demo/mock.js). Both frames and this page share one object:
+type Hub = {
+  store?: unknown
+  showReview?: () => void
+  hideReview?: () => void
+  resizeReview?: (height: number) => void
+  setLang?: (lang: Lang) => void
+  /** Puts a fresh message on hold, when the first one was already decided. */
+  holdOne?: () => void
+}
+const hub: Hub = ((window as unknown as { __dispatchDemo?: Hub }).__dispatchDemo ??= {})
+
+const APP_W = 1040
+const APP_H = 660
+const SCREENS: ScreenId[] = ['main', 'book', 'review', 'sent']
 
 function useDark(): boolean {
   const [dark, setDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -63,11 +79,142 @@ function Out({ href, soon, children }: { href: string | null; soon: string; chil
   )
 }
 
+/** The app in a window frame, scaled to the column; below a readable size it scrolls sideways. */
+function AppDemo({ lang, version, screen, onScreen }: { lang: Lang; version: string | null; screen: ScreenId; onScreen: (s: ScreenId) => void }) {
+  const fit = useRef<HTMLDivElement>(null)
+  const main = useRef<HTMLIFrameElement>(null)
+  const review = useRef<HTMLIFrameElement>(null)
+  const [scale, setScale] = useState(1)
+  const [reviewOpen, setReviewOpen] = useState(false)
+  // start short: the review window grows to what it shows and does not shrink below where it started
+  const [reviewH, setReviewH] = useState(380)
+  const wantSend = useRef(false)
+
+  useEffect(() => {
+    const el = fit.current
+    if (!el) return
+    const measure = () => setScale(Math.min(1, Math.max(0.62, el.clientWidth / APP_W)))
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // what the two frames ask of the page
+  useEffect(() => {
+    hub.showReview = () => {
+      setReviewH(380)
+      setReviewOpen(true)
+    }
+    hub.hideReview = () => {
+      setReviewOpen(false)
+      onScreen('main')
+    }
+    // the window is sized here, from what it shows (below): the app's own request only ever grows it
+    hub.resizeReview = () => {}
+    return () => {
+      hub.showReview = hub.hideReview = hub.resizeReview = undefined
+    }
+  }, [onScreen])
+
+  const click = (frame: HTMLIFrameElement | null, selector: string, index = 0): boolean => {
+    const el = frame?.contentDocument?.querySelectorAll<HTMLElement>(selector)[index]
+    el?.click()
+    return !!el
+  }
+
+  // the tabs above the window drive it; clicking inside it works as in the app
+  useEffect(() => {
+    wantSend.current = false
+    if (screen === 'main') {
+      setReviewOpen(false)
+      click(main.current, '.side .nav', 0)
+    } else if (screen === 'book') {
+      setReviewOpen(false)
+      click(main.current, '.side .nav', 1)
+      // the Address book tab of the directory
+      setTimeout(() => click(main.current, '.tabs .tab', 1), 120)
+    } else {
+      click(main.current, '.side .nav', 0)
+      hub.holdOne?.()
+      wantSend.current = screen === 'sent'
+      setReviewH(380)
+      setReviewOpen(true)
+    }
+  }, [screen])
+
+  // While the review window is up: keep it as tall as what it shows, and for "After you send"
+  // press Send once the button is there.
+  useEffect(() => {
+    if (!reviewOpen) return
+    const natural = (): number | null => {
+      const root = review.current?.contentDocument?.querySelector<HTMLElement>('.review')
+      const body = root?.querySelector<HTMLElement>('.review__body')
+      if (!root || !body) return null
+      const bar = root.querySelector<HTMLElement>('.review__bar')?.offsetHeight ?? 0
+      const foot = root.querySelector<HTMLElement>('.review__foot')?.offsetHeight ?? 0
+      // the body fills the window, so add up what is in it: its padding, its children, the gaps
+      const view = body.ownerDocument.defaultView!
+      const cs = view.getComputedStyle(body)
+      const px = (v: string) => parseFloat(v) || 0
+      const kids = [...body.children] as HTMLElement[]
+      const inner =
+        px(cs.paddingTop) +
+        px(cs.paddingBottom) +
+        px(cs.rowGap) * Math.max(0, kids.length - 1) +
+        kids.reduce((sum, k) => {
+          const m = view.getComputedStyle(k)
+          return sum + k.getBoundingClientRect().height + px(m.marginTop) + px(m.marginBottom)
+        }, 0)
+      return Math.ceil(bar + inner + foot + (root.classList.contains('review--result') ? 28 : 0))
+    }
+    const h = setInterval(() => {
+      const n = natural()
+      if (n) setReviewH((was) => (Math.abs(was - n) > 2 ? Math.max(200, Math.min(APP_H - 48, n)) : was))
+      if (wantSend.current && click(review.current, '.review__foot .btn--primary')) wantSend.current = false
+    }, 200)
+    return () => clearInterval(h)
+  }, [reviewOpen])
+
+  const src = `./app/index.html?lang=${lang}&v=${encodeURIComponent(version ?? 'demo')}`
+  return (
+    <div className="appfit" ref={fit}>
+      <div className="appscale" style={{ width: APP_W * scale, height: APP_H * scale }}>
+        <div className="appwin" style={{ width: APP_W, height: APP_H, transform: `scale(${scale})` }}>
+          <span className="lights" aria-hidden="true">
+            <i />
+            <i />
+            <i />
+          </span>
+          <iframe ref={main} key={`main-${lang}`} title="Dispatch" src={src} loading="lazy" />
+          {reviewOpen && (
+            <div className="revwin" style={{ height: reviewH }}>
+              <span className="lights" aria-hidden="true">
+                <i />
+                <i />
+                <i />
+              </span>
+              <iframe ref={review} key={`review-${lang}`} title="Dispatch review" src={`${src}#review`} />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+const ACROSS: { id: 'harness' | 'machines' | 'networks' | 'systems'; icons: (IconName | 'grok')[] }[] = [
+  { id: 'harness', icons: ['claude', 'openai', 'grok'] },
+  { id: 'machines', icons: ['laptop', 'desktop'] },
+  { id: 'networks', icons: ['wifi', 'world', 'router'] },
+  { id: 'systems', icons: ['apple', 'windows', 'linux'] },
+]
+const ICON_TITLE: Partial<Record<IconName, string>> = { claude: 'Claude Code', openai: 'Codex', apple: 'macOS', windows: 'Windows', linux: 'Linux' }
+
 export function App() {
   const [lang, setLang] = useState<Lang>(firstLang)
-  const [scenario, setScenario] = useState<ScenarioId>('handoff')
-  const [run, setRun] = useState(0)
-  const dark = useDark()
+  const [screen, setScreen] = useState<ScreenId>('main')
+  useDark()
   const latest = useLatest()
   const t = PAGE[lang]
 
@@ -81,11 +228,20 @@ export function App() {
     }
   }, [lang, t.title])
 
-  const pick = (id: ScenarioId) => {
-    setScenario(id)
-    setRun((n) => n + 1)
-  }
+  // the embedded app's own language switch changes the page's too
+  const switchLang = useCallback((l: Lang) => {
+    hub.store = undefined
+    setScreen('main')
+    setLang(l)
+  }, [])
+  useEffect(() => {
+    hub.setLang = switchLang
+    return () => {
+      hub.setLang = undefined
+    }
+  }, [switchLang])
 
+  const docs = lang === 'zh' ? LINKS.docsZh : LINKS.docs
   return (
     <div className="page">
       <header className="top">
@@ -94,17 +250,17 @@ export function App() {
           Dispatch
         </a>
         <nav className="top__nav">
-          <a href={lang === 'zh' ? LINKS.docsZh : LINKS.docs} target="_blank" rel="noreferrer">
+          <a href={docs} target="_blank" rel="noreferrer">
             {t.docs}
           </a>
           <a href={LINKS.github} target="_blank" rel="noreferrer">
             GitHub
           </a>
           <span className="seg" role="group" aria-label="Language">
-            <button data-active={lang === 'en' || undefined} onClick={() => setLang('en')}>
+            <button data-active={lang === 'en' || undefined} onClick={() => switchLang('en')}>
               EN
             </button>
-            <button data-active={lang === 'zh' || undefined} onClick={() => setLang('zh')}>
+            <button data-active={lang === 'zh' || undefined} onClick={() => switchLang('zh')}>
               中文
             </button>
           </span>
@@ -132,33 +288,41 @@ export function App() {
           </p>
         </section>
 
-        <section className="try" aria-label={t.tryLabel}>
-          <div className="try__tabs" role="tablist" aria-label={t.tryLabel}>
-            {SCENARIOS.map((id) => (
-              <button key={id} role="tab" aria-selected={scenario === id} className="tab" data-active={scenario === id || undefined} onClick={() => pick(id)}>
-                <span className="tab__title">{t.scenarios[id].title}</span>
-                <span className="tab__sub">{t.scenarios[id].sub}</span>
-              </button>
-            ))}
-          </div>
-          <div className="try__stage">
-            <Demo key={`${scenario}-${run}`} scenario={scenario} lang={lang} dark={dark} />
-          </div>
-          <div className="try__foot">
-            <span>{t.tryHint}</span>
-            <button className="link" onClick={() => setRun((n) => n + 1)}>
-              {t.replay}
-            </button>
-          </div>
-        </section>
-
-        <section className="points">
-          {t.points.map((p) => (
-            <div key={p.title} className="point">
-              <h2>{p.title}</h2>
-              <p>{p.body}</p>
+        <section className="across" aria-label={t.acrossLabel}>
+          {ACROSS.map((a) => (
+            <div key={a.id} className="across__item">
+              <div className="across__icons">
+                {a.icons.map((name) =>
+                  name === 'grok' ? (
+                    <span key={name} className="across__word">
+                      Grok Bot
+                    </span>
+                  ) : (
+                    <span key={name} className="across__icon" title={ICON_TITLE[name]}>
+                      <Icon name={name} size={20} title={ICON_TITLE[name]} />
+                    </span>
+                  ),
+                )}
+              </div>
+              <h2>{t.across[a.id].title}</h2>
+              <p>{t.across[a.id].body}</p>
             </div>
           ))}
+        </section>
+
+        <section className="try" aria-label={t.tryLabel}>
+          <div className="try__head">
+            <div className="tabs" role="tablist" aria-label={t.tryLabel}>
+              {SCREENS.map((id) => (
+                <button key={id} role="tab" aria-selected={screen === id} className="tab" data-active={screen === id || undefined} onClick={() => setScreen(id)}>
+                  {t.screens[id].title}
+                </button>
+              ))}
+            </div>
+            <p className="try__sub">{t.screens[screen].sub}</p>
+          </div>
+          <AppDemo lang={lang} version={latest.version} screen={screen} onScreen={setScreen} />
+          <p className="try__foot">{t.tryHint}</p>
         </section>
 
         <section className="start">
@@ -178,7 +342,7 @@ export function App() {
             <a className="btn btn--primary" href={latest.mac}>
               {t.download}
             </a>
-            <a className="btn" href={lang === 'zh' ? LINKS.docsZh : LINKS.docs} target="_blank" rel="noreferrer">
+            <a className="btn" href={docs} target="_blank" rel="noreferrer">
               {t.readDocs}
             </a>
           </div>
@@ -187,7 +351,7 @@ export function App() {
 
       <footer className="foot">
         <div className="foot__links">
-          <Out href={lang === 'zh' ? LINKS.docsZh : LINKS.docs} soon={t.soon}>
+          <Out href={docs} soon={t.soon}>
             {t.docs}
           </Out>
           <Out href={LINKS.github} soon={t.soon}>
