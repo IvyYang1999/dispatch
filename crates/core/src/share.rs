@@ -85,9 +85,13 @@ pub fn for_agents(mut v: Value) -> Value {
     let explicit = if v.get("contact").is_some() { v["app_name"].as_str() } else { v["name"].as_str() };
     let name = shared_name(&id, lvl, explicit, contact.as_deref());
     let address = shared_address(&id, host.as_deref());
-    let project = v["project"].as_str().map(str::to_string).or_else(|| v["cwd"].as_str().and_then(last_folder));
+    // the project the user filed it under is the one to tell; else its app's, else its folder's name
+    let filed = v["group"]["name"].as_str().filter(|n| !n.is_empty()).map(str::to_string);
+    let project = filed.or_else(|| v["project"].as_str().map(str::to_string)).or_else(|| v["cwd"].as_str().and_then(last_folder));
     let Some(o) = v.as_object_mut() else { return v };
     o.insert("address".into(), json!(address));
+    // where it is filed is the app's own bookkeeping, and a folder's id spells out its path
+    o.remove("group");
     // how it runs and where its record lives are nobody else's business
     o.remove("host_session_id");
     o.remove("transcript");
@@ -120,6 +124,10 @@ pub fn for_agents(mut v: Value) -> Value {
 
 /// Every session in a list of session JSONs (under `key`), cut down for agents.
 pub fn list_for_agents(mut v: Value, key: &str) -> Value {
+    // merge suggestions name folders by their paths: for the app only
+    if let Some(o) = v.as_object_mut() {
+        o.remove("suggestions");
+    }
     if let Some(a) = v.get_mut(key).and_then(|a| a.as_array_mut()) {
         for s in a.iter_mut() {
             *s = for_agents(s.take());
@@ -240,6 +248,30 @@ mod tests {
 
     fn session_json(id: &str) -> Value {
         json!({ "id": id, "name": "目前用下来，我感觉有几个问题", "contact": "日历", "about": "日历小插件", "app_name": "目前用下来", "title": "目前用下来，我感觉有几个问题：周视图…", "project": null, "cwd": "/Users/me/clients/acme/日历小插件", "cwd_short": "~/…/acme/日历小插件", "host_session_id": "local_x", "reach": { "level": "now", "text": "x", "mode": "bypassPermissions", "client": "desktop" } })
+    }
+
+    /// Where the app files a session carries its folder's path (a folder's id is its path), and
+    /// the list carries merge suggestions made of such ids. An agent gets the project's name only.
+    #[test]
+    fn where_a_session_is_filed_tells_agents_a_name_and_no_path() {
+        let dir = std::env::temp_dir().join(format!("dispatch-share-group-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let id = "cccccccc-1111-4222-8333-444455556666";
+        let mut one = session_json(id);
+        one["group"] = json!({ "id": "folder:|/Users/me/clients/acme/日历小插件", "name": "Calendar", "auto": false });
+        let list = json!({ "sessions": [one], "suggestions": [{ "key": "folder:|/Users/me/clients/acme/x + p-1", "from": "folder:|/Users/me/clients/acme/x", "into": "p-1" }] });
+        for lvl in ["none", "basic"] {
+            set_level(id, None, lvl).unwrap();
+            let v = list_for_agents(list.clone(), "sessions");
+            assert!(v.get("suggestions").is_none());
+            assert!(v["sessions"][0].get("group").is_none());
+            assert!(!v.to_string().contains("/Users/me/clients"), "{lvl}: no path, in any field");
+            if lvl == "basic" {
+                assert_eq!(v["sessions"][0]["project"], "Calendar", "the name the user gave the project");
+            }
+        }
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

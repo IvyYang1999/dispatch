@@ -29,7 +29,22 @@ export interface Host {
   id: string
   name: string
 }
+/** Where a session is filed: a project the user made, or (auto) the folder it runs in. */
+export interface Group {
+  id: string
+  name: string
+  auto: boolean
+}
+/** Two groups that look like the same work filed apart; `places` are the machines they are on (null: this one). */
+export interface MergeSuggestion {
+  key: string
+  name: string
+  from: string
+  into: string
+  places: (string | null)[]
+}
 export interface Session {
+  group?: Group
   /** What it shares with other sessions (on this machine's sessions). */
   share?: ShareLevel
   id: string
@@ -304,7 +319,14 @@ export interface OpenResult {
 }
 
 export const api = {
-  sessions: (runningOnly: boolean) => invoke<{ hook_installed: boolean; sessions: Session[] }>('sessions', { runningOnly }),
+  sessions: (runningOnly: boolean) => invoke<{ hook_installed: boolean; sessions: Session[]; suggestions?: MergeSuggestion[] }>('sessions', { runningOnly }),
+  projectMove: (host: string, id: string, target: string, name?: string) => invoke<{ group: string; folder: string | null; behind: number }>('project_move', { host, id, target, name: name ?? null }),
+  projectFolder: (folder: string, target: string) => invoke<string>('project_folder', { folder, target }),
+  projectRelease: (folder: string) => invoke<void>('project_release', { folder }),
+  projectMerge: (from: string, into: string) => invoke<string>('project_merge', { from, into }),
+  projectRename: (id: string, name: string) => invoke<string>('project_rename', { id, name }),
+  projectDissolve: (id: string) => invoke<void>('project_dissolve', { id }),
+  projectDismiss: (key: string) => invoke<void>('project_dismiss', { key }),
   find: (query: string) => invoke<{ candidates: Session[] }>('find', { query }),
   feed: (limit = 200) => invoke<{ dispatches: Dispatch[] }>('feed', { limit }),
   threads: (limit = 200) => invoke<{ count: number; threads: Thread[] }>('threads', { limit }),

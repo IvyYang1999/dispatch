@@ -13,7 +13,9 @@ use serde_json::{json, Value};
 
 /// One session as the app shows it: names, where it runs, and how a message reaches it now.
 pub fn session_json(s: &Session) -> Value {
-    session_json_with(s, hook::installed(), &crate::contacts::list())
+    let mut v = session_json_with(s, hook::installed(), &crate::contacts::list());
+    v["group"] = json!(crate::projects::load().group_of(s));
+    v
 }
 
 fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Contact]) -> Value {
@@ -115,8 +117,28 @@ pub fn sessions(running_only: bool) -> Value {
     let hook_on = hook::installed();
     let contacts = crate::contacts::list();
     // a named session is listed whether or not it is running: that is what the name is for
-    let list: Vec<Value> = discover::sessions().iter().filter(|s| !running_only || s.running || contacts.iter().any(|c| c.session_id.eq_ignore_ascii_case(&s.id))).map(|s| session_json_with(s, hook_on, &contacts)).collect();
-    json!({ "hook_installed": hook_on, "sessions": list })
+    let all = discover::sessions();
+    let book = crate::projects::load();
+    let list: Vec<Value> = all
+        .iter()
+        .filter(|s| !running_only || s.running || contacts.iter().any(|c| c.session_id.eq_ignore_ascii_case(&s.id)))
+        .map(|s| {
+            let mut v = session_json_with(s, hook_on, &contacts);
+            v["group"] = json!(book.group_of(s));
+            v
+        })
+        .collect();
+    // folders that look like the same work filed apart, each with the machines they are on
+    let suggestions: Vec<Value> = book
+        .suggestions(&all)
+        .into_iter()
+        .map(|mut sug| {
+            let on = |id: &str| all.iter().find(|s| book.group_of(s).id == id).map(|s| s.host.as_ref().map(|h| h.name.clone()));
+            sug["places"] = json!([on(sug["from"].as_str().unwrap_or("")).flatten(), on(sug["into"].as_str().unwrap_or("")).flatten()]);
+            sug
+        })
+        .collect();
+    json!({ "hook_installed": hook_on, "sessions": list, "suggestions": suggestions })
 }
 
 /// The address book, each name with the session it points at.
@@ -873,7 +895,8 @@ pub fn session_page(store: &Store, query: &str) -> Result<Value> {
     let s = send::resolve(query)?;
     let hook_on = hook::installed();
     let book = crate::contacts::list();
-    let session = session_json_with(&s, hook_on, &book);
+    let mut session = session_json_with(&s, hook_on, &book);
+    session["group"] = json!(crate::projects::load().group_of(&s));
     let all = feed(store, 500)?;
     let empty = vec![];
     let mut dispatches = vec![];

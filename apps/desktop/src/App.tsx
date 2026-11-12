@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { api, type Kind, type Look, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
+import { api, type Group, type Kind, type Look, type MergeSuggestion, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
 type Screen = 'feed' | 'agents' | 'compose' | 'settings' | 'session'
@@ -579,7 +579,6 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
           <button className="tab" data-active={filter === 'failed' || undefined} onClick={() => setFilter('failed')}>{t('tabs.failed')} <i>{counts.failed}</i></button>
         </span>
         <span className="bar__spacer" />
-        <button className="btn btn--primary" onClick={() => onCompose()}>{t('feed.send')}</button>
       </header>
       <ReviewStrip />
       <div className="split">
@@ -989,7 +988,7 @@ function hhmm(at: string | null | undefined): string {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onCompose: (to: string) => void; onFeedPick: (dispatchId: string) => void; onBack: () => void }) {
+function SessionPage({ id, groups, onFiled, onCompose, onFeedPick, onBack }: { id: string; groups: Group[]; onFiled: () => void; onCompose: (to: string) => void; onFeedPick: (dispatchId: string) => void; onBack: () => void }) {
   const lang = useLang()
   const [page, setPage] = useState<SessionPageData | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -1035,7 +1034,7 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
                 </button>
                 <button className="sp__about" data-empty={!s.about || undefined} onClick={edit}>{s.about || t('sp.addAbout')}</button>
                 <div className="sp__chips">
-                  <span className="sp__chip sp__chip--project">{s.project ?? s.cwd_short?.split('/').filter(Boolean).pop() ?? t('sp.noProject')}</span>
+                  <ProjectPicker s={s} groups={groups} onMoved={() => { load(); onFiled() }} />
                   <span className="sp__chip">{s.harness}{s.host ? ` · ${s.host.name}` : ` · ${t('side.local')}`}</span>
                   {s.cwd_short && <span className="sp__chip sp__chip--path" title={s.cwd ?? ''}>{s.cwd_short}</span>}
                 </div>
@@ -1833,12 +1832,273 @@ function Settings() {
   )
 }
 
+// ---- Sidebar: sessions by project ----
+
+const WEEK_MS = 7 * 24 * 3600 * 1000
+const NOT_FILED = 'none'
+/** A folder or a project the user made: something can be filed under it. The bots' own group and "not filed" cannot. */
+const takesDrops = (id: string) => id !== NOT_FILED && !id.startsWith('harness:')
+const hostKey = (s: Session) => s.host?.id ?? ''
+
+/** A set of ids kept in this window's storage (which groups are folded). It works without storage too. */
+function useKeptSet(key: string): [Set<string>, (id: string) => void] {
+  const [set, setSet] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(key) ?? '[]') as string[])
+    } catch {
+      return new Set()
+    }
+  })
+  const toggle = (id: string) =>
+    setSet((old) => {
+      const next = new Set(old)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      try {
+        localStorage.setItem(key, JSON.stringify([...next]))
+      } catch {
+        /* folded for now only */
+      }
+      return next
+    })
+  return [set, toggle]
+}
+
+interface SideGroup { id: string; name: string; auto: boolean; rows: Session[]; hosts: Set<string>; latest: number }
+
+/** Every project that has a session worth showing, the liveliest first; "not filed" last. */
+function groupsOf(sessions: Session[]): SideGroup[] {
+  const by = new Map<string, SideGroup>()
+  for (const s of sessions) {
+    const g = s.group ?? { id: NOT_FILED, name: '', auto: true }
+    const have = by.get(g.id) ?? { ...g, rows: [], hosts: new Set<string>(), latest: 0 }
+    have.rows.push(s)
+    have.hosts.add(hostKey(s))
+    have.latest = Math.max(have.latest, s.last_active ?? 0)
+    by.set(g.id, have)
+  }
+  const rank = (s: Session) => (isContact(s) ? 0 : 1)
+  for (const g of by.values()) g.rows.sort((a, b) => rank(a) - rank(b) || b.last_active - a.last_active)
+  return [...by.values()].sort((a, b) => Number(a.id === NOT_FILED) - Number(b.id === NOT_FILED) || b.latest - a.latest)
+}
+
+type Held = { kind: 'session'; s: Session; from: string; label: string } | { kind: 'group'; from: string; label: string }
+
+/** The sidebar's list: sessions under their projects. A session, or a whole project, is dragged
+ *  onto another project to file it there; nothing is merged without the user doing it. */
+function SideProjects({ sessions, suggestions, wrote, active, onOpen, reload }: { sessions: Session[]; suggestions: MergeSuggestion[]; wrote: Set<string>; active: string | null; onOpen: (address: string) => void; reload: () => Promise<void> }) {
+  const [closed, toggleClosed] = useKeptSet('dispatch.side.closed')
+  const [all, setAll] = useState<Set<string>>(new Set())
+  const [menu, setMenu] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null)
+  const [naming, setNaming] = useState<{ s: Session; name: string } | null>(null)
+  const [note, setNote] = useState<{ text: string; act?: { label: string; run: () => Promise<unknown> } } | null>(null)
+  const [drag, setDrag] = useState<{ label: string; kind: Held['kind']; x: number; y: number; over: string | null } | null>(null)
+  const held = useRef<(Held & { x: number; y: number; on: boolean }) | null>(null)
+  const justDragged = useRef(false)
+
+  const now = Date.now()
+  const shown = sessions.filter((s) => isContact(s) || s.running || now - s.last_active < WEEK_MS || wrote.has(s.id))
+  const groups = groupsOf(shown)
+  const nameOf = (id: string) => groups.find((g) => g.id === id)?.name ?? ''
+
+  const act = async (f: () => Promise<unknown>) => {
+    try {
+      await f()
+    } catch (e) {
+      setNote({ text: String(e) })
+    }
+    await reload()
+  }
+
+  const drop = async (h: Held, over: string) => {
+    if (h.kind === 'session') {
+      if (over === 'new') {
+        setNaming({ s: h.s, name: '' })
+        return
+      }
+      if (over === h.from) return
+      try {
+        const r = await api.projectMove(hostKey(h.s), h.s.id, over)
+        await reload()
+        // only this one moved: the rest of its folder can follow, if the user says so
+        if (r.behind > 0 && r.folder && h.from.startsWith('folder:')) {
+          const folder = r.folder
+          setNote({ text: t('proj.movedOne', { name: plain(h.s.name), n: r.behind }), act: { label: t('proj.moveFolder'), run: () => api.projectFolder(folder, r.group) } })
+        } else {
+          setNote(null)
+        }
+      } catch (e) {
+        setNote({ text: String(e) })
+      }
+      return
+    }
+    if (over === 'new' || over === h.from) return
+    const into = nameOf(over)
+    await act(() => api.projectMerge(h.from, over))
+    // a folder that was merged in can be taken out again; two made projects stay merged
+    setNote({ text: t('proj.merged', { a: h.label, b: into }), act: h.from.startsWith('folder:') ? { label: t('proj.undo'), run: () => api.projectRelease(h.from.slice('folder:'.length)) } : undefined })
+  }
+
+  const hold = (e: React.PointerEvent, h: Held) => {
+    if (e.button !== 0) return
+    held.current = { ...h, x: e.clientX, y: e.clientY, on: false }
+    const move = (ev: PointerEvent) => {
+      const cur = held.current
+      if (!cur) return
+      if (!cur.on && Math.hypot(ev.clientX - cur.x, ev.clientY - cur.y) < 6) return
+      cur.on = true
+      const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('[data-drop]')?.getAttribute('data-drop') ?? null
+      setDrag({ label: cur.label, kind: cur.kind, x: ev.clientX, y: ev.clientY, over: under && under !== cur.from && !(cur.kind === 'group' && under === 'new') ? under : null })
+    }
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+      const cur = held.current
+      held.current = null
+      setDrag(null)
+      if (!cur?.on) return
+      // the click that ends a drag must not open the row it started on
+      justDragged.current = true
+      setTimeout(() => (justDragged.current = false), 0)
+      if (ev.type === 'pointercancel') return
+      const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('[data-drop]')?.getAttribute('data-drop')
+      if (under) void drop(cur, under)
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
+  }
+
+  const sug = suggestions[0]
+  const places = (p: (string | null)[]) => [...new Set(p.map((x) => x ?? t('proj.here')))].join(t('proj.and'))
+  return (
+    <div className="side__sessions" data-dragging={drag ? drag.kind : undefined}>
+      {sug && !note && (
+        <div className="sidehint">
+          <span>{t('proj.suggest', { name: sug.name, places: places(sug.places) })}</span>
+          <span className="sidehint__acts">
+            <button className="sidehint__yes" onClick={() => act(() => api.projectMerge(sug.from, sug.into))}>{t('proj.yes')}</button>
+            <button onClick={() => act(() => api.projectDismiss(sug.key))}>{t('proj.no')}</button>
+          </span>
+        </div>
+      )}
+      {note && (
+        <div className="sidehint">
+          <span>{note.text}</span>
+          <span className="sidehint__acts">
+            {note.act && <button className="sidehint__yes" onClick={() => { const run = note.act!.run; setNote(null); void act(run) }}>{note.act.label}</button>}
+            <button onClick={() => setNote(null)}>{t('proj.ok')}</button>
+          </span>
+        </div>
+      )}
+      <div className="projs">
+        {groups.map((g) => {
+          const open = !closed.has(g.id)
+          const rows = all.has(g.id) ? g.rows : g.rows.slice(0, 5)
+          const can = takesDrops(g.id)
+          return (
+            <div key={g.id} className="proj" data-drop={can ? g.id : undefined} data-over={(drag?.over === g.id) || undefined}>
+              {renaming?.id === g.id ? (
+                <form className="proj__form" onSubmit={(e) => { e.preventDefault(); const r = renaming; setRenaming(null); if (r.name.trim()) void act(() => api.projectRename(r.id, r.name)) }}>
+                  <input className="input" autoFocus value={renaming.name} onChange={(e) => setRenaming({ id: g.id, name: e.target.value })} onBlur={() => setRenaming(null)} onKeyDown={(e) => e.key === 'Escape' && setRenaming(null)} />
+                </form>
+              ) : (
+                <div className="proj__head" title={can ? t('proj.dragTip') : undefined} onPointerDown={can ? (e) => hold(e, { kind: 'group', from: g.id, label: g.name }) : undefined}>
+                  <button className="proj__toggle" onClick={() => !justDragged.current && toggleClosed(g.id)}>
+                    <svg className="proj__chev" data-open={open || undefined} width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 3 7.5 6 4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    <span className="proj__name">{g.name || t('proj.none')}</span>
+                  </button>
+                  <span className="proj__count">{g.rows.length}</span>
+                  {can && (
+                    <button className="proj__more" title={t('proj.rename')} onPointerDown={(e) => e.stopPropagation()} onClick={() => setMenu(menu === g.id ? null : g.id)}>
+                      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><circle cx="2.5" cy="6" r="1" fill="currentColor" /><circle cx="6" cy="6" r="1" fill="currentColor" /><circle cx="9.5" cy="6" r="1" fill="currentColor" /></svg>
+                    </button>
+                  )}
+                </div>
+              )}
+              {menu === g.id && (
+                <div className="proj__menu" onMouseLeave={() => setMenu(null)}>
+                  <button onClick={() => { setMenu(null); setRenaming({ id: g.id, name: g.name }) }}>{t('proj.rename')}</button>
+                  {!g.auto && <button title={t('proj.dissolveTip')} onClick={() => { setMenu(null); void act(() => api.projectDissolve(g.id)) }}>{t('proj.dissolve')}</button>}
+                </div>
+              )}
+              {open && rows.map((s) => (
+                <div key={`${hostKey(s)}|${s.id}`} className="agent agent--link" title={[s.host?.name, s.cwd].filter(Boolean).join(' · ')} data-active={active === addressOf(s) || undefined} onPointerDown={(e) => hold(e, { kind: 'session', s, from: g.id, label: plain(s.name) })} onClick={() => !justDragged.current && onOpen(addressOf(s))}>
+                  <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={20} harness={s.harness} />
+                  <span className="agent__name">{plain(s.name)}</span>
+                  {g.hosts.size > 1 && s.host && <span className="agent__host">{s.host.name}</span>}
+                  <span className="presence" data-on={s.running || undefined} title={s.running ? t('presence.onTip') : t('presence.offlineTip')} />
+                </div>
+              ))}
+              {open && g.rows.length > 5 && (
+                <button className="proj__rest" onClick={() => setAll((old) => { const n = new Set(old); if (n.has(g.id)) n.delete(g.id); else n.add(g.id); return n })}>
+                  {all.has(g.id) ? t('proj.less') : t('proj.rest', { n: g.rows.length - 5 })}
+                </button>
+              )}
+            </div>
+          )
+        })}
+        {drag?.kind === 'session' && (
+          <div className="proj proj--new" data-drop="new" data-over={(drag.over === 'new') || undefined}>＋ {t('proj.new')}</div>
+        )}
+        {naming && (
+          <form className="proj__form" onSubmit={(e) => { e.preventDefault(); const n = naming; setNaming(null); if (n.name.trim()) void act(() => api.projectMove(hostKey(n.s), n.s.id, 'new', n.name)) }}>
+            <input className="input" autoFocus placeholder={t('proj.newName')} value={naming.name} onChange={(e) => setNaming({ s: naming.s, name: e.target.value })} onKeyDown={(e) => e.key === 'Escape' && setNaming(null)} />
+            <button className="btn btn--primary btn--small" disabled={!naming.name.trim()}>{t('proj.create')}</button>
+          </form>
+        )}
+      </div>
+      {drag && <div className="dragghost" style={{ left: drag.x + 12, top: drag.y + 10 }}>{drag.label || t('proj.none')}</div>}
+    </div>
+  )
+}
+
+/** The project tag on a session's page: click it to file the session somewhere else. */
+function ProjectPicker({ s, groups, onMoved }: { s: Session; groups: Group[]; onMoved: () => void }) {
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState<string | null>(null)
+  const now = s.group
+  const move = async (target: string, called?: string) => {
+    setOpen(false)
+    setName(null)
+    try {
+      await api.projectMove(hostKey(s), s.id, target, called)
+    } finally {
+      onMoved()
+    }
+  }
+  return (
+    <span className="picker">
+      <button className="sp__chip sp__chip--project" title={t('proj.pick')} onClick={() => setOpen(!open)}>
+        {now?.name || t('proj.none')}
+        <svg width="9" height="9" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+      </button>
+      {open && (
+        <div className="picker__menu" onMouseLeave={() => name === null && setOpen(false)}>
+          <div className="picker__label">{t('proj.pick')}</div>
+          {groups.filter((g) => takesDrops(g.id)).map((g) => (
+            <button key={g.id} data-active={g.id === now?.id || undefined} onClick={() => move(g.id)}>{g.name}</button>
+          ))}
+          {name === null ? (
+            <button className="picker__new" onClick={() => setName('')}>＋ {t('proj.new')}</button>
+          ) : (
+            <form className="picker__form" onSubmit={(e) => { e.preventDefault(); if (name.trim()) void move('new', name) }}>
+              <input className="input" autoFocus placeholder={t('proj.newName')} value={name} onChange={(e) => setName(e.target.value)} />
+            </form>
+          )}
+        </div>
+      )}
+    </span>
+  )
+}
+
 // ---- Shell ----
 
 const NAV: { key: Screen; label: 'nav.feed' | 'nav.agents' | 'nav.compose' | 'nav.settings'; icon: 'feed' | 'agents' | 'compose' | 'settings' }[] = [
   { key: 'feed', label: 'nav.feed', icon: 'feed' },
   { key: 'agents', label: 'nav.agents', icon: 'agents' },
-  { key: 'compose', label: 'nav.compose', icon: 'compose' },
 ]
 
 export function App() {
@@ -1846,6 +2106,8 @@ export function App() {
   const [screen, setScreen] = useState<Screen>('feed')
   const [composeTo, setComposeTo] = useState<string | undefined>(undefined)
   const [live, setLive] = useState<Session[]>([])
+  const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([])
+  const [wrote, setWrote] = useState<Set<string>>(new Set())
   const [queued, setQueued] = useState(0)
   const [pick, setPick] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -1877,37 +2139,32 @@ export function App() {
       un2.then((f) => f())
     }
   }, [])
-  useEffect(() => {
-    const tick = async () => {
-      try {
-        const [s, f] = await Promise.all([api.sessions(true), api.feed(100)])
-        setLive(s.sessions)
-        // only what waits on the user: a message held for review, or one held for approval
-        setQueued(f.dispatches.filter((d) => d.recipients.some((r) => r.kind === 'review' || r.kind === 'held')).length)
-      } catch {
-        /* the backend may not be up yet */
-      }
+  // every session with its project, and who has written through Dispatch (those stay in the sidebar)
+  const tick = useCallback(async () => {
+    try {
+      const [s, f] = await Promise.all([api.sessions(false), api.feed(100)])
+      setLive(s.sessions)
+      setSuggestions(s.suggestions ?? [])
+      setWrote(new Set(f.dispatches.flatMap((d) => [d.from, ...d.recipients.map((r) => r.to)])))
+      // only what waits on the user: a message held for review, or one held for approval
+      setQueued(f.dispatches.filter((d) => d.recipients.some((r) => r.kind === 'review' || r.kind === 'held')).length)
+    } catch {
+      /* the backend may not be up yet */
     }
+  }, [])
+  useEffect(() => {
     tick()
     const h = setInterval(tick, 12000)
     return () => clearInterval(h)
-  }, [lang])
+  }, [tick, lang])
 
   const compose = (to?: string) => {
     setComposeTo(to)
     setScreen('compose')
   }
 
-  // the address book first, most recently active on top; then recent sessions not in it, per machine
-  const contacts = live.filter(isContact).sort((a, b) => b.last_active - a.last_active)
-  const others = live.filter((s) => !isContact(s))
-  const sideRow = (s: Session) => (
-    <div key={`${s.host?.id ?? ''}|${s.id}`} className="agent agent--link" title={[s.host?.name, s.cwd].filter(Boolean).join(' · ')} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
-      <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={20} harness={s.harness} />
-      <span className="agent__name">{plain(s.name)}</span>
-      <span className="presence" data-on={s.running || undefined} title={s.running ? t('presence.onTip') : t('presence.offlineTip')} />
-    </div>
-  )
+  // every project there is, for the picker on a session's page
+  const groups = [...new Map(live.filter((s) => s.group).map((s) => [s.group!.id, s.group!])).values()].sort((a, b) => a.name.localeCompare(b.name))
 
   return (
     <div className="shell">
@@ -1915,33 +2172,14 @@ export function App() {
         <div className="brand" data-tauri-drag-region>Dispatch</div>
         <div className="group" data-tauri-drag-region>
           {NAV.map((n) => (
-            <button key={n.key} className="nav" data-active={screen === n.key || undefined} onClick={() => (n.key === 'compose' ? compose() : setScreen(n.key))}>
+            <button key={n.key} className="nav" data-active={screen === n.key || undefined} onClick={() => setScreen(n.key)}>
               <span className="nav__icon"><Icon name={n.icon} size={17} /></span>
               <span className="nav__label">{t(n.label)}</span>
               {n.key === 'feed' && queued > 0 && <span className="count" title={t('nav.waiting', { n: queued })}>{queued}</span>}
             </button>
           ))}
         </div>
-        <div className="side__sessions">
-          {contacts.length > 0 && (
-            <div className="group">
-              <div className="section" title={t('agents.contactsTip')}>{t('agents.contacts')}</div>
-              {contacts.map(sideRow)}
-            </div>
-          )}
-          {others.some((s) => !s.host) && (
-            <div className="group">
-              <div className="section">{t('side.local')}</div>
-              {others.filter((s) => !s.host).slice(0, 8).map(sideRow)}
-            </div>
-          )}
-          {Array.from(new Map(others.filter((s) => s.host).map((s) => [s.host!.id, s.host!])).values()).map((h) => (
-            <div key={h.id} className="group">
-              <div className="section">{h.name}</div>
-              {others.filter((s) => s.host?.id === h.id).slice(0, 5).map(sideRow)}
-            </div>
-          ))}
-        </div>
+        <SideProjects sessions={live} suggestions={suggestions} wrote={wrote} active={screen === 'session' ? sessionId : null} onOpen={openPage} reload={tick} />
         <div className="side__foot">
           <button className="nav" data-active={screen === 'settings' || undefined} onClick={() => setScreen('settings')}>
             <span className="nav__icon"><Icon name="settings" size={17} /></span>
@@ -1952,7 +2190,7 @@ export function App() {
       <main className="panel">
         {screen === 'feed' && <Feed onCompose={compose} pick={pick} />}
         {screen === 'agents' && <Agents onCompose={compose} onOpenPage={openPage} />}
-        {screen === 'session' && sessionId && <SessionPage id={sessionId} onCompose={compose} onFeedPick={feedPick} onBack={() => setScreen('agents')} />}
+        {screen === 'session' && sessionId && <SessionPage id={sessionId} groups={groups} onFiled={tick} onCompose={compose} onFeedPick={feedPick} onBack={() => setScreen('agents')} />}
         {screen === 'compose' && <Compose presetTo={composeTo} onSent={() => setScreen('feed')} />}
         {screen === 'settings' && <Settings />}
       </main>

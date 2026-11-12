@@ -24,6 +24,7 @@ pub mod mcp;
 pub mod model;
 pub mod ops;
 pub mod peer;
+pub mod projects;
 pub mod reach;
 pub mod review;
 pub mod send;

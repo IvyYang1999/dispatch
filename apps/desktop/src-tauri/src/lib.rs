@@ -824,6 +824,98 @@ async fn install_plugin(harness: String) -> Result<String, String> {
     .await
 }
 
+/// The session a project command names: `host` is the other machine's id, empty for this one.
+fn session_named(host: &str, id: &str) -> Result<model::Session, String> {
+    dispatch_core::discover::sessions().into_iter().find(|s| s.id.eq_ignore_ascii_case(id) && s.host.as_ref().map(|h| h.id.as_str()).unwrap_or("") == host).ok_or_else(|| format!("no such session: {id}"))
+}
+
+/// File one session under a project (`target`: a project's id, a folder's, or `new` with a
+/// name). Answers with where it is now, and its folder when other sessions share it, so the app
+/// can offer to file the whole folder there.
+#[tauri::command]
+async fn project_move(app: AppHandle, host: String, id: String, target: String, name: Option<String>) -> Result<Value, String> {
+    let r = blocking(move || {
+        let s = session_named(&host, &id)?;
+        let group = dispatch_core::projects::change(|b| b.move_session(&s, &target, name.as_deref())).map_err(err)?;
+        let folder = dispatch_core::projects::folder_of(&s);
+        let book = dispatch_core::projects::load();
+        // the rest of its folder stayed behind: how many, for the offer
+        let behind = dispatch_core::discover::sessions().iter().filter(|o| dispatch_core::projects::folder_of(o) == folder && folder.is_some() && book.group_of(o).id != group).count();
+        Ok(json!({ "group": group, "folder": folder, "behind": behind }))
+    })
+    .await;
+    let _ = app.emit("dispatch:changed", ());
+    r
+}
+
+/// File a whole folder (`<machine>|<path>`) under a project: its sessions now and later.
+#[tauri::command]
+async fn project_folder(app: AppHandle, folder: String, target: String) -> Result<String, String> {
+    let r = blocking(move || dispatch_core::projects::change(|b| b.move_folder(&folder, &target)).map_err(err)).await;
+    let _ = app.emit("dispatch:changed", ());
+    r
+}
+
+/// Take a folder back out of the project it was filed under.
+#[tauri::command]
+async fn project_release(app: AppHandle, folder: String) -> Result<(), String> {
+    let r = blocking(move || {
+        dispatch_core::projects::change(|b| {
+            b.release_folder(&folder);
+            Ok(())
+        })
+        .map_err(err)
+    })
+    .await;
+    let _ = app.emit("dispatch:changed", ());
+    r
+}
+
+/// Put everything in one project into another.
+#[tauri::command]
+async fn project_merge(app: AppHandle, from: String, into: String) -> Result<String, String> {
+    let r = blocking(move || dispatch_core::projects::change(|b| b.merge(&from, &into)).map_err(err)).await;
+    let _ = app.emit("dispatch:changed", ());
+    r
+}
+
+#[tauri::command]
+async fn project_rename(app: AppHandle, id: String, name: String) -> Result<String, String> {
+    let r = blocking(move || dispatch_core::projects::change(|b| b.rename(&id, &name)).map_err(err)).await;
+    let _ = app.emit("dispatch:changed", ());
+    r
+}
+
+/// Undo a project: its folders stand on their own again.
+#[tauri::command]
+async fn project_dissolve(app: AppHandle, id: String) -> Result<(), String> {
+    let r = blocking(move || {
+        dispatch_core::projects::change(|b| {
+            b.dissolve(&id);
+            Ok(())
+        })
+        .map_err(err)
+    })
+    .await;
+    let _ = app.emit("dispatch:changed", ());
+    r
+}
+
+/// Turn a merge suggestion down for good.
+#[tauri::command]
+async fn project_dismiss(key: String) -> Result<(), String> {
+    blocking(move || {
+        dispatch_core::projects::change(|b| {
+            if !b.dismissed.contains(&key) {
+                b.dismissed.push(key);
+            }
+            Ok(())
+        })
+        .map_err(err)
+    })
+    .await
+}
+
 /// Tick or untick a setup step Dispatch cannot check for itself (a switch inside another app).
 #[tauri::command]
 async fn setup_mark(key: String, done: bool) -> Result<Value, String> {
@@ -1218,7 +1310,7 @@ pub fn run() {
         .manage(Waits::default())
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
-            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, setup_mark, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
+            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, setup_mark, project_move, project_folder, project_merge, project_release, project_rename, project_dissolve, project_dismiss, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget,
             wait_list, wait_open, wait_dismiss, set_wake, share_set

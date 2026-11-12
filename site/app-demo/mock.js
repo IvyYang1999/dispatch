@@ -81,8 +81,8 @@
       harness: o.harness,
       title: null,
       project: o.project,
-      cwd: `/Users/you/code/${o.project}`,
-      cwd_short: `~/code/${o.project}`,
+      cwd: o.harness === 'Grok Bot' ? null : `/Users/you/code/${o.project}`,
+      cwd_short: o.harness === 'Grok Bot' ? null : `~/code/${o.project}`,
       running: o.running !== false,
       status: o.running === false ? null : o.status ?? 'idle',
       desktop: o.desktop !== false,
@@ -124,16 +124,86 @@
     ]
     const held = letter('api', 'release', 2, 'review', L('Tag v2.0-rc1 from main and build the installers. Reply here when they are signed.', '请从 main 打 v2.0-rc1 的 tag 并构建安装包，签好名后在这里回我。'))
     letters.push(held)
-    return { lang, now, sessions, letters, heldId: held.id, me: { name: null, avatar: null }, timers: [] }
+    // projects, as the app files them: the storefront folders on this Mac and the Mac mini were put
+    // together by hand; the one on the PC is still on its own, so the app suggests it
+    const book = { projects: [{ id: 'p-storefront', name: 'Storefront', folders: ['|/Users/you/code/storefront', `${MINI.id}|/Users/you/code/storefront`] }], moved: {}, dismissed: [] }
+    return { lang, now, sessions, letters, book, heldId: held.id, me: { name: null, avatar: null }, timers: [] }
   }
 
   if (!hub.store || hub.store.lang !== lang) hub.store = makeStore()
   const store = () => hub.store
 
   const sessionOf = (key) => store().sessions.find((s) => s.key === key)
+  // ---- projects: the same rules as crates/core/src/projects.rs, on the demo's sessions ----
+  const book = () => store().book
+  const sKey = (s) => `${s.host ? s.host.id : ''}|${s.id}`
+  const folderOf = (s) => (s.cwd ? `${s.host ? s.host.id : ''}|${s.cwd}` : null)
+  const folderName = (f) => f.split('|').slice(1).join('|').split('/').filter(Boolean).pop() || f
+  const homeOf = (s) => {
+    const f = folderOf(s)
+    if (!f) return s.harness === 'Grok Bot' ? { id: 'harness:grok', name: 'Grok Bot', auto: true } : { id: 'none', name: '', auto: true }
+    const p = book().projects.find((x) => x.folders.includes(f))
+    return p ? { id: p.id, name: p.name, auto: false } : { id: `folder:${f}`, name: folderName(f), auto: true }
+  }
+  const groupOf = (s) => {
+    const p = book().projects.find((x) => x.id === book().moved[sKey(s)])
+    return p ? { id: p.id, name: p.name, auto: false } : homeOf(s)
+  }
+  const sweep = () => {
+    const used = new Set(Object.values(book().moved))
+    book().projects = book().projects.filter((p) => p.folders.length > 0 || used.has(p.id))
+  }
+  const newProject = (name, folders) => {
+    const id = `p-${Math.random().toString(36).slice(2, 10)}`
+    book().projects.push({ id, name, folders })
+    return id
+  }
+  const settle = (id) => {
+    if (book().projects.some((p) => p.id === id)) return id
+    if (!id.startsWith('folder:')) throw new Error(`no such project: ${id}`)
+    const f = id.slice('folder:'.length)
+    const held = book().projects.find((p) => p.folders.includes(f))
+    return held ? held.id : newProject(folderName(f), [f])
+  }
+  const moveFolder = (folder, target) => {
+    const id = settle(target)
+    for (const p of book().projects) p.folders = p.folders.filter((f) => f !== folder)
+    book().projects.find((p) => p.id === id).folders.push(folder)
+    sweep()
+    return id
+  }
+  const mergeProjects = (from, into) => {
+    if (from === into) return into
+    const id = settle(into)
+    const folders = from.startsWith('folder:') ? [from.slice('folder:'.length)] : (book().projects.find((p) => p.id === from) || { folders: [] }).folders
+    book().projects = book().projects.filter((p) => p.id !== from)
+    for (const k of Object.keys(book().moved)) if (book().moved[k] === from) book().moved[k] = id
+    const p = book().projects.find((x) => x.id === id)
+    for (const f of folders) if (!p.folders.includes(f)) p.folders.push(f)
+    sweep()
+    return id
+  }
+  const suggestions = () => {
+    const groups = []
+    for (const s of store().sessions) {
+      const g = groupOf(s)
+      if (g.name && g.id !== 'harness:grok' && !groups.some((x) => x.id === g.id)) groups.push({ ...g, host: s.host ? s.host.name : null })
+    }
+    const out = []
+    groups.forEach((a, i) =>
+      groups.slice(i + 1).forEach((b) => {
+        if (!(a.auto || b.auto) || a.name.toLowerCase() !== b.name.toLowerCase()) return
+        const [from, into] = a.auto ? [a, b] : [b, a]
+        const key = [from.id, into.id].sort().join(' + ')
+        if (!book().dismissed.includes(key)) out.push({ key, name: into.name, from: from.id, into: into.id, places: [from.host, into.host] })
+      }),
+    )
+    return out
+  }
+
   const publicSession = (s) => {
     const { key, ...rest } = s
-    return rest
+    return { ...rest, group: groupOf(s) }
   }
   const partyOf = (key) => {
     if (key === 'you') {
@@ -399,8 +469,54 @@
         return { dispatches: heldLetter() ? [{ dispatch_id: heldLetter().dispatch, recipients: [{ kind: 'review' }] }] : [] }
       case 'sessions': {
         const all = store().sessions.filter((s) => !args.runningOnly || s.running || s.contact).map(publicSession)
-        return { hook_installed: true, sessions: all }
+        return { hook_installed: true, sessions: all, suggestions: suggestions() }
       }
+      case 'project_move': {
+        const one = store().sessions.find((x) => x.id === args.id && (x.host ? x.host.id : '') === args.host)
+        if (!one) throw new Error(`no such session: ${args.id}`)
+        let group
+        if (args.target === homeOf(one).id) {
+          delete book().moved[sKey(one)]
+          group = args.target
+        } else {
+          group = args.target === 'new' ? newProject(String(args.name || '').trim() || L('New project', '新项目'), []) : settle(args.target)
+          book().moved[sKey(one)] = group
+        }
+        sweep()
+        const folder = folderOf(one)
+        const behind = folder ? store().sessions.filter((x) => folderOf(x) === folder && groupOf(x).id !== group).length : 0
+        changed()
+        return { group, folder, behind }
+      }
+      case 'project_folder': {
+        const id = moveFolder(args.folder, args.target)
+        changed()
+        return id
+      }
+      case 'project_release':
+        for (const p of book().projects) p.folders = p.folders.filter((f) => f !== args.folder)
+        sweep()
+        changed()
+        return null
+      case 'project_merge': {
+        const id = mergeProjects(args.from, args.into)
+        changed()
+        return id
+      }
+      case 'project_rename': {
+        const id = settle(args.id)
+        book().projects.find((p) => p.id === id).name = String(args.name).trim()
+        changed()
+        return id
+      }
+      case 'project_dissolve':
+        book().projects = book().projects.filter((p) => p.id !== args.id)
+        for (const k of Object.keys(book().moved)) if (book().moved[k] === args.id) delete book().moved[k]
+        changed()
+        return null
+      case 'project_dismiss':
+        book().dismissed.push(args.key)
+        return null
       case 'search_sessions':
         return { sessions: store().sessions.filter((s) => matches(s, args.query ?? '')).map(publicSession) }
       case 'find':
