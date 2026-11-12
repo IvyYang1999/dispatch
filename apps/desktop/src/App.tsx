@@ -804,126 +804,236 @@ export function Clamp({ text }: { text: string }) {
   )
 }
 
+/** What sending to this session does right now, in plain words: how it gets the message and
+ *  what, if anything, the user has to do. `ok` it gets it at once; `auto` Dispatch opens it;
+ *  `wait` it gets it when its turn ends; `you` the user has to act; `off` it cannot get it. */
+function plainReach(s: Session): { tone: 'ok' | 'auto' | 'wait' | 'you' | 'off'; title: string; detail: string; todo?: string } {
+  if (s.reach.level === 'now') return { tone: 'ok', title: t('reach2.nowTitle'), detail: t('reach2.now') }
+  if (s.reach.level === 'none') return { tone: 'off', title: t('reach2.offTitle'), detail: s.reach.text }
+  if (s.harness === 'Codex') return { tone: 'auto', title: t('reach2.autoTitle'), detail: t('reach2.codex') }
+  if (!s.running) return { tone: 'auto', title: t('reach2.autoTitle'), detail: s.desktop ? t('reach2.claudeDesktop') : t('reach2.claudeTerminal') }
+  if (s.status === 'busy' || s.status === 'running') return { tone: 'wait', title: t('reach2.turnTitle'), detail: t('reach2.turn') }
+  return { tone: 'you', title: t('reach2.speakTitle'), detail: t('reach2.speak'), todo: t('reach2.speakTodo') }
+}
+
+/** The sessions this one exchanged messages with: how many each way, and the latest. */
+type Tie = { key: string; name: string; harness?: string | null; host?: string | null; got: number; sent: number; last: string; dispatch: string }
+function tiesOf(page: SessionPageData): Tie[] {
+  const m = new Map<string, Tie>()
+  const add = (key: string, name: string, harness: string | null | undefined, host: string | null | undefined, dir: 'in' | 'out', at: string, dispatch: string) => {
+    const t0 = m.get(key) ?? { key, name, harness, host, got: 0, sent: 0, last: '', dispatch }
+    if (dir === 'in') t0.got += 1
+    else t0.sent += 1
+    if (at > t0.last) {
+      t0.last = at
+      t0.dispatch = dispatch
+    }
+    m.set(key, t0)
+  }
+  for (const d of page.dispatches) {
+    if (d.direction === 'in') add(`${d.from_host_name ?? ''}|${d.from}`, d.from_name, d.from_harness, d.from_host_name, 'in', d.created, d.dispatch_id)
+    else for (const r of d.recipients) add(`${r.to_host_name ?? ''}|${r.to}`, r.to_name, r.to_harness, r.to_host_name, 'out', d.created, d.dispatch_id)
+  }
+  return [...m.values()].sort((a, b) => b.got + b.sent - (a.got + a.sent))
+}
+
+/** This session in the middle, the ones it wrote with around it; a thicker line, more messages. */
+function TieMap({ s, ties, onPick }: { s: Session; ties: Tie[]; onPick: (t: Tie) => void }) {
+  const shown = ties.slice(0, 6)
+  const W = 260
+  const H = 132
+  const cx = W / 2
+  const cy = H / 2
+  const spots = shown.map((_, i) => {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / Math.max(shown.length, 1) + (shown.length === 2 ? Math.PI / 2 : 0)
+    return { x: cx + Math.cos(a) * 98, y: cy + Math.sin(a) * 46 }
+  })
+  const most = Math.max(1, ...shown.map((x) => x.got + x.sent))
+  return (
+    <div className="tiemap" style={{ width: W, height: H }}>
+      <svg width={W} height={H} aria-hidden="true">
+        {shown.map((x, i) => (
+          <line key={x.key} x1={cx} y1={cy} x2={spots[i].x} y2={spots[i].y} className="tiemap__line" strokeWidth={1 + (4 * (x.got + x.sent)) / most} />
+        ))}
+      </svg>
+      <span className="tiemap__node tiemap__node--me" style={{ left: cx, top: cy }}>
+        <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={34} harness={s.harness} />
+      </span>
+      {shown.map((x, i) => (
+        <button key={x.key} className="tiemap__node" style={{ left: spots[i].x, top: spots[i].y }} title={withHost(x.name, x.host)} onClick={() => onPick(x)}>
+          <Avatar name={x.name} size={24} harness={x.harness} />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** A day heading for the history: 今天, 昨天, else the date. */
+function dayOf(at: string | null | undefined): string {
+  if (!at) return ''
+  const d = new Date(at)
+  const today = new Date()
+  const y = new Date(today.getTime() - 86400000)
+  const same = (a: Date, b: Date) => a.toDateString() === b.toDateString()
+  if (same(d, today)) return t('day.today')
+  if (same(d, y)) return t('day.yesterday')
+  return `${d.getMonth() + 1}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function hhmm(at: string | null | undefined): string {
+  if (!at) return ''
+  const d = new Date(at)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onCompose: (to: string) => void; onFeedPick: (dispatchId: string) => void; onBack: () => void }) {
   const lang = useLang()
   const [page, setPage] = useState<SessionPageData | null>(null)
   const [err, setErr] = useState<string | null>(null)
-  const [showDispatches, setShowDispatches] = useState(false)
   const [editing, setEditing] = useState<EditTarget | null>(null)
+  const [only, setOnly] = useState<'all' | 'you' | 'dispatch'>('all')
+  const [openRound, setOpenRound] = useState<number | null>(null)
   const { open, notice, clear } = useOpen()
-  const chatRef = useRef<HTMLDivElement>(null)
-  const pinned = useRef(true)
   const load = useCallback(() => api.sessionPage(id).then((p) => { setPage(p); setErr(null) }).catch((e) => setErr(String(e))), [id, lang])
   useEffect(() => {
-    pinned.current = true
     load()
-    const h = setInterval(load, 8000)
+    const h = setInterval(load, 5000)
     return () => clearInterval(h)
   }, [load])
-  // keep the newest exchange in view unless the reader scrolled up
-  useEffect(() => {
-    const el = chatRef.current
-    if (el && pinned.current) el.scrollTop = el.scrollHeight
-  }, [page])
-  const onScroll = () => {
-    const el = chatRef.current
-    if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-  }
   const s = page?.session
+  const edit = () => s && setEditing({ address: addressOf(s), name: s.app_name ?? s.name, contact: s.provisional ? null : s.contact, about: s.about, avatar: s.avatar })
+  const reach = s ? plainReach(s) : null
+  const ties = page ? tiesOf(page) : []
+  const asked = (page?.rounds ?? []).map((r, i) => ({ r, i })).filter((x) => x.r.user)
+  const counts = { all: asked.length, you: asked.filter((x) => !x.r.user!.via_dispatch).length, dispatch: asked.filter((x) => x.r.user!.via_dispatch).length }
+  const listed = asked.filter((x) => only === 'all' || (only === 'dispatch') === x.r.user!.via_dispatch).reverse()
+  let lastDay = ''
   return (
     <>
       <header className="bar" data-tauri-drag-region>
         <button className="btn btn--ghost btn--small" onClick={onBack}>‹ {t('session.back')}</button>
-        <span className="bar__title" data-tauri-drag-region>{s?.name ?? ''}</span>
+        <span className="bar__title" data-tauri-drag-region>{s ? plain(s.name) : ''}</span>
         <span className="bar__spacer" />
         {s && <button className="btn btn--primary" onClick={() => onCompose(addressOf(s))}>{t('action.message')}</button>}
       </header>
       {err && <div className="empty">{err}</div>}
-      {s && page && (
-        <div className="spage">
-          <div className="spage__head">
-            <div className="who">
-              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={40} harness={s.harness} />
-              <div className="who__text">
-                <div className="who__line">
-                  <span className="who__name">{plain(s.name)}</span>
-                  {s.host && <span className="tag">{s.host.name}</span>}
-                </div>
-                {s.about && <div className="who__about">{s.about}</div>}
-                <div className="who__meta">
-                  {s.cwd_short && <span title={s.cwd ?? ''}>{s.cwd_short}</span>}
-                  <span>{presence(s)}</span>
-                  <span className="line__how" data-reach={s.reach.level} title={s.reach.text}>{s.reach.text}</span>
-                </div>
+      {s && page && reach && (
+        <div className="sp">
+          <section className="sp__card sp__id">
+            <button className="sp__face" title={t('action.edit')} onClick={edit}>
+              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={48} harness={s.harness} />
+            </button>
+            <div className="sp__who">
+              <button className="sp__name" onClick={edit}>
+                {plain(s.name)}
+                <Icon name="edit" size={13} />
+              </button>
+              <button className="sp__about" data-empty={!s.about || undefined} onClick={edit}>{s.about || t('sp.addAbout')}</button>
+              <div className="sp__chips">
+                <span className="sp__chip sp__chip--project">{s.project ?? s.cwd_short?.split('/').filter(Boolean).pop() ?? t('sp.noProject')}</span>
+                <span className="sp__chip">{s.harness}{s.host ? ` · ${s.host.name}` : ` · ${t('side.local')}`}</span>
+                {s.cwd_short && <span className="sp__chip sp__chip--path" title={s.cwd ?? ''}>{s.cwd_short}</span>}
               </div>
-              <span className="who__acts">
-                <button className="btn btn--small btn--with-icon" onClick={() => open(addressOf(s))}>
-                  <Icon name="open" size={13} />
-                  {t('action.open')}
-                </button>
-                <button className="btn btn--ghost btn--icon" title={t('action.edit')} onClick={() => setEditing({ address: addressOf(s), name: s.app_name ?? s.name, contact: s.provisional ? null : s.contact, about: s.about, avatar: s.avatar })}>
-                  <Icon name="edit" size={14} />
-                </button>
-              </span>
             </div>
-            {page.dispatches.length > 0 && (
-              <div className="spage__dispatches">
-                <button className="spage__toggle" onClick={() => setShowDispatches(!showDispatches)}>
-                  {showDispatches ? '▾' : '▸'} {t('session.dispatches')} <i>{page.dispatches.length}</i>
+            <button className="btn btn--small btn--with-icon" onClick={() => open(addressOf(s))}>
+              <Icon name="open" size={13} />
+              {t('action.open')}
+            </button>
+          </section>
+
+          <div className="sp__row">
+            <section className="sp__card sp__reach" data-tone={reach.tone}>
+              <div className="sp__label">{t('sp.ifSent')}</div>
+              <div className="sp__state">
+                <span className="sp__dot" />
+                {reach.title}
+              </div>
+              <p className="sp__detail">{reach.detail}</p>
+              {reach.todo && <p className="sp__todo">{reach.todo}</p>}
+              <div className="sp__facts">
+                <span>{t('sp.lastActive')}</span>
+                <span>{s.last_active ? localStamp(new Date(s.last_active).toISOString()) : '—'}</span>
+                <span>{t('sp.now')}</span>
+                <span>{presence(s)}</span>
+              </div>
+              {(reach.tone === 'auto' || reach.tone === 'you') && (
+                <button className="btn btn--small btn--with-icon sp__wake" onClick={() => open(addressOf(s))}>
+                  <Icon name="open" size={13} />
+                  {t('sp.wake')}
                 </button>
-                {showDispatches && (
-                  <div className="spage__dlist">
-                    {page.dispatches.map((d) => (
-                      <div key={d.dispatch_id} className="row" onClick={() => onFeedPick(d.dispatch_id)}>
-                        <Avatar name={d.from_name} size={20} />
-                        <div className="row__main">
-                          <div className="row__line">
-                            <span className="tag tag--dir" data-dir={d.direction}>{d.direction === 'in' ? t('session.in') : t('session.out')}</span>
-                            <span className="row__from">{withHost(d.from_name, d.from_host_name)}</span>
-                            <HarnessMark harness={d.from_harness} />
-                            <span className="row__text">{d.text}</span>
-                            <span className="row__time">{d.created.slice(5)}</span>
-                          </div>
-                        </div>
-                      </div>
+              )}
+            </section>
+            <section className="sp__card sp__ties">
+              <div className="sp__label">{t('sp.ties')}</div>
+              {ties.length === 0 ? (
+                <p className="sp__detail">{t('sp.noTies')}</p>
+              ) : (
+                <>
+                  <TieMap s={s} ties={ties} onPick={(x) => onFeedPick(x.dispatch)} />
+                  <div className="sp__tielist">
+                    {ties.slice(0, 5).map((x) => (
+                      <button key={x.key} className="sp__tie" onClick={() => onFeedPick(x.dispatch)}>
+                        <Avatar name={x.name} size={18} />
+                        <span className="sp__tiename">{withHost(plain(x.name), x.host)}</span>
+                        <span className="sp__tiecount">{[x.got ? t('sp.got', { n: x.got }) : '', x.sent ? t('sp.sent', { n: x.sent }) : ''].filter(Boolean).join(' · ')}</span>
+                      </button>
                     ))}
                   </div>
-                )}
-              </div>
-            )}
+                </>
+              )}
+            </section>
           </div>
-          <div className="chat" ref={chatRef} onScroll={onScroll}>
-            {!page.transcript_available && <div className="empty">{t('session.noTranscript')}</div>}
-            {page.transcript_available && page.rounds.length === 0 && <div className="empty">{t('session.emptyTranscript')}</div>}
-            {page.rounds.map((r, i) => {
-              const u = r.user
-              const at = localStamp(u?.at ?? r.replies[0]?.at)
-              return (
-                <div key={i} className="exchange">
-                  {at && <div className="chat__time">{at}</div>}
-                  {u && (
-                    <div className="msg msg--prompt" data-dispatch={u.via_dispatch || undefined}>
-                      {u.via_dispatch && <div className="msg__from">📨 {t('session.viaDispatch', { from: u.from_agent ?? '?' })}</div>}
-                      <div className="msg__bubble">
-                        <Clamp text={u.text} />
+
+          <section className="sp__card sp__history">
+            <div className="sp__histhead">
+              <span className="sp__label">{t('sp.history')}</span>
+              <span className="seg seg--small">
+                {(['all', 'you', 'dispatch'] as const).map((k) => (
+                  <button key={k} data-active={only === k || undefined} onClick={() => setOnly(k)}>
+                    {t(`sp.only.${k}` as const)} <i>{counts[k]}</i>
+                  </button>
+                ))}
+              </span>
+            </div>
+            {!page.transcript_available && <p className="sp__detail">{t('session.noTranscript')}</p>}
+            {page.transcript_available && listed.length === 0 && <p className="sp__detail">{t('session.emptyTranscript')}</p>}
+            <div className="sp__asks">
+              {listed.map(({ r, i }) => {
+                const u = r.user!
+                const day = dayOf(u.at)
+                const head = day !== lastDay ? day : null
+                lastDay = day
+                const isOpen = openRound === i
+                return (
+                  <div key={i}>
+                    {head && <div className="sp__day">{head}</div>}
+                    <button className="ask" data-dispatch={u.via_dispatch || undefined} data-open={isOpen || undefined} onClick={() => setOpenRound(isOpen ? null : i)}>
+                      <span className="ask__time">{hhmm(u.at)}</span>
+                      <span className="ask__who">
+                        {u.via_dispatch ? <Avatar name={u.from_agent ?? '?'} size={18} /> : <span className="ask__you">{t('sp.you')}</span>}
+                      </span>
+                      <span className="ask__body">
+                        {u.via_dispatch && <span className="ask__from">{t('sp.viaDispatch', { from: u.from_agent ?? '?' })}</span>}
+                        <span className="ask__text">{isOpen ? u.text.trim() : firstLine(u.text)}</span>
+                      </span>
+                      <svg className="ask__chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 3 7.5 6 4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                    </button>
+                    {isOpen && (
+                      <div className="ask__open">
+                        <div className="ask__answer">
+                          <div className="ask__answerhead">
+                            <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={16} harness={s.harness} />
+                            <span>{t('sp.answer')}</span>
+                          </div>
+                          {r.replies.length === 0 ? <p className="msg__text msg__text--faint">{t('round.pending')}</p> : <Clamp text={r.replies.map((x) => x.text).join('\n\n')} />}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                  <div className="msg msg--reply">
-                    <div className="msg__who">
-                      <HarnessMark harness={s.harness} size={14} />
-                      <span>{s.name}</span>
-                    </div>
-                    {r.replies.length === 0 ? (
-                      <p className="msg__text msg__text--faint">{i === page.rounds.length - 1 ? t('round.pending') : t('round.noText')}</p>
-                    ) : (
-                      <Clamp text={r.replies.map((x) => x.text).join('\n\n')} />
                     )}
                   </div>
-                </div>
-              )
-            })}
-          </div>
+                )
+              })}
+            </div>
+          </section>
           {notice && <div className="notice" onClick={clear}>{notice}</div>}
         </div>
       )}
