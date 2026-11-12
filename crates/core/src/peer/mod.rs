@@ -694,6 +694,52 @@ pub fn remote_stage(letter_id: &str) -> Option<(String, String)> {
 /// Bring the local store up to date with the peers: the status of copies delivered there,
 /// and letters for sessions here (replies) that have not arrived yet. At most once every ten
 /// seconds per peer. Returns how many letters changed or arrived.
+/// A book that came from another machine: keep it when it is newer than this machine's, and
+/// answer with the book this machine has now, both in wire form.
+pub(crate) fn take_projects(theirs: Value) -> Result<Value> {
+    let me = me()?;
+    let mine = crate::projects::load();
+    if let Ok(theirs) = serde_json::from_value::<crate::projects::Book>(theirs) {
+        if theirs.updated > mine.updated {
+            crate::projects::adopt(&crate::projects::from_wire(&theirs, &me.id))?;
+        }
+    }
+    Ok(serde_json::to_value(crate::projects::to_wire(&crate::projects::load(), &me.id))?)
+}
+
+/// Peers that did not understand the projects request (an older Dispatch), and when.
+static NO_PROJECTS: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+
+/// Compare project books with every confirmed machine that can be reached: the newer book wins
+/// on both sides. True when this machine's book changed.
+pub fn sync_projects() -> Result<bool> {
+    let me = me()?;
+    let mut changed = false;
+    for p in peers()?.into_iter().filter(|p| p.verified && online(p)) {
+        if NO_PROJECTS.lock().unwrap().as_ref().and_then(|m| m.get(&p.id)).map(|t| t.elapsed() < Duration::from_secs(600)).unwrap_or(false) {
+            continue;
+        }
+        let mine = crate::projects::load();
+        let book = serde_json::to_value(crate::projects::to_wire(&mine, &me.id))?;
+        match ask(&p, &Request::Projects { book }) {
+            Ok(Response::Projects { book }) => {
+                if let Ok(theirs) = serde_json::from_value::<crate::projects::Book>(book) {
+                    if theirs.updated > mine.updated {
+                        crate::projects::adopt(&crate::projects::from_wire(&theirs, &me.id))?;
+                        changed = true;
+                    }
+                }
+            }
+            Err(PeerError::Offline(_)) => {}
+            // it closed on a request it does not know, or said no: leave it be for ten minutes
+            _ => {
+                NO_PROJECTS.lock().unwrap().get_or_insert_with(Default::default).insert(p.id.clone(), Instant::now());
+            }
+        }
+    }
+    Ok(changed)
+}
+
 pub fn mirror(store: &Store) -> Result<usize> {
     let peers = peers()?;
     if peers.is_empty() {
@@ -843,6 +889,43 @@ mod tests {
         assert!(!refused_here("no address: not seen on the network and none set by hand"));
         assert!(!refused_here("192.168.71.39:47831: Connection refused (os error 61)"));
         assert!(!refused_here("192.168.71.39:47831: connection timed out"));
+    }
+
+    /// Two machines compare project books: the one changed later is kept on both, and what one
+    /// calls "this machine" is the other machine to the other.
+    #[test]
+    fn the_newer_project_book_wins_on_both_machines() {
+        use crate::projects::{self, Project};
+        let dir = std::env::temp_dir().join(format!("dispatch-projects-sync-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let me = me().unwrap();
+        let mut mine = projects::Book::default();
+        mine.order = vec!["p-1".into()];
+        mine.updated = 100;
+        projects::adopt(&mine).unwrap();
+
+        // an older book from the other machine changes nothing here, and it is told ours
+        let mut theirs = projects::Book::default();
+        theirs.order = vec!["p-2".into()];
+        theirs.updated = 50;
+        let answer = take_projects(serde_json::to_value(&theirs).unwrap()).unwrap();
+        assert_eq!(answer["order"][0], "p-1");
+        assert_eq!(projects::load().updated, 100);
+
+        // a newer one is kept: its folder on this machine is filed as this machine's
+        theirs.updated = 200;
+        theirs.projects = vec![Project { id: "p-2".into(), name: "Shop".into(), folders: vec![format!("{}|/code/shop", me.id), "other|/work/shop".into()] }];
+        let answer = take_projects(serde_json::to_value(&theirs).unwrap()).unwrap();
+        let kept = projects::load();
+        assert_eq!(kept.updated, 200);
+        assert_eq!(kept.projects[0].folders, vec!["|/code/shop".to_string(), "other|/work/shop".to_string()]);
+        assert_eq!(answer["projects"][0]["folders"][0], format!("{}|/code/shop", me.id), "on the wire this machine goes by its id");
+
+        // something that is not a book is not kept
+        assert!(take_projects(serde_json::json!("nonsense")).is_ok());
+        assert_eq!(projects::load().updated, 200);
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

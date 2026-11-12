@@ -425,6 +425,14 @@ const zh = {
   'proj.no': '不是',
   'proj.dragTip': '拖到另一个项目上，可以归到一起',
   'proj.pick': '归到项目',
+  'setup.grokSections': 'Bot 在侧栏里怎么分组',
+  'setup.grokSections.start': '照它开始',
+  'setup.grokSections.follow': '始终跟它一致',
+  'setup.grokSections.off': '不用它的',
+  'setup.grokSections.startSub': '一开始按 Grok Bot 自己侧栏里的分组来；你在 Dispatch 里挪过的，以你挪的为准。',
+  'setup.grokSections.followSub': '始终和 Grok Bot 自己侧栏里的分组一致；在 Dispatch 里挪动 Bot 不起作用。',
+  'setup.grokSections.offSub': '不读 Grok Bot 的分组，所有 Bot 放在「Grok Bot」一组里。',
+  'setup.grokSectionsFound': '现在读到 {n} 个分组。',
 }
 
 const en: Record<Key, string> = {
@@ -848,6 +856,14 @@ const en: Record<Key, string> = {
   'proj.no': 'No',
   'proj.dragTip': 'Drag onto another project to file it there',
   'proj.pick': 'File under',
+  'setup.grokSections': 'How bots are grouped in the sidebar',
+  'setup.grokSections.start': 'Start from it',
+  'setup.grokSections.follow': 'Always follow it',
+  'setup.grokSections.off': 'Do not use it',
+  'setup.grokSections.startSub': 'Bots start out grouped as in Grok Bot\'s own sidebar; what you move in Dispatch stays where you put it.',
+  'setup.grokSections.followSub': 'Bots are always grouped as in Grok Bot\'s own sidebar; moving a bot in Dispatch has no effect.',
+  'setup.grokSections.offSub': 'Grok Bot\'s groups are not read; every bot sits under “Grok Bot”.',
+  'setup.grokSectionsFound': '{n} group(s) found now.',
 }
 
 export type Key = keyof typeof zh

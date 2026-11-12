@@ -24,7 +24,12 @@ fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Co
     let contact = contacts.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id);
     json!({
         "contact": contact.map(|c| c.name.clone()),
-        "avatar": contact.and_then(|c| c.avatar.clone()),
+        "avatar": match contact.and_then(|c| c.avatar.clone()) {
+            Some(look) => json!(look),
+            // no picture chosen here: a Grok bot keeps the face its own app gave it
+            None if s.harness == crate::model::Harness::Grok && s.host.is_none() => json!(crate::grok::look(&s.id)),
+            None => Value::Null,
+        },
         "about": contact.and_then(|c| c.description.clone()),
         "provisional": contact.map(|c| c.provisional).unwrap_or(false),
         "id": s.id,
@@ -138,7 +143,7 @@ pub fn sessions(running_only: bool) -> Value {
             sug
         })
         .collect();
-    json!({ "hook_installed": hook_on, "sessions": list, "suggestions": suggestions })
+    json!({ "hook_installed": hook_on, "sessions": list, "suggestions": suggestions, "project_order": book.order })
 }
 
 /// The address book, each name with the session it points at.

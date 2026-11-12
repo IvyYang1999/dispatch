@@ -127,6 +127,7 @@ pub fn list_for_agents(mut v: Value, key: &str) -> Value {
     // merge suggestions name folders by their paths: for the app only
     if let Some(o) = v.as_object_mut() {
         o.remove("suggestions");
+        o.remove("project_order");
     }
     if let Some(a) = v.get_mut(key).and_then(|a| a.as_array_mut()) {
         for s in a.iter_mut() {
@@ -259,11 +260,11 @@ mod tests {
         let id = "cccccccc-1111-4222-8333-444455556666";
         let mut one = session_json(id);
         one["group"] = json!({ "id": "folder:|/Users/me/clients/acme/日历小插件", "name": "Calendar", "auto": false });
-        let list = json!({ "sessions": [one], "suggestions": [{ "key": "folder:|/Users/me/clients/acme/x + p-1", "from": "folder:|/Users/me/clients/acme/x", "into": "p-1" }] });
+        let list = json!({ "sessions": [one], "project_order": ["folder:|/Users/me/clients/acme/x"], "suggestions": [{ "key": "folder:|/Users/me/clients/acme/x + p-1", "from": "folder:|/Users/me/clients/acme/x", "into": "p-1" }] });
         for lvl in ["none", "basic"] {
             set_level(id, None, lvl).unwrap();
             let v = list_for_agents(list.clone(), "sessions");
-            assert!(v.get("suggestions").is_none());
+            assert!(v.get("suggestions").is_none() && v.get("project_order").is_none());
             assert!(v["sessions"][0].get("group").is_none());
             assert!(!v.to_string().contains("/Users/me/clients"), "{lvl}: no path, in any field");
             if lvl == "basic" {

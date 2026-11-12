@@ -68,6 +68,10 @@ pub enum Request {
     Cancel { letter_id: String },
     /// The last turns of one of your sessions' records, for its page.
     Transcript { session_id: String, limit: usize },
+    /// My project book (how the user files sessions), with every machine by its id. Keep
+    /// whichever of ours is newer and answer with what you have now. A machine that predates
+    /// this closes the connection, and is not asked again for a while.
+    Projects { book: serde_json::Value },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +102,7 @@ pub enum Response {
     Delivered { status: String, route: String, detail: String },
     Status { copies: Vec<RemoteCopy> },
     Transcript { turns: Vec<crate::transcript::Turn> },
+    Projects { book: serde_json::Value },
     Ok,
     Error { message: String },
 }

@@ -171,6 +171,16 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
                     let turns = discover::lookup(&session_id).map(|s| crate::transcript::recent(&s, limit.min(100))).unwrap_or_default();
                     Response::Transcript { turns }
                 }
+                Request::Projects { book } => {
+                    // how the user files sessions is theirs to change from a machine they confirmed, no other
+                    if !peer.verified {
+                        return Response::Error { message: "this pairing is not confirmed yet".into() };
+                    }
+                    match super::take_projects(book) {
+                        Ok(book) => Response::Projects { book },
+                        Err(e) => Response::Error { message: format!("{e:#}") },
+                    }
+                }
                 Request::Hello | Request::Pair { .. } => Response::Error { message: "unexpected".into() },
             }
         }

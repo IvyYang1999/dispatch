@@ -37,6 +37,25 @@ export function plain(name: string): string {
 /** A session's picture: the emoji the user chose (or the one its name, or its name in its own
  *  app, starts with) on a soft tint, else its initial on a color of its own; the user's color
  *  wins either way. */
+// A Grok bot's face, after the Grok Bot app: one of its shapes in one of its colours, with two
+// eyes. The app's own drawings are not ours to copy; these are our own outlines of the same idea.
+const BOT_COLORS: Record<string, string> = { black: '#16161a', blue: '#2f6bff', cyan: '#14b8a6', gray: '#8b8f98', green: '#22a565', orange: '#ff5b1f', violet: '#7c4dff', yellow: '#f2b01e' }
+const BOT_SHAPES: Record<string, string> = {
+  blob: '<path d="M25 4c11 0 19 6 19 17 0 13-8 23-21 23C11 44 4 36 4 25 4 13 13 4 25 4z"/>',
+  square: '<rect x="6" y="6" width="36" height="36" rx="11"/>',
+  hex: '<path d="M24 4.5 40.5 14v20L24 43.5 7.5 34V14z" stroke-width="5" stroke-linejoin="round"/>',
+  house: '<path d="M24 6 41 19.5V39a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V19.5z" stroke-width="5" stroke-linejoin="round"/>',
+  star: '<path d="m24 6 5.2 11.3 12.3 1.5-9.1 8.4 2.4 12.2L24 33.300l-10.8 6.1 2.400-12.2-9.100-8.4 12.300-1.500z" stroke-width="6" stroke-linejoin="round"/>',
+  flower: '<circle cx="24" cy="12.500" r="9"/><circle cx="35" cy="20.500" r="9"/><circle cx="30.800" cy="33.500" r="9"/><circle cx="17.200" cy="33.500" r="9"/><circle cx="13" cy="20.500" r="9"/><circle cx="24" cy="24" r="9"/>',
+  teardrop: '<path d="M24 4c8 10 15 17 15 25a15 15 0 0 1-30 0C9 21 16 14 24 4z" stroke-width="3" stroke-linejoin="round"/>',
+}
+function BotFace({ shape, color, size }: { shape: string; color?: string | null; size: number }) {
+  const fill = BOT_COLORS[color ?? ''] ?? BOT_COLORS.gray
+  const body = BOT_SHAPES[shape] ?? BOT_SHAPES.blob
+  const eyes = '<g fill="#fff" stroke="none" transform="rotate(-14 24 25)"><rect x="18.500" y="19" width="4" height="10" rx="2"/><rect x="26.500" y="19" width="4" height="10" rx="2"/></g>'
+  return <svg className="avatar avatar--bot" width={size} height={size} viewBox="0 0 48 48" aria-hidden="true" style={{ fill, stroke: fill }} dangerouslySetInnerHTML={{ __html: body + eyes }} />
+}
+
 export function Avatar({ name, look, appName, size = 24, harness, unknown }: { name: string; look?: Look | null; appName?: string | null; size?: number; harness?: string | null; unknown?: boolean }) {
   if (harness && harnessKey(harness) !== 'human') {
     return (
@@ -53,6 +72,7 @@ export function Avatar({ name, look, appName, size = 24, harness, unknown }: { n
       </span>
     )
   }
+  if (look?.bot_shape && !look.emoji) return <BotFace shape={look.bot_shape} color={look.bot_color} size={size} />
   const emoji = look?.emoji || leadingEmoji(name) || (appName ? leadingEmoji(appName) : null)
   const color = look?.color || null
   if (emoji) {
@@ -1719,6 +1739,17 @@ function Settings() {
                 <Step n={4} done={ticked('grok_skill')} onTick={tick('grok_skill')} title={t('setup.grokSkill')} sub={t('setup.grokSkillSub')}>
                   <Cmd text={t('settings.grokCmd')} />
                 </Step>
+                <div className="step step--pref">
+                  <div className="step__body">
+                    <div className="step__title">{t('setup.grokSections')}</div>
+                    <div className="step__sub">{t(`setup.grokSections.${st.grok_sections ?? 'start'}Sub` as const)}{(st.grok_sections ?? 'start') !== 'off' ? ` ${t('setup.grokSectionsFound', { n: st.grok_section_count ?? 0 })}` : ''}</div>
+                  </div>
+                  <span className="seg seg--small">
+                    {(['start', 'follow', 'off'] as const).map((m) => (
+                      <button key={m} data-active={(st.grok_sections ?? 'start') === m || undefined} onClick={() => run('grok-sections', async () => { await api.setGrokSections(m) })}>{t(`setup.grokSections.${m}` as const)}</button>
+                    ))}
+                  </span>
+                </div>
               </SetupCard>
             ) : (
               <SetupCard harness="Grok Bot" name="Grok Bot" tone="none" state={t('setup.notHere')}>
@@ -1836,8 +1867,8 @@ function Settings() {
 
 const WEEK_MS = 7 * 24 * 3600 * 1000
 const NOT_FILED = 'none'
-/** A folder or a project the user made: something can be filed under it. The bots' own group and "not filed" cannot. */
-const takesDrops = (id: string) => id !== NOT_FILED && !id.startsWith('harness:')
+/** A folder or a project the user made: something can be filed under it. The bots' own groups (Grok Bot's sections) and "not filed" cannot. */
+const takesDrops = (id: string) => id !== NOT_FILED && !id.startsWith('harness:') && !id.startsWith('grok:')
 const hostKey = (s: Session) => s.host?.id ?? ''
 
 /** A set of ids kept in this window's storage (which groups are folded). It works without storage too. */
@@ -1866,8 +1897,9 @@ function useKeptSet(key: string): [Set<string>, (id: string) => void] {
 
 interface SideGroup { id: string; name: string; auto: boolean; rows: Session[]; hosts: Set<string>; latest: number }
 
-/** Every project that has a session worth showing, the liveliest first; "not filed" last. */
-function groupsOf(sessions: Session[]): SideGroup[] {
+/** Every project that has a session worth showing: in the order the user dragged them into,
+ *  ones never placed (new ones) on top with the liveliest first, and "not filed" last. */
+function groupsOf(sessions: Session[], order: string[]): SideGroup[] {
   const by = new Map<string, SideGroup>()
   for (const s of sessions) {
     const g = s.group ?? { id: NOT_FILED, name: '', auto: true }
@@ -1879,14 +1911,15 @@ function groupsOf(sessions: Session[]): SideGroup[] {
   }
   const rank = (s: Session) => (isContact(s) ? 0 : 1)
   for (const g of by.values()) g.rows.sort((a, b) => rank(a) - rank(b) || b.last_active - a.last_active)
-  return [...by.values()].sort((a, b) => Number(a.id === NOT_FILED) - Number(b.id === NOT_FILED) || b.latest - a.latest)
+  const at = (g: SideGroup) => order.indexOf(g.id)
+  return [...by.values()].sort((a, b) => Number(a.id === NOT_FILED) - Number(b.id === NOT_FILED) || at(a) - at(b) || b.latest - a.latest)
 }
 
 type Held = { kind: 'session'; s: Session; from: string; label: string } | { kind: 'group'; from: string; label: string }
 
 /** The sidebar's list: sessions under their projects. A session, or a whole project, is dragged
  *  onto another project to file it there; nothing is merged without the user doing it. */
-function SideProjects({ sessions, suggestions, wrote, active, onOpen, reload }: { sessions: Session[]; suggestions: MergeSuggestion[]; wrote: Set<string>; active: string | null; onOpen: (address: string) => void; reload: () => Promise<void> }) {
+function SideProjects({ sessions, suggestions, order, wrote, active, onOpen, reload }: { sessions: Session[]; suggestions: MergeSuggestion[]; order: string[]; wrote: Set<string>; active: string | null; onOpen: (address: string) => void; reload: () => Promise<void> }) {
   const [closed, toggleClosed] = useKeptSet('dispatch.side.closed')
   const [all, setAll] = useState<Set<string>>(new Set())
   const [menu, setMenu] = useState<string | null>(null)
@@ -1899,7 +1932,7 @@ function SideProjects({ sessions, suggestions, wrote, active, onOpen, reload }: 
 
   const now = Date.now()
   const shown = sessions.filter((s) => isContact(s) || s.running || now - s.last_active < WEEK_MS || wrote.has(s.id))
-  const groups = groupsOf(shown)
+  const groups = groupsOf(shown, order)
   const nameOf = (id: string) => groups.find((g) => g.id === id)?.name ?? ''
 
   const act = async (f: () => Promise<unknown>) => {
@@ -1934,6 +1967,14 @@ function SideProjects({ sessions, suggestions, wrote, active, onOpen, reload }: 
       return
     }
     if (over === 'new' || over === h.from) return
+    // dropped between two projects: that is its place from now on
+    if (over === 'end' || over.startsWith('before:')) {
+      const ids = groups.map((g) => g.id).filter((id) => id !== h.from && id !== NOT_FILED)
+      const i = over === 'end' ? -1 : ids.indexOf(over.slice('before:'.length))
+      ids.splice(i < 0 ? ids.length : i, 0, h.from)
+      await act(() => api.projectOrder(ids))
+      return
+    }
     const into = nameOf(over)
     await act(() => api.projectMerge(h.from, over))
     // a folder that was merged in can be taken out again; two made projects stay merged
@@ -1949,7 +1990,8 @@ function SideProjects({ sessions, suggestions, wrote, active, onOpen, reload }: 
       if (!cur.on && Math.hypot(ev.clientX - cur.x, ev.clientY - cur.y) < 6) return
       cur.on = true
       const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('[data-drop]')?.getAttribute('data-drop') ?? null
-      setDrag({ label: cur.label, kind: cur.kind, x: ev.clientX, y: ev.clientY, over: under && under !== cur.from && !(cur.kind === 'group' && under === 'new') ? under : null })
+      const slot = !!under && (under === 'end' || under.startsWith('before:'))
+      setDrag({ label: cur.label, kind: cur.kind, x: ev.clientX, y: ev.clientY, over: under && under !== cur.from && under !== `before:${cur.from}` && (cur.kind === 'group' ? under !== 'new' : !slot) ? under : null })
     }
     const up = (ev: PointerEvent) => {
       window.removeEventListener('pointermove', move)
@@ -1964,7 +2006,8 @@ function SideProjects({ sessions, suggestions, wrote, active, onOpen, reload }: 
       setTimeout(() => (justDragged.current = false), 0)
       if (ev.type === 'pointercancel') return
       const under = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('[data-drop]')?.getAttribute('data-drop')
-      if (under) void drop(cur, under)
+      const slot = !!under && (under === 'end' || under.startsWith('before:'))
+      if (under && (cur.kind === 'group' || !slot)) void drop(cur, under)
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -1999,7 +2042,9 @@ function SideProjects({ sessions, suggestions, wrote, active, onOpen, reload }: 
           const rows = all.has(g.id) ? g.rows : g.rows.slice(0, 5)
           const can = takesDrops(g.id)
           return (
-            <div key={g.id} className="proj" data-drop={can ? g.id : undefined} data-over={(drag?.over === g.id) || undefined}>
+            <div key={g.id} className="projwrap">
+            <div className="projslot" data-drop={g.id === NOT_FILED ? undefined : `before:${g.id}`} data-over={(drag?.over === `before:${g.id}`) || undefined} />
+            <div className="proj" data-drop={can ? g.id : undefined} data-over={(drag?.over === g.id) || undefined}>
               {renaming?.id === g.id ? (
                 <form className="proj__form" onSubmit={(e) => { e.preventDefault(); const r = renaming; setRenaming(null); if (r.name.trim()) void act(() => api.projectRename(r.id, r.name)) }}>
                   <input className="input" autoFocus value={renaming.name} onChange={(e) => setRenaming({ id: g.id, name: e.target.value })} onBlur={() => setRenaming(null)} onKeyDown={(e) => e.key === 'Escape' && setRenaming(null)} />
@@ -2038,8 +2083,10 @@ function SideProjects({ sessions, suggestions, wrote, active, onOpen, reload }: 
                 </button>
               )}
             </div>
+            </div>
           )
         })}
+        <div className="projslot" data-drop="end" data-over={(drag?.over === 'end') || undefined} />
         {drag?.kind === 'session' && (
           <div className="proj proj--new" data-drop="new" data-over={(drag.over === 'new') || undefined}>＋ {t('proj.new')}</div>
         )}
@@ -2107,6 +2154,7 @@ export function App() {
   const [composeTo, setComposeTo] = useState<string | undefined>(undefined)
   const [live, setLive] = useState<Session[]>([])
   const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([])
+  const [order, setOrder] = useState<string[]>([])
   const [wrote, setWrote] = useState<Set<string>>(new Set())
   const [queued, setQueued] = useState(0)
   const [pick, setPick] = useState<string | null>(null)
@@ -2145,6 +2193,7 @@ export function App() {
       const [s, f] = await Promise.all([api.sessions(false), api.feed(100)])
       setLive(s.sessions)
       setSuggestions(s.suggestions ?? [])
+      setOrder(s.project_order ?? [])
       setWrote(new Set(f.dispatches.flatMap((d) => [d.from, ...d.recipients.map((r) => r.to)])))
       // only what waits on the user: a message held for review, or one held for approval
       setQueued(f.dispatches.filter((d) => d.recipients.some((r) => r.kind === 'review' || r.kind === 'held')).length)
@@ -2179,7 +2228,7 @@ export function App() {
             </button>
           ))}
         </div>
-        <SideProjects sessions={live} suggestions={suggestions} wrote={wrote} active={screen === 'session' ? sessionId : null} onOpen={openPage} reload={tick} />
+        <SideProjects sessions={live} suggestions={suggestions} order={order} wrote={wrote} active={screen === 'session' ? sessionId : null} onOpen={openPage} reload={tick} />
         <div className="side__foot">
           <button className="nav" data-active={screen === 'settings' || undefined} onClick={() => setScreen('settings')}>
             <span className="nav__icon"><Icon name="settings" size={17} /></span>

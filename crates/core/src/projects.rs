@@ -9,7 +9,13 @@
 //! - `projects`: the ones the user made or changed, each with a name and the folders filed
 //!   under it (`<machine>|<path>`, the machine empty for this one);
 //! - `moved`: sessions put somewhere by hand (`<machine>|<session id>` to a project id);
-//! - `dismissed`: suggestions the user turned down.
+//! - `dismissed`: suggestions the user turned down;
+//! - `order`: the projects in the order the user dragged them into;
+//! - `updated`: when the user last changed any of it.
+//!
+//! Paired machines keep one book between them: they compare `updated` and the newer book wins
+//! on both (see `peer::sync_projects`). On the wire every machine goes by its id; on disk the
+//! machine the file is on is the empty id, so `to_wire` / `from_wire` translate.
 //!
 //! Dispatch only ever suggests (two folders with the same name on two machines); it never
 //! merges on its own.
@@ -37,6 +43,16 @@ pub struct Book {
     pub moved: BTreeMap<String, String>,
     #[serde(default)]
     pub dismissed: Vec<String>,
+    /// Group ids in the order the user put them; a group not listed is new and goes on top.
+    #[serde(default)]
+    pub order: Vec<String>,
+    /// When the user last changed the book (ms since 1970): which copy is newer.
+    #[serde(default)]
+    pub updated: i64,
+    /// A setting, not part of the book: Grok bots are always filed as in the Grok Bot app,
+    /// whatever was moved by hand (`grok::sections_mode` is `follow`).
+    #[serde(skip)]
+    pub follow_grok: bool,
 }
 
 /// Where a session is filed. `auto` is a folder nobody has touched: it exists only as long as a
@@ -50,6 +66,8 @@ pub struct Group {
 
 const FOLDER: &str = "folder:";
 const GROK: &str = "harness:grok";
+/// A section of the Grok Bot app's sidebar, by its name.
+const GROK_SECTION: &str = "grok:";
 const NONE: &str = "none";
 
 fn path() -> PathBuf {
@@ -57,7 +75,9 @@ fn path() -> PathBuf {
 }
 
 pub fn load() -> Book {
-    load_at(&path())
+    let mut book = load_at(&path());
+    book.follow_grok = crate::grok::sections_mode() == "follow";
+    book
 }
 
 pub fn load_at(path: &std::path::Path) -> Book {
@@ -100,6 +120,9 @@ impl Book {
     /// Where this session is filed: where the user put it, else the project its folder is
     /// filed under, else its folder; a bot has no folder and stands with the other bots.
     pub fn group_of(&self, s: &Session) -> Group {
+        if self.follow_grok && s.harness == Harness::Grok && s.cwd.is_none() {
+            return self.home_of(s);
+        }
         if let Some(p) = self.moved.get(&session_key(s)).and_then(|id| self.project(id)) {
             return Group { id: p.id.clone(), name: p.name.clone(), auto: false };
         }
@@ -113,7 +136,11 @@ impl Book {
                 Some(p) => Group { id: p.id.clone(), name: p.name.clone(), auto: false },
                 None => Group { name: folder_name(&f), id: format!("{FOLDER}{f}"), auto: true },
             },
-            None if s.harness == Harness::Grok => Group { id: GROK.into(), name: "Grok Bot".into(), auto: true },
+            // a bot has no folder: it sits where the Grok Bot app's sidebar has it, else with the other bots
+            None if s.harness == Harness::Grok => match s.project.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                Some(section) => Group { id: format!("{GROK_SECTION}{section}"), name: section.to_string(), auto: true },
+                None => Group { id: GROK.into(), name: "Grok Bot".into(), auto: true },
+            },
             None => Group { id: NONE.into(), name: String::new(), auto: true },
         }
     }
@@ -131,6 +158,12 @@ impl Book {
         }
         let new = format!("p-{}", &uuid::Uuid::new_v4().simple().to_string()[..10]);
         self.projects.push(Project { id: new.clone(), name: folder_name(folder), folders: vec![folder.to_string()] });
+        // it keeps the place the folder had
+        for o in &mut self.order {
+            if o == id {
+                *o = new.clone();
+            }
+        }
         Ok(new)
     }
 
@@ -234,7 +267,7 @@ impl Book {
         let mut groups: Vec<Group> = vec![];
         for s in sessions {
             let g = self.group_of(s);
-            if !g.name.is_empty() && g.id != GROK && !groups.iter().any(|x| x.id == g.id) {
+            if !g.name.is_empty() && g.id != GROK && !g.id.starts_with(GROK_SECTION) && !groups.iter().any(|x| x.id == g.id) {
                 groups.push(g);
             }
         }
@@ -258,13 +291,64 @@ impl Book {
     }
 }
 
-/// Change the book on disk.
+/// Change the book on disk, and note when: the newer book is the one paired machines keep.
 pub fn change<T>(f: impl FnOnce(&mut Book) -> Result<T>) -> Result<T> {
     let p = path();
     let mut book = load_at(&p);
     let out = f(&mut book)?;
+    book.updated = crate::model::now_ms().max(book.updated + 1);
     save_at(&p, &book)?;
     Ok(out)
+}
+
+/// Take another machine's book as this machine's, as it is (its `updated` included).
+pub fn adopt(book: &Book) -> Result<()> {
+    save_at(&path(), book)
+}
+
+/// `<machine>|<rest>` with the machine renamed.
+fn rehost(key: &str, f: &impl Fn(&str) -> String) -> String {
+    match key.split_once('|') {
+        Some((host, rest)) => format!("{}|{rest}", f(host)),
+        None => key.to_string(),
+    }
+}
+
+/// A group id with its machine renamed: only a folder's id names one.
+fn rehost_id(id: &str, f: &impl Fn(&str) -> String) -> String {
+    match id.strip_prefix(FOLDER) {
+        Some(folder) => format!("{FOLDER}{}", rehost(folder, f)),
+        None => id.to_string(),
+    }
+}
+
+fn rehosted(book: &Book, f: impl Fn(&str) -> String) -> Book {
+    Book {
+        projects: book.projects.iter().map(|p| Project { id: p.id.clone(), name: p.name.clone(), folders: p.folders.iter().map(|x| rehost(x, &f)).collect() }).collect(),
+        moved: book.moved.iter().map(|(k, v)| (rehost(k, &f), v.clone())).collect(),
+        dismissed: book
+            .dismissed
+            .iter()
+            .map(|k| {
+                let mut pair: Vec<String> = k.split(" + ").map(|id| rehost_id(id, &f)).collect();
+                pair.sort();
+                pair.join(" + ")
+            })
+            .collect(),
+        order: book.order.iter().map(|id| rehost_id(id, &f)).collect(),
+        updated: book.updated,
+        follow_grok: book.follow_grok,
+    }
+}
+
+/// The book as another machine reads it: every machine by its id, this one (`me`) included.
+pub fn to_wire(book: &Book, me: &str) -> Book {
+    rehosted(book, |h| if h.is_empty() { me.to_string() } else { h.to_string() })
+}
+
+/// A book from the wire as this machine (`me`) keeps it: this machine is the empty id.
+pub fn from_wire(book: &Book, me: &str) -> Book {
+    rehosted(book, |h| if h == me { String::new() } else { h.to_string() })
 }
 
 /// The folder a session's own folder key names: what "file its whole folder" acts on.
@@ -371,6 +455,25 @@ mod tests {
     }
 
     #[test]
+    fn a_bot_starts_where_the_grok_app_has_it_and_can_be_made_to_stay_there() {
+        let mut book = Book::default();
+        let mut bot = session("g", None, None, Harness::Grok);
+        bot.project = Some("运营".into());
+        let home = book.group_of(&bot);
+        assert_eq!((home.id.as_str(), home.name.as_str(), home.auto), ("grok:运营", "运营", true));
+        // moved by hand, it stays moved
+        let docs = book.group_of(&session("o", Some("/code/docs"), None, Harness::Claude)).id;
+        let id = book.move_session(&bot, &docs, None).unwrap();
+        assert_eq!(book.group_of(&bot).id, id);
+        // unless the user asked for bots to always be filed as in Grok Bot
+        book.follow_grok = true;
+        assert_eq!(book.group_of(&bot).id, "grok:运营");
+        // a section is not something to file other sessions under, and is never suggested for merging
+        assert!(book.move_session(&session("x", Some("/code/运营"), None, Harness::Claude), "grok:运营", None).is_err());
+        assert!(book.suggestions(&[bot.clone(), session("x", Some("/code/运营"), None, Harness::Claude)]).is_empty());
+    }
+
+    #[test]
     fn a_whole_folder_can_follow_a_session() {
         let mut book = Book::default();
         let a = session("a", Some("/code/shop"), None, Harness::Claude);
@@ -398,6 +501,43 @@ mod tests {
         book.merge(s[0]["from"].as_str().unwrap(), s[0]["into"].as_str().unwrap()).unwrap();
         assert!(book.suggestions(&all).is_empty(), "merged: nothing left to suggest");
         assert_eq!(book.group_of(&all[0]).id, book.group_of(&all[1]).id);
+    }
+
+    /// The same book on two machines: what is "this machine" on one is the other machine on the
+    /// other, in folders, moved sessions, the order and turned-down suggestions alike.
+    #[test]
+    fn a_book_reads_the_same_from_both_machines() {
+        let mut here = Book::default();
+        let mine = session("a", Some("/code/shop"), None, Harness::Claude);
+        let theirs = session("c", Some("/work/shop"), Some("mini"), Harness::Codex);
+        let id = here.merge(&here.group_of(&theirs).id, &here.group_of(&mine).id).unwrap();
+        here.move_session(&session("solo", Some("/code/notes"), None, Harness::Claude), &id, None).unwrap();
+        here.order = vec![id.clone(), "folder:|/code/notes".into(), "folder:mini|/work/other".into()];
+        here.dismissed = vec!["folder:mini|/work/x + folder:|/code/x".into()];
+        here.updated = 42;
+
+        // as the Mac mini keeps it: the book travels with every machine named, and the mini is "here" there
+        let there = from_wire(&to_wire(&here, "laptop"), "mini");
+        let as_mini_sees_mine = session("a", Some("/code/shop"), Some("laptop"), Harness::Claude);
+        let as_mini_sees_its_own = session("c", Some("/work/shop"), None, Harness::Codex);
+        assert_eq!(there.group_of(&as_mini_sees_mine).id, id);
+        assert_eq!(there.group_of(&as_mini_sees_its_own).id, id);
+        assert_eq!(there.group_of(&session("solo", Some("/code/notes"), Some("laptop"), Harness::Claude)).id, id);
+        assert_eq!(there.order, vec![id.clone(), "folder:laptop|/code/notes".to_string(), "folder:|/work/other".to_string()]);
+        assert_eq!(there.dismissed, vec!["folder:laptop|/code/x + folder:|/work/x".to_string()], "the pair is sorted again under its new names");
+        assert_eq!(there.updated, 42);
+        // and back again it is the book it was
+        assert_eq!(from_wire(&to_wire(&there, "mini"), "laptop"), here);
+    }
+
+    #[test]
+    fn a_folder_made_a_project_keeps_its_place_in_the_order() {
+        let mut book = Book::default();
+        let a = session("a", Some("/code/shop"), None, Harness::Claude);
+        let folder = book.group_of(&a).id;
+        book.order = vec!["folder:|/code/docs".into(), folder.clone()];
+        let id = book.rename(&folder, "Storefront").unwrap();
+        assert_eq!(book.order, vec!["folder:|/code/docs".to_string(), id]);
     }
 
     #[test]

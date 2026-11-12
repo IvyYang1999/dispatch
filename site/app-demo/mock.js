@@ -80,7 +80,8 @@
       app_name: o.app ?? o.name,
       harness: o.harness,
       title: null,
-      project: o.project,
+      project: o.section ?? o.project,
+      section: o.section ?? null,
       cwd: o.harness === 'Grok Bot' ? null : `/Users/you/code/${o.project}`,
       cwd_short: o.harness === 'Grok Bot' ? null : `~/code/${o.project}`,
       running: o.running !== false,
@@ -99,7 +100,8 @@
     const sessions = [
       session('web', { id: '3f6c1a52-8d0e-4b7a-9c11-5e2a7d90b1c4', name: 'Web', app: 'Storefront web', harness: 'Claude', project: 'storefront', ago: 2, about: L('The storefront frontend', '商城前端'), avatar: { emoji: '🛍️', color: '#e8efff' } }),
       session('api', { id: '8b21d7e0-4c5f-4e1d-a3b6-0f9c2e7a6d18', name: 'API', app: 'Orders API', harness: 'Codex', project: 'storefront-api', ago: 4, about: L('Orders and payments', '订单和支付接口'), avatar: { emoji: '🧾', color: '#e6f6ec' }, reach: reachCodex }),
-      session('scout', { id: 'scout', name: 'Scout', harness: 'Grok Bot', project: 'research', ago: 12, about: L('Looks things up and watches the news', '查资料、盯新闻'), avatar: { emoji: '🔭', color: '#fff4dc' } }),
+      session('scout', { id: 'scout', name: 'Scout', harness: 'Grok Bot', project: 'research', ago: 12, about: L('Looks things up and watches the news', '查资料、盯新闻'), section: L('Research', '调研'), avatar: { bot_shape: 'blob', bot_color: 'orange' } }),
+      session('news', { id: 'news', name: L('Morning news', '新闻早报'), harness: 'Grok Bot', project: 'research', ago: 50, contact: false, section: L('Research', '调研'), avatar: { bot_shape: 'flower', bot_color: 'cyan' } }),
       session('docs', { id: 'c47e9a13-2b6d-4f80-8e5a-7d1f3b0c9e26', name: 'Docs', app: 'Help center', harness: 'Claude', project: 'help-center', ago: 26 * 60, running: false, desktop: false, about: L('Writes the help center', '写帮助文档'), avatar: { emoji: '📚', color: '#f1f1ef' }, reach: reachClosed }),
       session('release', { id: '019b3c7d-55aa-7e02-b4f1-6a8d0c2e9f37', name: 'Release', app: 'Ship builds', harness: 'Codex', project: 'storefront', host: MINI, ago: 7, about: L('Signs and ships the builds', '签名和发版'), avatar: { emoji: '🚀', color: '#fdeaea' }, reach: reachCodex }),
       session('ios', { id: '5d0a8f31-9e4c-4a6b-b2d7-1c3e5f7a9b02', name: 'iOS app', harness: 'Claude', project: 'storefront-ios', host: MINI, ago: 1, status: 'busy', contact: false }),
@@ -141,11 +143,12 @@
   const folderName = (f) => f.split('|').slice(1).join('|').split('/').filter(Boolean).pop() || f
   const homeOf = (s) => {
     const f = folderOf(s)
-    if (!f) return s.harness === 'Grok Bot' ? { id: 'harness:grok', name: 'Grok Bot', auto: true } : { id: 'none', name: '', auto: true }
+    if (!f) return s.harness !== 'Grok Bot' ? { id: 'none', name: '', auto: true } : s.section && settings.grokSections !== 'off' ? { id: `grok:${s.section}`, name: s.section, auto: true } : { id: 'harness:grok', name: 'Grok Bot', auto: true }
     const p = book().projects.find((x) => x.folders.includes(f))
     return p ? { id: p.id, name: p.name, auto: false } : { id: `folder:${f}`, name: folderName(f), auto: true }
   }
   const groupOf = (s) => {
+    if (settings.grokSections === 'follow' && s.harness === 'Grok Bot') return homeOf(s)
     const p = book().projects.find((x) => x.id === book().moved[sKey(s)])
     return p ? { id: p.id, name: p.name, auto: false } : homeOf(s)
   }
@@ -469,7 +472,7 @@
         return { dispatches: heldLetter() ? [{ dispatch_id: heldLetter().dispatch, recipients: [{ kind: 'review' }] }] : [] }
       case 'sessions': {
         const all = store().sessions.filter((s) => !args.runningOnly || s.running || s.contact).map(publicSession)
-        return { hook_installed: true, sessions: all, suggestions: suggestions() }
+        return { hook_installed: true, sessions: all, suggestions: suggestions(), project_order: book().order || [] }
       }
       case 'project_move': {
         const one = store().sessions.find((x) => x.id === args.id && (x.host ? x.host.id : '') === args.host)
@@ -512,6 +515,10 @@
       case 'project_dissolve':
         book().projects = book().projects.filter((p) => p.id !== args.id)
         for (const k of Object.keys(book().moved)) if (book().moved[k] === args.id) delete book().moved[k]
+        changed()
+        return null
+      case 'project_order':
+        book().order = args.ids
         changed()
         return null
       case 'project_dismiss':
@@ -610,6 +617,8 @@
           gbot: '/usr/local/bin/gbot',
           grok_bots: 1,
           grok_error: null,
+          grok_sections: settings.grokSections || 'start',
+          grok_section_count: 1,
           store_root: '/Users/you/Library/Application Support/Dispatch',
           claude_plugin: true,
           claude_cli: '/usr/local/bin/claude',
@@ -622,6 +631,10 @@
           wake: settings.wake,
           version,
         }, hub.setupOverride || {})
+      case 'set_grok_sections':
+        settings.grokSections = args.mode
+        changed()
+        return args.mode
       case 'setup_mark':
         settings.setupDone = (settings.setupDone || []).filter((k) => k !== args.key).concat(args.done ? [args.key] : [])
         return settings.setupDone

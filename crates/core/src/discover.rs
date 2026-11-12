@@ -273,6 +273,7 @@ fn parse_codex_threads(json: &str) -> HashMap<String, CodexThread> {
 /// so they are always "running"; the list itself is remembered for a minute in `grok::state`.
 fn discover_grok(now: i64) -> Vec<Session> {
     let st = crate::grok::state();
+    let sections = if st.bots.is_empty() { vec![] } else { crate::grok::sections() };
     st.bots
         .iter()
         .filter(|b| !b.is_group)
@@ -290,7 +291,8 @@ fn discover_grok(now: i64) -> Vec<Session> {
             status: Some("cloud".into()),
             transcript: None,
             host: None,
-            project: None,
+            // the section of the app's sidebar it sits in: where it is filed to begin with
+            project: crate::grok::section_of(&sections, &b.id),
             app_name: None,
         })
         .collect()

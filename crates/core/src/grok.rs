@@ -22,6 +22,17 @@ pub struct Bot {
     pub name: String,
     pub description: String,
     pub is_group: bool,
+    /// Its face in the Grok Bot app: a colour name and a shape name (`orange`, `blob`). A bot
+    /// that never had one chosen has neither.
+    pub avatar_color: Option<String>,
+    pub avatar_shape: Option<String>,
+}
+
+/// One section of the Grok Bot app's sidebar: its name and the bots filed under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Section {
+    pub name: String,
+    pub bots: Vec<String>,
 }
 
 /// The `gbot` command: `DISPATCH_GBOT` (tests and odd installs), then PATH and the usual npm
@@ -185,9 +196,132 @@ pub fn parse_bots(stdout: &str) -> Result<Vec<Bot>> {
                 name,
                 description: str_of(b, &["description", "title"]).unwrap_or_default(),
                 is_group: b["isGroup"].as_bool().or_else(|| b["group"].as_bool()).unwrap_or(false),
+                avatar_color: str_of(b, &["avatarColor"]),
+                avatar_shape: str_of(b, &["avatarShape"]),
             })
         })
         .collect())
+}
+
+/// How the sidebar sections of the Grok Bot app are used to file its bots: `start` (the
+/// default: they start out filed as in Grok Bot, and what the user moves stays moved), `follow`
+/// (always as in Grok Bot) or `off` (the sections are not read at all).
+pub fn sections_mode() -> &'static str {
+    match crate::settings::get("grok_sections").as_ref().and_then(|v| v.as_str()) {
+        Some("follow") => "follow",
+        Some("off") => "off",
+        _ => "start",
+    }
+}
+
+pub fn set_sections_mode(mode: &str) -> Result<&'static str> {
+    let mode = match mode {
+        "follow" => "follow",
+        "off" => "off",
+        "start" => "start",
+        other => return Err(anyhow!("unknown mode: {other}")),
+    };
+    crate::settings::set("grok_sections", Value::String(mode.into()))?;
+    *SECTIONS.lock().unwrap() = None;
+    Ok(mode)
+}
+
+/// RFC 4648 Base32 without padding, either case: how the app names its cache files.
+fn base32_decode(text: &str) -> Option<Vec<u8>> {
+    let (mut bits, mut have, mut out) = (0u32, 0u32, vec![]);
+    for c in text.bytes() {
+        let v = match c.to_ascii_lowercase() {
+            c @ b'a'..=b'z' => c - b'a',
+            c @ b'2'..=b'7' => c - b'2' + 26,
+            b'=' => continue,
+            _ => return None,
+        };
+        bits = (bits << 5) | v as u32;
+        have += 5;
+        if have >= 8 {
+            have -= 8;
+            out.push((bits >> have) as u8);
+            bits &= (1 << have) - 1;
+        }
+    }
+    Some(out)
+}
+
+/// The sections in the app's cached sidebar: wherever in the JSON there is a list of things
+/// with a name and a list of agent ids. The cache is the app's own and its layout may change, so
+/// nothing more is assumed; anything else reads as "no sections".
+pub fn sections_in(text: &str) -> Vec<Section> {
+    fn find(v: &Value) -> Option<Vec<Section>> {
+        if let Some(list) = v.as_array() {
+            let found: Vec<Section> = list
+                .iter()
+                .filter_map(|x| {
+                    let bots: Vec<String> = x["agentIds"].as_array()?.iter().filter_map(|i| i.as_str().map(str::to_string)).collect();
+                    Some(Section { name: x["name"].as_str()?.trim().to_string(), bots })
+                })
+                .collect();
+            if !found.is_empty() {
+                return Some(found);
+            }
+            return list.iter().find_map(find);
+        }
+        v.as_object()?.values().find_map(find)
+    }
+    serde_json::from_str::<Value>(text).ok().as_ref().and_then(find).unwrap_or_default()
+}
+
+/// The sidebar sections of the Grok Bot app on this machine, from the cache it keeps of them
+/// (the file whose name, read back from Base32, ends in `.sidebar.last-sections`). Read-only,
+/// and only this one file is opened: nothing that holds the session.
+fn read_sections() -> Vec<Section> {
+    let Ok(rd) = std::fs::read_dir(data_dir().join("sand-client-persistence")) else { return vec![] };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Some(stem) = name.strip_suffix(".blob") else { continue };
+        let key = base32_decode(stem).and_then(|b| String::from_utf8(b).ok()).unwrap_or_default();
+        if !key.ends_with(".sidebar.last-sections") {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(e.path()) {
+            let found = sections_in(&text);
+            if !found.is_empty() {
+                return found;
+            }
+        }
+    }
+    vec![]
+}
+
+static SECTIONS: Mutex<Option<(Instant, Vec<Section>)>> = Mutex::new(None);
+
+/// The sections, read at most once a minute; none when the user turned them off.
+pub fn sections() -> Vec<Section> {
+    if sections_mode() == "off" {
+        return vec![];
+    }
+    let mut kept = SECTIONS.lock().unwrap();
+    if let Some((at, list)) = kept.as_ref() {
+        if at.elapsed() < Duration::from_secs(60) {
+            return list.clone();
+        }
+    }
+    let list = read_sections();
+    *kept = Some((Instant::now(), list.clone()));
+    list
+}
+
+/// The named section a bot is filed under in the app, if any.
+pub fn section_of(sections: &[Section], bot_id: &str) -> Option<String> {
+    sections.iter().find(|s| !s.name.is_empty() && s.bots.iter().any(|b| b.eq_ignore_ascii_case(bot_id))).map(|s| s.name.clone())
+}
+
+/// A bot's face as the app draws it (`{ bot_shape, bot_color }`), when it has one. From the
+/// list already in memory: this never asks the gateway.
+pub fn look(bot_id: &str) -> Option<Value> {
+    let st = STATE.lock().unwrap();
+    let b = st.as_ref()?.bots.iter().find(|b| b.id.eq_ignore_ascii_case(bot_id))?;
+    let shape = b.avatar_shape.clone().filter(|s| !s.is_empty())?;
+    Some(serde_json::json!({ "bot_shape": shape, "bot_color": b.avatar_color.clone().filter(|c| !c.is_empty()) }))
 }
 
 pub fn list_bots() -> Result<Vec<Bot>> {
@@ -309,6 +443,34 @@ mod tests {
         assert!(a[1].is_group);
         let b = parse_bots("Loaded 1 bot\n{\"bots\":[{\"id\":\"b2\",\"title\":\"Writer\"}]}").unwrap();
         assert_eq!(b[0].name, "Writer");
+    }
+
+    #[test]
+    fn a_bot_carries_the_face_the_app_gave_it() {
+        let a = parse_bots(r#"[{"id":"b1","name":"boss","avatarColor":"orange","avatarShape":"blob"},{"id":"b2","name":"plain"}]"#).unwrap();
+        assert_eq!((a[0].avatar_color.as_deref(), a[0].avatar_shape.as_deref()), (Some("orange"), Some("blob")));
+        assert_eq!((a[1].avatar_color.as_deref(), a[1].avatar_shape.as_deref()), (None, None), "one that never chose a face has none");
+    }
+
+    #[test]
+    fn sections_are_found_wherever_the_cache_keeps_them() {
+        let wrapped = r#"{"schemaVersion":3,"value":{"sections":[{"id":"s1","name":"管理","agentIds":["b1","b2"]},{"id":"s2","name":"","agentIds":["b9"]}]}}"#;
+        let bare = r#"{"schemaVersion":3,"value":[{"id":"s1","name":"运营","agentIds":["b3"]}]}"#;
+        let s = sections_in(wrapped);
+        assert_eq!(s.len(), 2);
+        assert_eq!(section_of(&s, "B1").as_deref(), Some("管理"));
+        assert_eq!(section_of(&s, "b9"), None, "a section without a name files nothing");
+        assert_eq!(section_of(&sections_in(bare), "b3").as_deref(), Some("运营"));
+        assert!(sections_in("not json").is_empty());
+        assert!(sections_in(r#"{"schemaVersion":4,"value":{"something":"else"}}"#).is_empty(), "a layout this does not know reads as no sections");
+    }
+
+    #[test]
+    fn cache_file_names_read_back_from_base32() {
+        // "sidebar.last-sections" in unpadded lowercase Base32
+        assert_eq!(base32_decode("onuwizlcmfzc43dbon2c243fmn2gs33oom").and_then(|b| String::from_utf8(b).ok()).as_deref(), Some("sidebar.last-sections"));
+        assert_eq!(base32_decode("MZXW6").as_deref(), Some(&b"foo"[..]));
+        assert_eq!(base32_decode("not base32!"), None);
     }
 
     #[test]

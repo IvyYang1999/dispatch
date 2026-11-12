@@ -718,6 +718,8 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "gbot": grok.cli.map(|p| p.to_string_lossy().to_string()),
             "grok_bots": grok.bots.len(),
             "grok_error": grok.error,
+            "grok_sections": dispatch_core::grok::sections_mode(),
+            "grok_section_count": dispatch_core::grok::sections().iter().filter(|s| !s.name.is_empty()).count(),
             "store_root": Store::open().root().to_string_lossy(),
             "claude_plugin": plugin_installed,
             "claude_cli": dispatch_core::claude::executable().map(|p| p.to_string_lossy().to_string()),
@@ -844,7 +846,7 @@ async fn project_move(app: AppHandle, host: String, id: String, target: String, 
         Ok(json!({ "group": group, "folder": folder, "behind": behind }))
     })
     .await;
-    let _ = app.emit("dispatch:changed", ());
+    share_projects(&app);
     r
 }
 
@@ -852,7 +854,7 @@ async fn project_move(app: AppHandle, host: String, id: String, target: String, 
 #[tauri::command]
 async fn project_folder(app: AppHandle, folder: String, target: String) -> Result<String, String> {
     let r = blocking(move || dispatch_core::projects::change(|b| b.move_folder(&folder, &target)).map_err(err)).await;
-    let _ = app.emit("dispatch:changed", ());
+    share_projects(&app);
     r
 }
 
@@ -867,7 +869,7 @@ async fn project_release(app: AppHandle, folder: String) -> Result<(), String> {
         .map_err(err)
     })
     .await;
-    let _ = app.emit("dispatch:changed", ());
+    share_projects(&app);
     r
 }
 
@@ -875,14 +877,14 @@ async fn project_release(app: AppHandle, folder: String) -> Result<(), String> {
 #[tauri::command]
 async fn project_merge(app: AppHandle, from: String, into: String) -> Result<String, String> {
     let r = blocking(move || dispatch_core::projects::change(|b| b.merge(&from, &into)).map_err(err)).await;
-    let _ = app.emit("dispatch:changed", ());
+    share_projects(&app);
     r
 }
 
 #[tauri::command]
 async fn project_rename(app: AppHandle, id: String, name: String) -> Result<String, String> {
     let r = blocking(move || dispatch_core::projects::change(|b| b.rename(&id, &name)).map_err(err)).await;
-    let _ = app.emit("dispatch:changed", ());
+    share_projects(&app);
     r
 }
 
@@ -897,14 +899,41 @@ async fn project_dissolve(app: AppHandle, id: String) -> Result<(), String> {
         .map_err(err)
     })
     .await;
-    let _ = app.emit("dispatch:changed", ());
+    share_projects(&app);
     r
+}
+
+/// The projects in the order the user dragged them into.
+#[tauri::command]
+async fn project_order(app: AppHandle, ids: Vec<String>) -> Result<(), String> {
+    let r = blocking(move || {
+        dispatch_core::projects::change(|b| {
+            b.order = ids;
+            Ok(())
+        })
+        .map_err(err)
+    })
+    .await;
+    share_projects(&app);
+    r
+}
+
+/// The user changed how sessions are filed: tell the window, and the paired machines (in the
+/// background: a machine that is off must not hold the click up).
+fn share_projects(app: &AppHandle) {
+    let _ = app.emit("dispatch:changed", ());
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if peer::sync_projects().unwrap_or(false) {
+            let _ = app.emit("dispatch:changed", ());
+        }
+    });
 }
 
 /// Turn a merge suggestion down for good.
 #[tauri::command]
-async fn project_dismiss(key: String) -> Result<(), String> {
-    blocking(move || {
+async fn project_dismiss(app: AppHandle, key: String) -> Result<(), String> {
+    let r = blocking(move || {
         dispatch_core::projects::change(|b| {
             if !b.dismissed.contains(&key) {
                 b.dismissed.push(key);
@@ -913,7 +942,17 @@ async fn project_dismiss(key: String) -> Result<(), String> {
         })
         .map_err(err)
     })
-    .await
+    .await;
+    share_projects(&app);
+    r
+}
+
+/// How Grok Bot's own sidebar sections file its bots here: start, follow or off.
+#[tauri::command]
+async fn set_grok_sections(app: AppHandle, mode: String) -> Result<String, String> {
+    let r = blocking(move || dispatch_core::grok::set_sections_mode(&mode).map(str::to_string).map_err(err)).await;
+    let _ = app.emit("dispatch:changed", ());
+    r
 }
 
 /// Tick or untick a setup step Dispatch cannot check for itself (a switch inside another app).
@@ -1270,6 +1309,10 @@ fn start_watcher(app: AppHandle) {
                 if tick % 6 == 0 {
                     let _ = ops::sweep(&Store::open());
                 }
+                // and compare project books with the paired machines every minute or so
+                if tick % 12 == 1 && peer::sync_projects().unwrap_or(false) {
+                    let _ = app.emit("dispatch:changed", ());
+                }
                 tick = tick.wrapping_add(1);
                 if let Ok(feed) = ops::feed(&Store::open(), 200) {
                     let (snap, events) = watch::events(prev.as_ref(), &feed);
@@ -1310,7 +1353,7 @@ pub fn run() {
         .manage(Waits::default())
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
-            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, setup_mark, project_move, project_folder, project_merge, project_release, project_rename, project_dissolve, project_dismiss, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
+            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, setup_mark, set_grok_sections, project_move, project_folder, project_merge, project_order, project_release, project_rename, project_dissolve, project_dismiss, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget,
             wait_list, wait_open, wait_dismiss, set_wake, share_set

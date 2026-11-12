@@ -5,6 +5,9 @@ export type ReachLevel = 'now' | 'later' | 'none'
 export interface Look {
   emoji?: string | null
   color?: string | null
+  /** A Grok bot's face as its own app draws it: a shape name and a colour name. */
+  bot_shape?: string | null
+  bot_color?: string | null
 }
 export interface Reach {
   level: ReachLevel
@@ -137,6 +140,9 @@ export interface SetupStatus {
   gbot: string | null
   grok_bots: number
   grok_error: string | null
+  /** How Grok Bot's own sidebar sections file its bots here. */
+  grok_sections?: 'start' | 'follow' | 'off'
+  grok_section_count?: number
   store_root: string
   claude_plugin: boolean
   /** Where the `claude` program is, when Dispatch can run it to install the plugin. */
@@ -319,7 +325,8 @@ export interface OpenResult {
 }
 
 export const api = {
-  sessions: (runningOnly: boolean) => invoke<{ hook_installed: boolean; sessions: Session[]; suggestions?: MergeSuggestion[] }>('sessions', { runningOnly }),
+  sessions: (runningOnly: boolean) => invoke<{ hook_installed: boolean; sessions: Session[]; suggestions?: MergeSuggestion[]; project_order?: string[] }>('sessions', { runningOnly }),
+  projectOrder: (ids: string[]) => invoke<void>('project_order', { ids }),
   projectMove: (host: string, id: string, target: string, name?: string) => invoke<{ group: string; folder: string | null; behind: number }>('project_move', { host, id, target, name: name ?? null }),
   projectFolder: (folder: string, target: string) => invoke<string>('project_folder', { folder, target }),
   projectRelease: (folder: string) => invoke<void>('project_release', { folder }),
@@ -340,6 +347,7 @@ export const api = {
   installHook: () => invoke<string>('install_hook'),
   installCli: () => invoke<string>('install_cli'),
   installPlugin: (harness: 'claude' | 'codex') => invoke<string>('install_plugin', { harness }),
+  setGrokSections: (mode: 'start' | 'follow' | 'off') => invoke<string>('set_grok_sections', { mode }),
   setupMark: (key: string, done: boolean) => invoke<string[]>('setup_mark', { key, done }),
   updateCheck: () => invoke<UpdateCheck>('update_check'),
   updateInstall: () => invoke<void>('update_install'),
