@@ -197,6 +197,8 @@ export interface Party {
 /** One message in a conversation: a stored copy with the side that wrote it. */
 export interface ThreadMessage extends Copy {
   dispatch_id: string
+  /** Set on the message a dispatch began with: its subject. */
+  title?: string
   side: 'a' | 'b'
   /** When it happened on this machine's clock, `YYYY-MM-DD HH:MM`. */
   at: string
@@ -206,6 +208,8 @@ export interface ThreadMessage extends Copy {
 /** Two parties and everything between them, oldest message first. */
 export interface Thread {
   key: string
+  /** What they are talking about now: the subject of the latest message that began a dispatch. */
+  title?: string
   a: Party
   b: Party
   last_at: string

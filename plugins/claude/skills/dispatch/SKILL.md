@@ -51,9 +51,13 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
    Tell the user when it is `none` or when `reach.plain.todo` asks something of
    them; when `reach.fix` is `inbound`, the user can turn on immediate delivery
    for sessions that bypass permission checks in Dispatch's Settings.
-4. `dispatch_send` with `to` (one or more sessions) and a `text` written like a
-   brief to a colleague: what you need, any ids or paths, by when, and that they
-   can answer with `dispatch_reply`. Keep the dispatch_id from the result.
+4. `dispatch_send` with `to` (one or more sessions), a `title` and a `text`.
+   The `title` is a subject line of a few words ("Ship 0.1.16", "Tax preview
+   endpoint"): it goes out as the first line and is what the user sees in
+   Dispatch's list, so always give one (`--title` on the command line). Write
+   the `text` like a brief to a colleague: what you need, any ids or paths, by
+   when, and that they can answer with `dispatch_reply`. Keep the dispatch_id
+   from the result.
    If the user reviews messages before they leave, a recipient comes back with
    route `review`: the message is held on this machine until the user chooses
    Send in Dispatch's review window (the user decides when this applies:

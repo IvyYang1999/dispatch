@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { api, type Group, type Kind, type Look, type MergeSuggestion, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
+import { api, type Group, type Kind, type Look, type MergeSuggestion, type WaitItem, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
 type Screen = 'feed' | 'agents' | 'compose' | 'settings' | 'session'
@@ -492,36 +492,94 @@ const passes = (th: Thread, f: Filter) => f === 'all' || (f === 'failed' ? th.at
 
 // The feed: one row per pair who wrote to each other, both as equals; the conversation between
 // them on the right, oldest first, each message with where it stands.
-/** Messages held for the user's review, at the top of the feed: the way back to the review
- *  window after it was closed, which keeps them held. */
-function ReviewStrip() {
+/** What waits on the user, at the top of the feed, each with the one thing to press: a message
+ *  held for review, one from a machine not confirmed yet, one that was not delivered, and a
+ *  session Dispatch could not open by itself. Nothing else is listed here. */
+function NeedsYou({ threads, onPick, act }: { threads: Thread[]; onPick: (key: string) => void; act: (f: () => Promise<unknown>) => void }) {
   useLang()
-  const [n, setN] = useState(0)
+  const [waits, setWaits] = useState<WaitItem[]>([])
+  const [all, setAll] = useState(false)
   useEffect(() => {
-    const load = () => api.reviewList().then((l) => setN(l.length)).catch(() => {})
+    const load = () => api.waitList().then((w) => setWaits(w.waiting.filter((x) => x.why))).catch(() => {})
     load()
     const h = setInterval(load, 5000)
-    const uns = ['review:changed', 'dispatch:changed'].map((e) => listen(e, () => load()))
+    const un = listen('dispatch:changed', () => load())
     return () => {
       clearInterval(h)
-      uns.forEach((un) => un.then((f) => f()))
+      un.then((f) => f())
     }
   }, [])
-  if (n === 0) return null
+  type Item = { key: string; title: string; sub: string; kind: Kind; button: string; press: () => void; pick?: string }
+  const items: Item[] = []
+  for (const th of threads) {
+    if (th.attention !== 'review' && th.attention !== 'held' && th.attention !== 'failed') continue
+    const m = [...th.messages].reverse().find((x) => x.kind === th.attention)
+    if (!m) continue
+    const [from, to] = m.side === 'a' ? [th.a, th.b] : [th.b, th.a]
+    items.push({
+      key: m.letter_id,
+      title: m.title || firstLine(m.body),
+      sub: `${plain(from.name)} → ${plain(to.name)} · ${m.stage}`,
+      kind: th.attention,
+      button: t(th.attention === 'review' ? 'action.review' : th.attention === 'held' ? 'action.approve' : 'action.retry'),
+      press: () => act(() => (th.attention === 'review' ? api.reviewOpen() : api.retry(m.letter_id))),
+      pick: th.key,
+    })
+  }
+  for (const w of waits) {
+    items.push({
+      key: `wait-${w.letter_id}`,
+      title: t('need.open', { name: plain(w.session.name) }),
+      sub: `${t('need.from', { name: plain(w.from_name) })} · ${t(`need.why.${w.why ?? 'manual'}` as const)}`,
+      kind: 'queued',
+      button: t('action.open'),
+      press: () => act(() => api.waitOpen(w.session.id)),
+    })
+  }
+  if (items.length === 0) return null
+  const shown = all ? items : items.slice(0, 3)
   return (
-    <div className="callout callout--strip">
-      <div className="callout__text">
-        <span className="callout__title">{n === 1 ? t('feed.reviewOne') : t('feed.reviewMany', { n })}</span>
-        <span className="callout__sub">{t('feed.reviewSub')}</span>
-      </div>
-      <button className="btn btn--primary btn--small" onClick={() => api.reviewOpen().catch(() => {})}>{t('action.review')}</button>
+    <div className="need">
+      <div className="need__head">{t('need.title', { n: items.length })}</div>
+      {shown.map((it) => (
+        <div key={it.key} className="need__row" data-kind={it.kind} onClick={() => it.pick && onPick(it.pick)}>
+          <span className="need__dot" />
+          <div className="need__main">
+            <span className="need__title">{it.title}</span>
+            <span className="need__sub">{it.sub}</span>
+          </div>
+          <button className="btn btn--primary btn--small" onClick={(e) => { e.stopPropagation(); it.press() }}>{it.button}</button>
+        </div>
+      ))}
+      {items.length > 3 && <button className="need__more" onClick={() => setAll(!all)}>{all ? t('proj.less') : t('proj.rest', { n: items.length - 3 })}</button>}
     </div>
   )
 }
 
-function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: string | null }) {
+const OLDER = 'older'
+const CROSS = 'cross'
+/** A conversation's time on this machine's clock, in ms. */
+const stamp = (at: string) => new Date(at.replace(' ', 'T')).getTime() || 0
+
+function Feed({ onCompose, pick, sessions, order }: { onCompose: (to?: string) => void; pick: string | null; sessions: Session[]; order: string[] }) {
   const lang = useLang()
   const [items, setItems] = useState<Thread[]>([])
+  const [closed, toggleClosed] = useKeptSet('dispatch.feed.closed')
+  const [byTime, setByTime] = useState(() => {
+    try {
+      return localStorage.getItem('dispatch.feed.mode') === 'time'
+    } catch {
+      return false
+    }
+  })
+  const setMode = (time: boolean) => {
+    setByTime(time)
+    try {
+      localStorage.setItem('dispatch.feed.mode', time ? 'time' : 'project')
+    } catch {
+      /* for now only */
+    }
+  }
   const [selected, setSelected] = useState<string | null>(null)
   const [picked, setPicked] = useState<string | null>(null)
   const [filter, setFilter] = useState<Filter>('all')
@@ -570,6 +628,30 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
   const counts = useMemo(() => ({ queued: items.filter((th) => passes(th, 'queued')).length, failed: items.filter((th) => passes(th, 'failed')).length }), [items])
   const current = shown.find((th) => th.key === selected) ?? shown[0] ?? null
 
+  // each conversation under the project its two sides are filed in; sides in different projects
+  // go under "across projects", and what has been quiet for a week under "earlier"
+  const sections = useMemo(() => {
+    const filed = new Map(sessions.filter((x) => x.group).map((x) => [`${x.host?.id ?? ''}|${x.id.toLowerCase()}`, x.group!]))
+    const of = (p: Party) => (p.person || p.unknown ? null : filed.get(`${p.host_id ?? ''}|${p.id.toLowerCase()}`) ?? null)
+    const now = Date.now()
+    const by = new Map<string, { id: string; name: string; rows: Thread[]; latest: number }>()
+    for (const th of shown) {
+      const [a, b] = [of(th.a), of(th.b)]
+      const g = now - stamp(th.last_at) > WEEK_MS ? { id: OLDER, name: t('feed.older') } : a && b && a.id !== b.id ? { id: CROSS, name: t('feed.cross') } : a ?? b ?? { id: NOT_FILED, name: t('proj.none') }
+      const have = by.get(g.id) ?? { id: g.id, name: g.name || t('proj.none'), rows: [], latest: 0 }
+      have.rows.push(th)
+      have.latest = Math.max(have.latest, stamp(th.last_at))
+      by.set(g.id, have)
+    }
+    // the sidebar's order; then across projects, not filed, earlier
+    const tail = [CROSS, NOT_FILED, OLDER]
+    const at = (id: string) => order.indexOf(id)
+    return [...by.values()].sort((x, y) => tail.indexOf(x.id) - tail.indexOf(y.id) || at(x.id) - at(y.id) || y.latest - x.latest)
+  }, [shown, sessions, order, lang])
+  const isClosed = (id: string) => (id === OLDER ? !closed.has(id) : closed.has(id))
+  // a subject line marks where a new exchange begins, in a conversation that has had several
+  const topics = current ? current.messages.filter((m) => m.title).length : 0
+
   // a conversation opens at its newest message, and stays there as new ones come in
   useEffect(() => {
     pinned.current = true
@@ -599,41 +681,51 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
           <button className="tab" data-active={filter === 'failed' || undefined} onClick={() => setFilter('failed')}>{t('tabs.failed')} <i>{counts.failed}</i></button>
         </span>
         <span className="bar__spacer" />
+        <span className="seg seg--small">
+          <button data-active={!byTime || undefined} onClick={() => setMode(false)}>{t('feed.byProject')}</button>
+          <button data-active={byTime || undefined} onClick={() => setMode(true)}>{t('feed.byTime')}</button>
+        </span>
       </header>
-      <ReviewStrip />
+      <NeedsYou threads={items} onPick={(key) => { setFilter('all'); setSelected(key) }} act={act} />
       <div className="split">
         <div className="list tlist">
           <FirstRun />
           {err && <div className="empty">{err}</div>}
           {!err && shown.length === 0 && <div className="empty">{t('feed.empty')}</div>}
-          {shown.map((th) => {
-            const speaker = th.last.side === 'a' ? th.a : th.b
-            return (
-              <div key={th.key} className="row trow" data-selected={current?.key === th.key || undefined} onClick={() => setSelected(th.key)}>
-                <span className="pair">
-                  <Avatar name={th.a.name} look={th.a.avatar} appName={th.a.app_name} size={22} unknown={th.a.unknown} harness={th.a.harness} />
-                  <Avatar name={th.b.name} look={th.b.avatar} appName={th.b.app_name} size={22} unknown={th.b.unknown} harness={th.b.harness} />
-                </span>
-                <div className="row__main">
-                  <div className="row__line">
-                    <span className="trow__names">
-                      <span className="trow__name" title={th.a.host_name ?? ''}>{plain(th.a.name)}</span>
-                      <span className="trow__sep">⇄</span>
-                      <span className="trow__name" title={th.b.host_name ?? ''}>{plain(th.b.name)}</span>
-                    </span>
-                  </div>
-                  <div className="row__line">
-                    <span className="row__text trow__last">
-                      <span className="trow__speaker">{plain(speaker.name)}：</span>
-                      {firstLine(th.last.body)}
-                    </span>
-                    {th.attention && <Badge kind={th.attention} />}
-                    <span className="row__time">{when(th.last_at)}</span>
+          {(byTime ? [{ id: '', name: '', rows: shown, latest: 0 }] : sections).map((sec) => (
+            <div key={sec.id} className="fgroup">
+              {!byTime && (
+                <button className="fgroup__head" onClick={() => toggleClosed(sec.id)}>
+                  <svg className="proj__chev" data-open={!isClosed(sec.id) || undefined} width="10" height="10" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 3 7.5 6 4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                  <span className="fgroup__name">{sec.name}</span>
+                  {sec.rows.some((th) => th.attention === 'review' || th.attention === 'held' || th.attention === 'failed') && <span className="fgroup__flag" />}
+                  <span className="fgroup__count">{sec.rows.length}</span>
+                </button>
+              )}
+              {(byTime || !isClosed(sec.id)) && sec.rows.map((th) => (
+                <div key={th.key} className="row trow" data-selected={current?.key === th.key || undefined} onClick={() => setSelected(th.key)}>
+                  <span className="pair">
+                    <Avatar name={th.a.name} look={th.a.avatar} appName={th.a.app_name} size={22} unknown={th.a.unknown} harness={th.a.harness} />
+                    <Avatar name={th.b.name} look={th.b.avatar} appName={th.b.app_name} size={22} unknown={th.b.unknown} harness={th.b.harness} />
+                  </span>
+                  <div className="row__main">
+                    <div className="row__line">
+                      <span className="trow__title">{th.title || firstLine(th.last.body)}</span>
+                      <span className="row__time">{when(th.last_at)}</span>
+                    </div>
+                    <div className="row__line">
+                      <span className="trow__names trow__names--sub">
+                        <span className="trow__name" title={th.a.host_name ?? ''}>{plain(th.a.name)}</span>
+                        <span className="trow__sep">⇄</span>
+                        <span className="trow__name" title={th.b.host_name ?? ''}>{plain(th.b.name)}</span>
+                      </span>
+                      {th.attention && <Badge kind={th.attention} />}
+                    </div>
                   </div>
                 </div>
-              </div>
-            )
-          })}
+              ))}
+            </div>
+          ))}
         </div>
         <aside className="convo">
           {current ? (
@@ -654,7 +746,7 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                 {current.messages.map((m) => {
                   const who = m.side === 'a' ? current.a : current.b
                   return (
-                    <div key={m.letter_id} className="tmsg">
+                    <div key={m.letter_id} className="tmsg" data-topic={(topics > 1 && m.title) || undefined}>
                       <Avatar name={who.name} look={who.avatar} appName={who.app_name} size={28} unknown={who.unknown} harness={who.harness} />
                       <div className="tmsg__main">
                       <div className="tmsg__head">
@@ -2237,7 +2329,7 @@ export function App() {
         </div>
       </nav>
       <main className="panel">
-        {screen === 'feed' && <Feed onCompose={compose} pick={pick} />}
+        {screen === 'feed' && <Feed onCompose={compose} pick={pick} sessions={live} order={order} />}
         {screen === 'agents' && <Agents onCompose={compose} onOpenPage={openPage} />}
         {screen === 'session' && sessionId && <SessionPage id={sessionId} groups={groups} onFiled={tick} onCompose={compose} onFeedPick={feedPick} onBack={() => setScreen('agents')} />}
         {screen === 'compose' && <Compose presetTo={composeTo} onSent={() => setScreen('feed')} />}

@@ -779,6 +779,36 @@ fn party_of(id: &str, stored_name: &str, harness: Option<&str>, host: Option<(&s
     (key, v)
 }
 
+/// What a message is about, in a few words: its first line when the sender gave it a subject
+/// (a short line of its own), else the start of its first sentence. For the feed's rows.
+pub fn title_of(body: &str) -> String {
+    const MAX: usize = 38;
+    let first = body.lines().map(|l| l.trim().trim_start_matches(['#', '*', '>', '-', ' ']).trim_end_matches(['*', '#', ' ']).trim()).find(|l| !l.is_empty()).unwrap_or("");
+    let chars: Vec<char> = first.chars().collect();
+    let mut end = chars.len();
+    for (i, c) in chars.iter().enumerate() {
+        let stop = matches!(c, '。' | '！' | '？' | '!' | '?' | '；' | ';') || (*c == '.' && chars.get(i + 1).map(|n| n.is_whitespace()).unwrap_or(true));
+        if stop && i > 0 {
+            end = i;
+            break;
+        }
+    }
+    if end > MAX {
+        chars[..MAX].iter().collect::<String>().trim_end().to_string() + "…"
+    } else {
+        chars[..end].iter().collect()
+    }
+}
+
+/// A message with its subject as its first line. The subject is part of what is sent: the
+/// recipient reads it like an email's, and the feed shows it as the row's title.
+pub fn with_title(title: Option<&str>, text: &str) -> String {
+    match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) if !text.trim_start().starts_with(t) => format!("{t}\n\n{}", text.trim_start()),
+        _ => text.to_string(),
+    }
+}
+
 /// When a copy came to be on this machine's clock: its first run (written here, or received),
 /// else its `created` read as local time.
 fn happened_at(store: &Store, l: &store::Letter) -> chrono::DateTime<chrono::Local> {
@@ -869,6 +899,10 @@ pub fn threads(store: &Store, limit: usize) -> Result<Value> {
         if !others.is_empty() {
             m["also_to"] = json!(others);
         }
+        // the message a dispatch began with says what the exchange is about; replies do not
+        if by_dispatch.get(l.dispatch_id.as_str()).and_then(|v| v.first()).map(|first| first.from == l.from && first.body == l.body).unwrap_or(false) {
+            m["title"] = json!(title_of(&l.body));
+        }
         let at = when[&l.id].format("%Y-%m-%d %H:%M").to_string();
         m["at"] = json!(at);
         th.last_at = at;
@@ -883,9 +917,11 @@ pub fn threads(store: &Store, limit: usize) -> Result<Value> {
             let went = t.messages.iter().rposition(|m| matches!(m["kind"].as_str(), Some("delivered" | "working" | "replied"))).map(|i| i + 1).unwrap_or(0);
             let attention = t.messages.iter().enumerate().filter(|(i, m)| *i >= went || m["kind"] == "review").filter_map(|(_, m)| m["kind"].as_str().and_then(|k| attention_rank(k).map(|r| (r, k.to_string())))).min().map(|(_, k)| k);
             let last = t.messages.last().cloned().unwrap_or(Value::Null);
+            // what they are talking about now: the subject of the latest message that began a dispatch
+            let title = t.messages.iter().rev().find_map(|m| m["title"].as_str().filter(|s| !s.is_empty()).map(str::to_string)).or_else(|| last["body"].as_str().map(title_of)).unwrap_or_default();
             let count = t.messages.len();
             let keep = count.saturating_sub(60);
-            json!({ "key": key, "a": t.a, "b": t.b, "last_at": t.last_at, "count": count, "attention": attention, "last": { "side": last["side"], "body": last["body"], "kind": last["kind"], "stage": last["stage"] }, "messages": t.messages[keep..].to_vec() })
+            json!({ "key": key, "a": t.a, "b": t.b, "title": title, "last_at": t.last_at, "count": count, "attention": attention, "last": { "side": last["side"], "body": last["body"], "kind": last["kind"], "stage": last["stage"] }, "messages": t.messages[keep..].to_vec() })
         })
         .collect();
     out.sort_by(|x, y| y["last_at"].as_str().cmp(&x["last_at"].as_str()));
@@ -1103,6 +1139,22 @@ mod tests {
         let replied = mk(REPLIED);
         assert_eq!(stage_of(&s, &replied), ("replied".to_string(), "stage.replied".to_string()));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_message_is_titled_by_its_subject_or_its_first_sentence() {
+        assert_eq!(title_of("0.1.16 发版\n\n请读 vault 里的提示词照做。"), "0.1.16 发版");
+        assert_eq!(title_of("## Release 0.1.16\nPlease ship it."), "Release 0.1.16");
+        assert_eq!(title_of("请从 main 打 v2.0-rc1 的 tag。签好名后在这里回我。"), "请从 main 打 v2.0-rc1 的 tag");
+        assert_eq!(title_of("Shipped 1.4. Signed and notarized."), "Shipped 1.4");
+        let long = title_of(&"字".repeat(80));
+        assert_eq!(long.chars().count(), 39);
+        assert!(long.ends_with('…'));
+        assert_eq!(title_of("\n\n"), "");
+        assert_eq!(with_title(Some("发版"), "请照做"), "发版\n\n请照做");
+        assert_eq!(with_title(Some("  "), "请照做"), "请照做");
+        assert_eq!(with_title(Some("发版"), "发版\n\n请照做"), "发版\n\n请照做", "a subject already on top is not repeated");
+        assert_eq!(with_title(None, "x"), "x");
     }
 
     #[test]

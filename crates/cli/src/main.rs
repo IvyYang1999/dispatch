@@ -50,6 +50,9 @@ enum Cmd {
         /// How long it may wait before it counts as not delivered: 30m, 2h, 1d (default: 1h urgent, 24h normal)
         #[arg(long)]
         deadline: Option<String>,
+        /// What it is about in a few words, like a subject line: sent as the first line, and shown in the app's list
+        #[arg(long)]
+        title: Option<String>,
         #[arg(long)]
         json: bool,
         text: Vec<String>,
@@ -561,11 +564,11 @@ fn run() -> Result<i32> {
                 }
             }
         }
-        Cmd::Send { to, from, urgency, no_wait, allow_resume, deadline, json, text } => {
+        Cmd::Send { to, from, urgency, no_wait, allow_resume, deadline, title, json, text } => {
             if to.is_empty() {
                 return Err(anyhow!("{}", t("cli.to_required")));
             }
-            let body = read_text(text)?;
+            let body = dispatch_core::ops::with_title(title.as_deref(), &read_text(text)?);
             let deadline = dispatch_core::ops::parse_deadline(deadline.as_deref())?;
             let (from_id, from_name) = sender_identity(from)?;
             let dispatch_id = uuid_v4();

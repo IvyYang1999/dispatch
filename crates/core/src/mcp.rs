@@ -43,7 +43,7 @@ fn tools() -> Value {
         {
             "name": "dispatch_send",
             "description": "Send one message to one or more sessions (by id, id prefix, or desktop name; <machine>/<session> for one on a paired machine, which stores and delivers it there). Each recipient gets its own copy and delivery state: delivered straight into a running session when it will take it, otherwise queued and handed over by its hook the next time it speaks (route 'stored'); when nobody could deliver it as things stand, route 'failed' with the fix in detail. The user may review messages before they leave: then route is 'review', the copy is held on this machine until the user chooses Send in Dispatch's review window, and nothing else happens until then; follow it with dispatch_status (with wait) and do not send it again. A queued copy past its deadline (1h urgent, 24h normal, or `deadline`) is marked not delivered. Returns per-recipient route and detail plus the dispatch_id for dispatch_status. A recipient found by a fragment and not yet in the address book is noted under the words you found it by (`named`, provisional); tell the user, who can confirm or rename it. Write the message as you would brief a colleague: what you need, by when, and that they can reply with dispatch_reply.",
-            "inputSchema": { "type": "object", "properties": { "to": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "text": { "type": "string" }, "urgency": { "type": "string", "enum": ["normal", "urgent", "普通", "紧急"], "default": "normal" }, "deadline": { "type": "string", "description": "How long it may wait before it counts as not delivered: 30m, 2h, 1d" } }, "required": ["to", "text"], "additionalProperties": false }
+            "inputSchema": { "type": "object", "properties": { "to": { "type": "array", "items": { "type": "string" }, "minItems": 1 }, "title": { "type": "string", "description": "What this is about in a few words, like a subject line (under 40 characters). It goes out as the message's first line, and it is what the user sees in Dispatch's list of conversations: always give one." }, "text": { "type": "string" }, "urgency": { "type": "string", "enum": ["normal", "urgent", "普通", "紧急"], "default": "normal" }, "deadline": { "type": "string", "description": "How long it may wait before it counts as not delivered: 30m, 2h, 1d" } }, "required": ["to", "text"], "additionalProperties": false }
         },
         {
             "name": "dispatch_inbox",
@@ -93,6 +93,7 @@ fn call(store: &Store, name: &str, args: &Value) -> Result<Value, String> {
         "dispatch_send" => {
             let to: Vec<String> = args.get("to").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
             let text = s("text").ok_or("text is required")?;
+            let text = ops::with_title(s("title").as_deref(), &text);
             ops::send_many_opts(store, &to, &text, &s("urgency").unwrap_or_else(|| "normal".into()), None, false, s("deadline").as_deref()).map_err(|e| format!("{e:#}"))
         }
         "dispatch_inbox" => ops::inbox(store, s("session").as_deref(), b("all").unwrap_or(false)).map_err(|e| format!("{e:#}")),

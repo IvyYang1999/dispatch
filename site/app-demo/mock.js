@@ -267,6 +267,14 @@
     }
   }
   const pairKey = (l) => [l.from, l.to].sort().join('~')
+  // what a message is about: its first sentence, cut short (as the app's backend does)
+  const titleOf = (body) => {
+    const first = (body.split('\n').find((l) => l.trim()) || '').trim()
+    const m = first.match(/^(.+?)(?:[。！？!?；;]|\.(?:\s|$))/)
+    const t = m ? m[1] : first
+    return t.length > 38 ? `${t.slice(0, 38).trimEnd()}…` : t
+  }
+
   function threads() {
     const groups = new Map()
     for (const l of store().letters) {
@@ -289,7 +297,9 @@
         count: list.length,
         attention: list.some((l) => l.kind === 'review') ? 'review' : null,
         last: { side: side(last), body: last.body, kind: last.kind, stage: STAGE[last.kind] },
-        messages: list.map((l) => ({ ...copyOf(l), dispatch_id: l.dispatch, side: side(l), at: stamp(l.at) })),
+        // a new subject where the talk picks up again after an hour's quiet
+        title: titleOf(list[list.reduce((at, l, i) => (i > 0 && l.at - list[i - 1].at > 60 * MIN ? i : at), 0)].body),
+        messages: list.map((l, i) => ({ ...copyOf(l), dispatch_id: l.dispatch, side: side(l), at: stamp(l.at), ...(i === 0 || l.at - list[i - 1].at > 60 * MIN ? { title: titleOf(l.body) } : {}) })),
       })
     }
     out.sort((x, y) => y._at - x._at)

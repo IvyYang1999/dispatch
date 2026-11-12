@@ -205,7 +205,7 @@ const zh = {
   'firstrun.sub': '没有它们，没开着或跳过权限确认的会话收不到消息。一键装到 ~/.dispatch/bin，并注册给 Codex。',
   'firstrun.done': '装好了。',
   'feed.send': '写信',
-  'feed.empty': '还没有派发。点右上角「发送」，或让任何一个 Agent 用 Dispatch 发一条。',
+  'feed.empty': '还没有派发。让任何一个 Agent 用 Dispatch 给另一个会话发一条，就会出现在这里。',
   'thread.pick': '选一段对话看来往',
   'thread.alsoTo': '同时发给了 {n}',
   'thread.write': '写信给它',
@@ -433,6 +433,17 @@ const zh = {
   'setup.grokSections.followSub': '始终和 Grok Bot 自己侧栏里的分组一致；在 Dispatch 里挪动 Bot 不起作用。',
   'setup.grokSections.offSub': '不读 Grok Bot 的分组，所有 Bot 放在「Grok Bot」一组里。',
   'setup.grokSectionsFound': '现在读到 {n} 个分组。',
+  'need.title': '需要你 · {n}',
+  'need.open': '「{name}」有信在等，需要你打开它',
+  'need.from': '来自 {name}',
+  'need.why.ask': '你设置了只提醒',
+  'need.why.failed': 'Dispatch 没能打开它',
+  'need.why.stuck': '已帮你打开两分钟，它还没收下',
+  'need.why.manual': '这台电脑上没法自动打开它',
+  'feed.byProject': '按项目',
+  'feed.byTime': '按时间',
+  'feed.cross': '跨项目',
+  'feed.older': '更早',
 }
 
 const en: Record<Key, string> = {
@@ -635,7 +646,7 @@ const en: Record<Key, string> = {
   'firstrun.sub': 'Without them, sessions that are closed or bypass permission checks cannot receive messages. One click puts it in ~/.dispatch/bin and registers it with Codex.',
   'firstrun.done': 'Installed.',
   'feed.send': 'Write',
-  'feed.empty': 'No dispatches yet. Press Send in the top right, or have any agent send one through Dispatch.',
+  'feed.empty': 'No dispatches yet. Have any agent message another session through Dispatch and it shows up here.',
   'thread.pick': 'Pick a conversation to read it',
   'thread.alsoTo': 'Also sent to {n}',
   'thread.write': 'Write to it',
@@ -864,6 +875,17 @@ const en: Record<Key, string> = {
   'setup.grokSections.followSub': 'Bots are always grouped as in Grok Bot\'s own sidebar; moving a bot in Dispatch has no effect.',
   'setup.grokSections.offSub': 'Grok Bot\'s groups are not read; every bot sits under “Grok Bot”.',
   'setup.grokSectionsFound': '{n} group(s) found now.',
+  'need.title': 'Needs you · {n}',
+  'need.open': '“{name}” has a message waiting and needs you to open it',
+  'need.from': 'From {name}',
+  'need.why.ask': 'You chose to be reminded only',
+  'need.why.failed': 'Dispatch could not open it',
+  'need.why.stuck': 'Opened for it two minutes ago; still not taken',
+  'need.why.manual': 'It cannot be opened automatically here',
+  'feed.byProject': 'By project',
+  'feed.byTime': 'By time',
+  'feed.cross': 'Across projects',
+  'feed.older': 'Earlier',
 }
 
 export type Key = keyof typeof zh
