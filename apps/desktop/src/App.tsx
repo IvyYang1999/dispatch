@@ -837,33 +837,94 @@ function tiesOf(page: SessionPageData): Tie[] {
   return [...m.values()].sort((a, b) => b.got + b.sent - (a.got + a.sent))
 }
 
-/** This session in the middle, the ones it wrote with around it; a thicker line, more messages. */
-function TieMap({ s, ties, onPick }: { s: Session; ties: Tie[]; onPick: (t: Tie) => void }) {
+/** This session in the middle, the ones it wrote with around it. An arrow points at whoever got
+ *  messages (both ends when they wrote both ways), the line carries how many, and pointing at a
+ *  line, a picture or a row in the list shows each way and when they last wrote. */
+function TieMap({ s, ties, hot, onHot, onPick }: { s: Session; ties: Tie[]; hot: string | null; onHot: (key: string | null) => void; onPick: (t: Tie) => void }) {
   const shown = ties.slice(0, 6)
-  const W = 260
-  const H = 132
+  const W = 300
+  const H = 176
   const cx = W / 2
   const cy = H / 2
+  const R0 = 21
+  const R1 = 15
+  // spread around the middle, never straight above or below it, where the lines would be stubs
+  const n = Math.max(shown.length, 1)
+  const start = n === 1 ? 0 : -Math.PI / 2 + Math.PI / n
   const spots = shown.map((_, i) => {
-    const a = -Math.PI / 2 + (i * 2 * Math.PI) / Math.max(shown.length, 1) + (shown.length === 2 ? Math.PI / 2 : 0)
-    return { x: cx + Math.cos(a) * 98, y: cy + Math.sin(a) * 46 }
+    const a = start + (i * 2 * Math.PI) / n
+    return { x: cx + Math.cos(a) * 118, y: cy + Math.sin(a) * 66 }
   })
   const most = Math.max(1, ...shown.map((x) => x.got + x.sent))
+  const tip = shown.findIndex((x) => x.key === hot)
   return (
-    <div className="tiemap" style={{ width: W, height: H }}>
+    <div className="tiemap" style={{ width: W, height: H + 20 }} onMouseLeave={() => onHot(null)}>
       <svg width={W} height={H} aria-hidden="true">
-        {shown.map((x, i) => (
-          <line key={x.key} x1={cx} y1={cy} x2={spots[i].x} y2={spots[i].y} className="tiemap__line" strokeWidth={1 + (4 * (x.got + x.sent)) / most} />
-        ))}
+        <defs>
+          <marker id="tie-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+            <path d="M0 0.5 7.5 4 0 7.5z" className="tiemap__head" />
+          </marker>
+          <marker id="tie-arrow-hot" viewBox="0 0 8 8" refX="7" refY="4" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto-start-reverse">
+            <path d="M0 0.5 7.5 4 0 7.5z" className="tiemap__head tiemap__head--hot" />
+          </marker>
+        </defs>
+        {shown.map((x, i) => {
+          const dx = spots[i].x - cx
+          const dy = spots[i].y - cy
+          const len = Math.hypot(dx, dy) || 1
+          const ux = dx / len
+          const uy = dy / len
+          const on = x.key === hot
+          const arrow = on ? 'url(#tie-arrow-hot)' : 'url(#tie-arrow)'
+          return (
+            <line
+              key={x.key}
+              x1={cx + ux * (R0 + 3)}
+              y1={cy + uy * (R0 + 3)}
+              x2={spots[i].x - ux * (R1 + 3)}
+              y2={spots[i].y - uy * (R1 + 3)}
+              className="tiemap__line"
+              data-hot={on || undefined}
+              strokeWidth={1.5 + (2.5 * (x.got + x.sent)) / most}
+              markerEnd={x.sent > 0 ? arrow : undefined}
+              markerStart={x.got > 0 ? arrow : undefined}
+            />
+          )
+        })}
       </svg>
-      <span className="tiemap__node tiemap__node--me" style={{ left: cx, top: cy }}>
-        <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={34} harness={s.harness} />
-      </span>
       {shown.map((x, i) => (
-        <button key={x.key} className="tiemap__node" style={{ left: spots[i].x, top: spots[i].y }} title={withHost(x.name, x.host)} onClick={() => onPick(x)}>
-          <Avatar name={x.name} size={24} harness={x.harness} />
+        <button
+          key={`n${x.key}`}
+          className="tiemap__count"
+          data-hot={x.key === hot || undefined}
+          style={{ left: (cx + spots[i].x) / 2, top: (cy + spots[i].y) / 2 }}
+          onMouseEnter={() => onHot(x.key)}
+          onClick={() => onPick(x)}
+        >
+          {x.got + x.sent}
         </button>
       ))}
+      <span className="tiemap__node tiemap__node--me" style={{ left: cx, top: cy }}>
+        <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={R0 * 2} />
+      </span>
+      {shown.map((x, i) => (
+        <button key={x.key} className="tiemap__node" data-hot={x.key === hot || undefined} style={{ left: spots[i].x, top: spots[i].y }} onMouseEnter={() => onHot(x.key)} onClick={() => onPick(x)}>
+          <Avatar name={x.name} size={R1 * 2} />
+        </button>
+      ))}
+      <div className="tiemap__caption" style={{ top: H }}>
+        {tip >= 0 ? (
+          <>
+            <b>{withHost(plain(shown[tip].name), shown[tip].host)}</b>
+            {' · '}
+            {t('sp.tieWays', { sent: shown[tip].sent, got: shown[tip].got })}
+            {' · '}
+            {t('sp.tieLast', { at: shown[tip].last.slice(5) })}
+          </>
+        ) : (
+          t('sp.tieHow')
+        )}
+      </div>
     </div>
   )
 }
@@ -893,6 +954,7 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
   const [editing, setEditing] = useState<EditTarget | null>(null)
   const [only, setOnly] = useState<'all' | 'you' | 'dispatch'>('all')
   const [openRound, setOpenRound] = useState<number | null>(null)
+  const [hotTie, setHotTie] = useState<string | null>(null)
   const { open, notice, clear } = useOpen()
   const load = useCallback(() => api.sessionPage(id).then((p) => { setPage(p); setErr(null) }).catch((e) => setErr(String(e))), [id, lang])
   useEffect(() => {
@@ -969,13 +1031,13 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
                 <p className="sp__detail">{t('sp.noTies')}</p>
               ) : (
                 <>
-                  <TieMap s={s} ties={ties} onPick={(x) => onFeedPick(x.dispatch)} />
-                  <div className="sp__tielist">
-                    {ties.slice(0, 5).map((x) => (
-                      <button key={x.key} className="sp__tie" onClick={() => onFeedPick(x.dispatch)}>
+                  <TieMap s={s} ties={ties} hot={hotTie} onHot={setHotTie} onPick={(x) => onFeedPick(x.dispatch)} />
+                  <div className="sp__tielist" onMouseLeave={() => setHotTie(null)}>
+                    {ties.slice(0, 6).map((x) => (
+                      <button key={x.key} className="sp__tie" data-hot={x.key === hotTie || undefined} onMouseEnter={() => setHotTie(x.key)} onClick={() => onFeedPick(x.dispatch)}>
                         <Avatar name={x.name} size={18} />
                         <span className="sp__tiename">{withHost(plain(x.name), x.host)}</span>
-                        <span className="sp__tiecount">{[x.got ? t('sp.got', { n: x.got }) : '', x.sent ? t('sp.sent', { n: x.sent }) : ''].filter(Boolean).join(' · ')}</span>
+                        <span className="sp__tiecount">{x.sent > 0 && <span title={t('sp.sentTip')}>→ {x.sent}</span>}{x.got > 0 && <span title={t('sp.gotTip')}>← {x.got}</span>}</span>
                       </button>
                     ))}
                   </div>
@@ -1007,6 +1069,7 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
                 return (
                   <div key={i}>
                     {head && <div className="sp__day">{head}</div>}
+                    <div className="askblock" data-open={isOpen || undefined}>
                     <button className="ask" data-dispatch={u.via_dispatch || undefined} data-open={isOpen || undefined} onClick={() => setOpenRound(isOpen ? null : i)}>
                       <span className="ask__time">{hhmm(u.at)}</span>
                       <span className="ask__who">
@@ -1019,16 +1082,19 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
                       <svg className="ask__chev" width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 3 7.5 6 4.5 9" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>
                     </button>
                     {isOpen && (
-                      <div className="ask__open">
-                        <div className="ask__answer">
-                          <div className="ask__answerhead">
-                            <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={16} harness={s.harness} />
-                            <span>{t('sp.answer')}</span>
-                          </div>
-                          {r.replies.length === 0 ? <p className="msg__text msg__text--faint">{t('round.pending')}</p> : <Clamp text={r.replies.map((x) => x.text).join('\n\n')} />}
-                        </div>
+                      <div className="ask ask--answer">
+                        <span className="ask__time" />
+                        <span className="ask__who">
+                          <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={18} />
+                        </span>
+                        <span className="ask__body">
+                          <span className="ask__from ask__from--answer">{t('sp.answer')}</span>
+                          {r.replies.length === 0 ? <span className="ask__text ask__text--faint">{t('round.pending')}</span> : <Clamp text={r.replies.map((x) => x.text).join('\n\n')} />}
+                        </span>
+                        <span />
                       </div>
                     )}
+                    </div>
                   </div>
                 )
               })}
