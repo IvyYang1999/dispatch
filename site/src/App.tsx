@@ -86,7 +86,6 @@ function AppDemo({ lang, version, screen, onScreen }: { lang: Lang; version: str
   const review = useRef<HTMLIFrameElement>(null)
   const [scale, setScale] = useState(1)
   const [reviewOpen, setReviewOpen] = useState(false)
-  // start short: the review window grows to what it shows and does not shrink below where it started
   const [reviewH, setReviewH] = useState(380)
   const wantSend = useRef(false)
 
@@ -110,8 +109,8 @@ function AppDemo({ lang, version, screen, onScreen }: { lang: Lang; version: str
       setReviewOpen(false)
       onScreen('main')
     }
-    // the window is sized here, from what it shows (below): the app's own request only ever grows it
-    hub.resizeReview = () => {}
+    // the review window asks for its own height, as it asks the system in the app
+    hub.resizeReview = (h) => setReviewH(Math.max(160, Math.min(APP_H - 48, Math.round(h))))
     return () => {
       hub.showReview = hub.hideReview = hub.resizeReview = undefined
     }
@@ -143,34 +142,10 @@ function AppDemo({ lang, version, screen, onScreen }: { lang: Lang; version: str
     }
   }, [screen])
 
-  // While the review window is up: keep it as tall as what it shows, and for "After you send"
-  // press Send once the button is there.
+  // "After you send": press Send in the review window once the button is there
   useEffect(() => {
     if (!reviewOpen) return
-    const natural = (): number | null => {
-      const root = review.current?.contentDocument?.querySelector<HTMLElement>('.review')
-      const body = root?.querySelector<HTMLElement>('.review__body')
-      if (!root || !body) return null
-      const bar = root.querySelector<HTMLElement>('.review__bar')?.offsetHeight ?? 0
-      const foot = root.querySelector<HTMLElement>('.review__foot')?.offsetHeight ?? 0
-      // the body fills the window, so add up what is in it: its padding, its children, the gaps
-      const view = body.ownerDocument.defaultView!
-      const cs = view.getComputedStyle(body)
-      const px = (v: string) => parseFloat(v) || 0
-      const kids = [...body.children] as HTMLElement[]
-      const inner =
-        px(cs.paddingTop) +
-        px(cs.paddingBottom) +
-        px(cs.rowGap) * Math.max(0, kids.length - 1) +
-        kids.reduce((sum, k) => {
-          const m = view.getComputedStyle(k)
-          return sum + k.getBoundingClientRect().height + px(m.marginTop) + px(m.marginBottom)
-        }, 0)
-      return Math.ceil(bar + inner + foot + (root.classList.contains('review--result') ? 28 : 0))
-    }
     const h = setInterval(() => {
-      const n = natural()
-      if (n) setReviewH((was) => (Math.abs(was - n) > 2 ? Math.max(200, Math.min(APP_H - 48, n)) : was))
       if (wantSend.current && click(review.current, '.review__foot .btn--primary')) wantSend.current = false
     }, 200)
     return () => clearInterval(h)

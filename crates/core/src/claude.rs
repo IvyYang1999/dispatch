@@ -497,45 +497,200 @@ pub enum Receipt {
     Completed { turn_id: String },
 }
 
-/// Follow the message through the transcript: port of Dark Console's refresh.
-pub fn receipt(session_id: &str, cwd: Option<&str>, msg_id: &str) -> Result<Receipt> {
-    let file = transcript_path(session_id, cwd).context("transcript not found")?;
-    let tail = read_tail(&file, 4 * 1024 * 1024)?;
-    let rows: Vec<Value> = tail.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
-    let Some(start) = rows
-        .iter()
-        .position(|r| r.get("type").and_then(|v| v.as_str()) == Some("user") && r.get("uuid").and_then(|v| v.as_str()) == Some(msg_id))
-    else {
-        return Ok(Receipt::NotFound);
-    };
-    let mut chain: std::collections::HashSet<String> = std::collections::HashSet::new();
-    chain.insert(msg_id.to_string());
-    let mut answered = false;
-    for row in &rows[start + 1..] {
-        let Some(parent) = row.get("parentUuid").and_then(|v| v.as_str()) else { continue };
-        if !chain.contains(parent) {
-            continue;
+/// One transcript row, as much of it as following a message needs.
+struct Row {
+    user: bool,
+    assistant: bool,
+    meta: bool,
+    end_turn: bool,
+    uuid: Option<String>,
+    parent: Option<String>,
+}
+
+/// `message.stop_reason`, whatever else the message holds (and whatever it is: an object, or not).
+#[derive(Default)]
+struct StopReason(Option<String>);
+
+impl<'de> serde::Deserialize<'de> for StopReason {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = StopReason;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a message")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> std::result::Result<StopReason, A::Error> {
+                let mut out = None;
+                while let Some(key) = map.next_key::<std::borrow::Cow<str>>()? {
+                    if key == "stop_reason" {
+                        out = map.next_value::<Option<String>>().unwrap_or(None);
+                    } else {
+                        map.next_value::<serde::de::IgnoredAny>()?;
+                    }
+                }
+                Ok(StopReason(out))
+            }
+            fn visit_str<E>(self, _: &str) -> std::result::Result<StopReason, E> {
+                Ok(StopReason(None))
+            }
+            fn visit_unit<E>(self) -> std::result::Result<StopReason, E> {
+                Ok(StopReason(None))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<StopReason, A::Error> {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(StopReason(None))
+            }
         }
-        let ty = row.get("type").and_then(|v| v.as_str());
-        if ty == Some("user") && !row.get("isMeta").and_then(|v| v.as_bool()).unwrap_or(false) {
-            break;
-        }
-        if let Some(u) = row.get("uuid").and_then(|v| v.as_str()) {
-            chain.insert(u.to_string());
-        }
-        if ty == Some("assistant") {
-            answered = true;
-            if row.pointer("/message/stop_reason").and_then(|v| v.as_str()) == Some("end_turn") {
-                return Ok(Receipt::Completed { turn_id: row.get("uuid").and_then(|v| v.as_str()).unwrap_or("").to_string() });
+        d.deserialize_any(V)
+    }
+}
+
+/// The fields of a row that are read; the rest (the text, the tool output) is skipped unparsed.
+#[derive(serde::Deserialize)]
+struct RawRow {
+    #[serde(rename = "type", default)]
+    ty: Option<String>,
+    #[serde(default)]
+    uuid: Option<String>,
+    #[serde(rename = "parentUuid", default)]
+    parent: Option<String>,
+    #[serde(rename = "isMeta", default)]
+    meta: Option<bool>,
+    #[serde(default)]
+    message: StopReason,
+}
+
+fn rows_of(tail: &str) -> Vec<Row> {
+    tail.lines()
+        .filter_map(|l| serde_json::from_str::<RawRow>(l).ok())
+        .map(|r| Row {
+            user: r.ty.as_deref() == Some("user"),
+            assistant: r.ty.as_deref() == Some("assistant"),
+            meta: r.meta.unwrap_or(false),
+            end_turn: r.message.0.as_deref() == Some("end_turn"),
+            uuid: r.uuid,
+            parent: r.parent,
+        })
+        .collect()
+}
+
+/// The last 4 MiB of each transcript, read once per version of the file (its size and time).
+/// Every copy delivered to a session asks about the same file, and the app asks every few
+/// seconds; parsing it for each of them was most of the app's idle work.
+type Tails = std::collections::HashMap<PathBuf, (u64, Option<std::time::SystemTime>, std::sync::Arc<Vec<Row>>)>;
+static TAILS: std::sync::LazyLock<std::sync::Mutex<Tails>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+/// Where a session's transcript was last found, so the projects folder is not searched each time.
+static TRANSCRIPTS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, PathBuf>>> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn transcript_of(session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
+    if cwd.is_none() {
+        if let Some(p) = TRANSCRIPTS.lock().ok().and_then(|m| m.get(session_id).cloned()) {
+            if p.is_file() {
+                return Some(p);
             }
         }
     }
-    Ok(if answered { Receipt::Started } else { Receipt::Queued })
+    let p = transcript_path(session_id, cwd)?;
+    if let Ok(mut m) = TRANSCRIPTS.lock() {
+        m.insert(session_id.to_string(), p.clone());
+    }
+    Some(p)
+}
+
+fn tail_rows(file: &Path) -> Result<std::sync::Arc<Vec<Row>>> {
+    let md = fs::metadata(file)?;
+    let (len, modified) = (md.len(), md.modified().ok());
+    if let Some((l, m, rows)) = TAILS.lock().ok().and_then(|t| t.get(file).cloned()) {
+        if l == len && m == modified {
+            return Ok(rows);
+        }
+    }
+    let rows = std::sync::Arc::new(rows_of(&read_tail(file, 4 * 1024 * 1024)?));
+    if let Ok(mut t) = TAILS.lock() {
+        // a handful of sessions are live at once; do not keep every file ever asked about
+        if t.len() >= 64 {
+            t.clear();
+        }
+        t.insert(file.to_path_buf(), (len, modified, rows.clone()));
+    }
+    Ok(rows)
+}
+
+/// Follow the message through the transcript: port of Dark Console's refresh.
+pub fn receipt(session_id: &str, cwd: Option<&str>, msg_id: &str) -> Result<Receipt> {
+    let file = transcript_of(session_id, cwd).context("transcript not found")?;
+    Ok(receipt_in(&tail_rows(&file)?, msg_id))
+}
+
+fn receipt_in(rows: &[Row], msg_id: &str) -> Receipt {
+    let Some(start) = rows.iter().position(|r| r.user && r.uuid.as_deref() == Some(msg_id)) else {
+        return Receipt::NotFound;
+    };
+    let mut chain: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    chain.insert(msg_id);
+    let mut answered = false;
+    for row in &rows[start + 1..] {
+        let Some(parent) = row.parent.as_deref() else { continue };
+        if !chain.contains(parent) {
+            continue;
+        }
+        if row.user && !row.meta {
+            break;
+        }
+        if let Some(u) = row.uuid.as_deref() {
+            chain.insert(u);
+        }
+        if row.assistant {
+            answered = true;
+            if row.end_turn {
+                return Receipt::Completed { turn_id: row.uuid.clone().unwrap_or_default() };
+            }
+        }
+    }
+    if answered {
+        Receipt::Started
+    } else {
+        Receipt::Queued
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_message_is_followed_through_the_rows_after_it() {
+        let m = "11111111-2222-4333-8444-555555555555";
+        let user = format!(r#"{{"type":"user","uuid":"{m}","parentUuid":"p0","message":{{"role":"user","content":"hello"}}}}"#);
+        let other = r#"{"type":"user","uuid":"zz","parentUuid":"p0","message":"a plain string, as some rows carry"}"#;
+        let working = r#"{"type":"assistant","uuid":"a1","parentUuid":"11111111-2222-4333-8444-555555555555","message":{"stop_reason":"tool_use","content":[{"type":"text","text":"on it"}]}}"#;
+        let tool = r#"{"type":"user","isMeta":true,"uuid":"t1","parentUuid":"a1","message":{"content":[{"type":"tool_result","content":"x"}]}}"#;
+        let done = r#"{"type":"assistant","uuid":"a2","parentUuid":"t1","message":{"stop_reason":"end_turn","content":[]}}"#;
+        let state = |lines: &[&str]| receipt_in(&rows_of(&lines.join("\n")), m);
+        assert_eq!(state(&[other]), Receipt::NotFound);
+        assert_eq!(state(&[other, &user]), Receipt::Queued);
+        assert_eq!(state(&[&user, working, "not json at all"]), Receipt::Started);
+        assert_eq!(state(&[&user, working, tool, done]), Receipt::Completed { turn_id: "a2".into() });
+        // the next thing the person says ends the chain: a later end_turn is not this message's
+        let next = r#"{"type":"user","uuid":"u2","parentUuid":"a1","message":{"content":"and another thing"}}"#;
+        let late = r#"{"type":"assistant","uuid":"a3","parentUuid":"u2","message":{"stop_reason":"end_turn"}}"#;
+        assert_eq!(state(&[&user, working, next, late]), Receipt::Started);
+    }
+
+    #[test]
+    fn a_transcript_is_read_once_per_version_of_the_file() {
+        let dir = std::env::temp_dir().join(format!("dispatch-tail-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("t.jsonl");
+        fs::write(&file, "{\"type\":\"user\",\"uuid\":\"m1\"}\n").unwrap();
+        let first = tail_rows(&file).unwrap();
+        let again = tail_rows(&file).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&first, &again), "unchanged file: the parsed rows are reused");
+        fs::write(&file, "{\"type\":\"user\",\"uuid\":\"m1\"}\n{\"type\":\"assistant\",\"uuid\":\"a1\",\"parentUuid\":\"m1\"}\n").unwrap();
+        let grown = tail_rows(&file).unwrap();
+        assert_eq!(grown.len(), 2, "the file grew: read again");
+        let _ = fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn slug_matches_claude_code() {

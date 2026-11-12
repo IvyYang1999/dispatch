@@ -37,6 +37,25 @@ export function ago(ms: number): string {
   return t('ago.day', { n: Math.floor(h / 24) })
 }
 
+/** How tall a column's content is: its padding, its children and the gaps between them. Not its
+ *  scrollHeight: a column that fills its window (flex: 1) is never shorter than the window, so a
+ *  window sized from that only ever grows. */
+export function contentHeight(el: HTMLElement | null): number {
+  if (!el) return 0
+  const px = (v: string) => parseFloat(v) || 0
+  const cs = getComputedStyle(el)
+  const kids = [...el.children]
+  // layout heights, not getBoundingClientRect: the card after Send scales in, and a rect taken
+  // mid-animation is short
+  const inner = kids.reduce((sum, k) => {
+    const m = getComputedStyle(k)
+    const own = k instanceof HTMLElement ? k.offsetHeight : px(m.height)
+    return sum + own + px(m.marginTop) + px(m.marginBottom)
+  }, 0)
+  // a pixel to spare per child for the fractions offsetHeight rounds away
+  return Math.ceil(px(cs.paddingTop) + px(cs.paddingBottom) + px(cs.rowGap) * Math.max(0, kids.length - 1) + inner) + kids.length
+}
+
 /** The last folder of a path: what the Claude app files a session under. */
 function folder(cwd: string | null | undefined): string | null {
   if (!cwd) return null
@@ -118,12 +137,13 @@ export function Review() {
   useEffect(() => {
     if (!info) return
     const fit = () => {
-      const content = (bar.current?.offsetHeight ?? 0) + (body.current?.scrollHeight ?? 0) + (foot.current?.offsetHeight ?? 0)
+      const content = (bar.current?.offsetHeight ?? 0) + contentHeight(body.current) + (foot.current?.offsetHeight ?? 0)
       const most = Math.max(420, (window.screen?.availHeight ?? 900) - 120)
-      const h = Math.min(most, Math.max(showing.current ? 180 : 360, Math.ceil(content)))
+      // the card after Send is small; the review itself never opens as a sliver
+      const h = Math.min(most, Math.max(showing.current ? 180 : 320, Math.ceil(content)))
       getCurrentWindow()
         .setSize(new LogicalSize(window.innerWidth || 480, h))
-        .catch(() => {})
+        .catch((e) => console.warn('review window: could not resize', e))
     }
     const raf = requestAnimationFrame(fit)
     return () => cancelAnimationFrame(raf)

@@ -9,7 +9,7 @@ import { LogicalSize } from '@tauri-apps/api/dpi'
 import { api, type WaitItem } from './api'
 import { loadLang, t, useLang } from './i18n'
 import { Avatar, Icon, loadIcons, plain } from './App'
-import { ago } from './Review'
+import { ago, contentHeight } from './Review'
 
 type Group = { session: WaitItem['session']; items: WaitItem[] }
 
@@ -58,7 +58,7 @@ export function Waiting() {
   // as tall as what it shows
   useEffect(() => {
     const fit = () => {
-      const content = (bar.current?.offsetHeight ?? 0) + (body.current?.scrollHeight ?? 0) + (foot.current?.offsetHeight ?? 0)
+      const content = (bar.current?.offsetHeight ?? 0) + contentHeight(body.current) + (foot.current?.offsetHeight ?? 0)
       const h = Math.min(520, Math.max(160, Math.ceil(content)))
       getCurrentWindow().setSize(new LogicalSize(window.innerWidth || 420, h)).catch(() => {})
     }

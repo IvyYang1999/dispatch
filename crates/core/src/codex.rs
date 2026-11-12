@@ -256,8 +256,24 @@ pub fn state() -> State {
     s
 }
 
+/// Whether the codex command runs here. Asked by starting it, which costs a tenth of a second of
+/// processor each time, so a yes is kept for ten minutes (a no is asked again next time: the
+/// user may be installing it).
+static CLI_OK: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn cli_runs() -> bool {
+    if CLI_OK.lock().ok().and_then(|t| *t).map(|at| at.elapsed() < Duration::from_secs(600)).unwrap_or(false) {
+        return true;
+    }
+    let ok = command().arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    if let Ok(mut t) = CLI_OK.lock() {
+        *t = ok.then(Instant::now);
+    }
+    ok
+}
+
 pub fn state_now() -> State {
-    let cli = command().arg("--version").stdout(Stdio::null()).stderr(Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+    let cli = cli_runs();
     let mut st = State { cli, daemon: false, loaded: HashSet::new(), at: now_ms() };
     if !cli || !daemon_socket().exists() {
         return st;
@@ -337,13 +353,34 @@ fn queue_add_on(srv: &mut Server, thread_id: &str, text: &str, client_id: &str) 
     q["id"].as_str().map(str::to_string).ok_or_else(|| anyhow!("Codex answered without a queue id"))
 }
 
+/// Where each thread's rollout file is. A file found stays where it is; one not found is looked
+/// for again after half a minute. Walking the whole sessions folder for every copy on every
+/// refresh was a large part of the app's idle work.
+type Rollouts = std::collections::HashMap<String, (Instant, Option<PathBuf>)>;
+static ROLLOUTS: Mutex<Option<Rollouts>> = Mutex::new(None);
+
 /// The rollout file of a thread, by its id.
 pub fn rollout_path(thread_id: &str) -> Option<PathBuf> {
-    let root = home_dir().join(".codex").join("sessions");
     let want = thread_id.to_lowercase();
+    if let Some((at, found)) = ROLLOUTS.lock().ok().and_then(|m| m.as_ref().and_then(|m| m.get(&want).cloned())) {
+        match found {
+            Some(p) if p.is_file() => return Some(p),
+            None if at.elapsed() < Duration::from_secs(30) => return None,
+            _ => {}
+        }
+    }
+    let found = find_rollout(&want);
+    if let Ok(mut m) = ROLLOUTS.lock() {
+        m.get_or_insert_with(Default::default).insert(want, (Instant::now(), found.clone()));
+    }
+    found
+}
+
+fn find_rollout(want: &str) -> Option<PathBuf> {
+    let root = home_dir().join(".codex").join("sessions");
     for e in walkdir::WalkDir::new(root).max_depth(5).into_iter().flatten() {
         let name = e.file_name().to_string_lossy().to_lowercase();
-        if e.file_type().is_file() && name.ends_with(".jsonl") && name.contains(&want) {
+        if e.file_type().is_file() && name.ends_with(".jsonl") && name.contains(want) {
             return Some(e.path().to_path_buf());
         }
     }
@@ -358,30 +395,28 @@ pub enum Receipt {
     Completed,
 }
 
-/// Correlate the user item with its active turn; task_started normally precedes it.
-pub fn receipt(thread_id: &str, marker: &str) -> Receipt {
-    let Some(path) = rollout_path(thread_id) else { return Receipt::NotFound };
-    let Ok(text) = crate::claude::read_tail(&path, 4 * 1024 * 1024) else { return Receipt::NotFound };
-    receipt_text(&text, marker)
+/// What a rollout line says that following a message needs: a turn starting or ending, or
+/// something the user (or Dispatch, as the user) said.
+enum Event {
+    Started(Option<String>),
+    Ended { turn: Option<String>, complete: bool },
+    User { turn: Option<String>, text: String },
 }
 
-fn receipt_text(text: &str, marker: &str) -> Receipt {
-    let mut active_turn: Option<String> = None;
-    let mut message_turn: Option<String> = None;
-    let mut result = Receipt::NotFound;
+fn events_of(text: &str) -> Vec<Event> {
+    let mut out = vec![];
     for line in text.lines() {
+        // most lines are tool calls and their output: only these can matter, so only these are parsed
+        if !(line.contains("task_started") || line.contains("task_complete") || line.contains("turn_aborted") || line.contains("user_message") || line.contains("\"user\"")) {
+            continue;
+        }
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         let p = &v["payload"];
-        let turn = p["turn_id"].as_str();
+        let turn = p["turn_id"].as_str().map(str::to_owned);
         if v["type"] == "event_msg" {
             match p["type"].as_str() {
-                Some("task_started") => active_turn = turn.map(str::to_owned),
-                Some("task_complete" | "turn_aborted") => {
-                    if turn.is_some() && turn == message_turn.as_deref() && p["type"] == "task_complete" {
-                        return Receipt::Completed;
-                    }
-                    if turn == active_turn.as_deref() { active_turn = None; }
-                }
+                Some("task_started") => out.push(Event::Started(turn.clone())),
+                Some(kind @ ("task_complete" | "turn_aborted")) => out.push(Event::Ended { turn: turn.clone(), complete: kind == "task_complete" }),
                 _ => {}
             }
         }
@@ -389,11 +424,75 @@ fn receipt_text(text: &str, marker: &str) -> Receipt {
             p["message"].as_str().unwrap_or("").to_string()
         } else if v["type"] == "response_item" && p["type"] == "message" && p["role"] == "user" {
             p["content"].as_array().map(|parts| parts.iter().filter_map(|part| part["text"].as_str()).collect::<Vec<_>>().join("\n")).unwrap_or_default()
-        } else { String::new() };
-        if !user_text.is_empty() && user_text.contains(marker) {
-            // Codex writes task_started before the user item, including steered items.
-            message_turn = turn.map(str::to_owned).or_else(|| active_turn.clone());
-            result = if message_turn.is_some() { Receipt::Started } else { Receipt::Queued };
+        } else {
+            String::new()
+        };
+        if !user_text.is_empty() {
+            out.push(Event::User { turn, text: user_text });
+        }
+    }
+    out
+}
+
+/// The events in the last 4 MiB of each rollout file, read once per version of the file.
+type Tails = std::collections::HashMap<PathBuf, (u64, Option<std::time::SystemTime>, std::sync::Arc<Vec<Event>>)>;
+static TAILS: Mutex<Option<Tails>> = Mutex::new(None);
+
+fn tail_events(path: &Path) -> Option<std::sync::Arc<Vec<Event>>> {
+    let md = std::fs::metadata(path).ok()?;
+    let (len, modified) = (md.len(), md.modified().ok());
+    if let Some((l, m, ev)) = TAILS.lock().ok().and_then(|t| t.as_ref().and_then(|t| t.get(path).cloned())) {
+        if l == len && m == modified {
+            return Some(ev);
+        }
+    }
+    let ev = std::sync::Arc::new(events_of(&crate::claude::read_tail(path, 4 * 1024 * 1024).ok()?));
+    if let Ok(mut t) = TAILS.lock() {
+        let t = t.get_or_insert_with(Default::default);
+        if t.len() >= 64 {
+            t.clear();
+        }
+        t.insert(path.to_path_buf(), (len, modified, ev.clone()));
+    }
+    Some(ev)
+}
+
+/// Correlate the user item with its active turn; task_started normally precedes it.
+pub fn receipt(thread_id: &str, marker: &str) -> Receipt {
+    let Some(path) = rollout_path(thread_id) else { return Receipt::NotFound };
+    match tail_events(&path) {
+        Some(ev) => receipt_in(&ev, marker),
+        None => Receipt::NotFound,
+    }
+}
+
+#[cfg(test)]
+fn receipt_text(text: &str, marker: &str) -> Receipt {
+    receipt_in(&events_of(text), marker)
+}
+
+fn receipt_in(events: &[Event], marker: &str) -> Receipt {
+    let mut active_turn: Option<&str> = None;
+    let mut message_turn: Option<&str> = None;
+    let mut result = Receipt::NotFound;
+    for e in events {
+        match e {
+            Event::Started(turn) => active_turn = turn.as_deref(),
+            Event::Ended { turn, complete } => {
+                if *complete && turn.is_some() && turn.as_deref() == message_turn {
+                    return Receipt::Completed;
+                }
+                if turn.as_deref() == active_turn {
+                    active_turn = None;
+                }
+            }
+            Event::User { turn, text } => {
+                if text.contains(marker) {
+                    // Codex writes task_started before the user item, including steered items.
+                    message_turn = turn.as_deref().or(active_turn);
+                    result = if message_turn.is_some() { Receipt::Started } else { Receipt::Queued };
+                }
+            }
         }
     }
     result

@@ -525,11 +525,19 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
         let key = if kind == "queued" { waiting_key(c) } else { key };
         return (kind.into(), key.into());
     }
+    // answered: nothing in a transcript can change that
+    if c.status == store::REPLIED {
+        return ("replied".into(), "stage.replied".into());
+    }
     let runs = store.runs(&c.id);
     let delivered_inbox = runs.iter().any(|r| r.action == "inbox" && r.result == "written");
     let queued_codex = runs.iter().any(|r| r.action == "codex" && r.result == "queued");
     let sent_grok = runs.iter().find(|r| r.action == "grok" && r.result == "sent");
-    let receipt = if delivered_inbox {
+    // a turn seen finished stays finished: it is written down once and never looked up again
+    let finished = runs.iter().any(|r| r.action == "receipt" && r.result == "completed");
+    let receipt = if finished {
+        Some(claude::Receipt::Completed { turn_id: String::new() })
+    } else if delivered_inbox {
         claude::receipt(&c.to, None, &c.id).ok()
     } else if queued_codex {
         Some(match crate::codex::receipt(&c.to, &short_id(&c.id)) {
@@ -548,6 +556,9 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
     } else {
         None
     };
+    if !finished && matches!(receipt, Some(claude::Receipt::Completed { .. })) {
+        let _ = store.append_run(&c.id, "receipt", "completed", "");
+    }
     let (key, kind) = match (&receipt, c.status.as_str()) {
         (_, store::REPLIED) => ("stage.replied", "replied"),
         (Some(claude::Receipt::Completed { .. }), _) => ("stage.finished", "replied"),
@@ -1019,6 +1030,50 @@ mod tests {
         assert_eq!(side["unknown"], true);
         assert_eq!(side["address"], Value::Null);
         crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A turn seen finished is written into the copy's log, and from then on its stage needs no
+    /// transcript: here the session does not even exist.
+    #[test]
+    fn a_finished_turn_is_remembered_without_its_transcript() {
+        use crate::store::{Letter, DELIVERED_INBOX, REPLIED};
+        let dir = std::env::temp_dir().join(format!("dispatch-finished-{}", uuid::Uuid::new_v4()));
+        let s = Store::at(dir.clone());
+        let mk = |status: &str| {
+            let mut l = Letter {
+                id: uuid::Uuid::new_v4().to_string(),
+                dispatch_id: uuid::Uuid::new_v4().to_string(),
+                from: "aaaaaaaa-1111-4222-8333-444455556666".into(),
+                from_name: "A".into(),
+                to: "bbbbbbbb-1111-4222-8333-444455556666".into(),
+                to_name: "B".into(),
+                urgency: "普通".into(),
+                wake: true,
+                status: status.into(),
+                created: crate::store::now_text(),
+                deadline: None,
+                to_harness: Some("claude".into()),
+                from_host: None,
+                from_host_name: None,
+                to_host: None,
+                to_host_name: None,
+                from_harness: Some("claude".into()),
+                signature: None,
+                body: "hello".into(),
+                path: String::new(),
+            };
+            s.write_letter(&mut l).unwrap();
+            s.append_run(&l.id, "inbox", "written", "").unwrap();
+            l
+        };
+        let delivered = mk(DELIVERED_INBOX);
+        assert_eq!(stage_of(&s, &delivered), ("delivered".to_string(), "stage.delivered".to_string()), "no transcript to read: it stands as delivered");
+        s.append_run(&delivered.id, "receipt", "completed", "").unwrap();
+        assert_eq!(stage_of(&s, &delivered), ("replied".to_string(), "stage.finished".to_string()));
+        assert_eq!(s.runs(&delivered.id).iter().filter(|r| r.action == "receipt").count(), 1, "written down once");
+        let replied = mk(REPLIED);
+        assert_eq!(stage_of(&s, &replied), ("replied".to_string(), "stage.replied".to_string()));
         let _ = std::fs::remove_dir_all(dir);
     }
 
