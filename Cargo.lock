@@ -1237,7 +1237,7 @@ dependencies = [
 
 [[package]]
 name = "dispatch"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "anyhow",
  "clap",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "dispatch-core"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -1275,7 +1275,7 @@ dependencies = [
 
 [[package]]
 name = "dispatch-desktop"
-version = "0.1.15"
+version = "0.1.16"
 dependencies = [
  "anyhow",
  "dispatch-core",
