@@ -103,7 +103,7 @@ pub fn status_label(status: &str) -> &'static str {
 pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
     match key {
         // how a message would reach a session
-        "reach.off_later" => ("没开着，下次打开它时会看到", "Not running; when next opened"),
+        "reach.off_later" => ("打开它时送到", "Delivered when it is opened"),
         "reach.off_none" => ("收不到：没开着，又没装 hook", "Unreachable: not running, no hook"),
         "reach.noinbox_later" => ("开着，但它的 Claude Code 没开收信口，要等它下次说话", "No inbox open; at its next turn"),
         "reach.noinbox_none" => ("收不到：开着但没开收信口，又没装 hook", "Unreachable: no inbox, no hook"),
@@ -306,7 +306,10 @@ pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
         "party.cli" => ("未认出的命令行", "Unrecognized command line"),
         "party.mcp" => ("未认出的 MCP 调用方", "Unrecognized MCP caller"),
         "reply.person_only_in_app" => ("这封信是写给用户的，只能由用户在 Dispatch App 里回；命令行和 MCP 不能以用户的名义回信", "This message was written to the user, who answers it in the Dispatch app; the command line and MCP cannot reply as the user"),
-        "cli.from_app" => ("--from app 只有 Dispatch App 自己能用：App 发的信算用户本人写的、不经审核。去掉 --from，或写你自己的会话 id", "--from app is reserved for the Dispatch app: what the app sends counts as the user's own and skips review. Leave out --from, or give your own session id"),
+        "cli.from_app" => ("--from app 只有 Dispatch App 自己能用：App 发的信算用户本人写的、不经审核。去掉 --from 就行：在 Claude Code 会话或 Codex 线程里运行时会自动认出是谁", "--from app is reserved for the Dispatch app: what the app sends counts as the user's own and skips review. Leave out --from: run inside a Claude Code session or a Codex thread, it knows who you are"),
+        "cli.from_other" => ("这条命令是在「{me}」里运行的，只能以它自己的名义发信，--from 不能写成「{from}」。去掉 --from 就行", "This command runs inside \"{me}\", so it sends as that session; --from cannot name \"{from}\". Leave out --from"),
+        "cli.from_session" => ("「{from}」是 Claude Code 会话或 Codex 线程：它自己运行命令时会被认出来，别人不能用 --from 替它署名。在那个会话里运行，或去掉 --from", "\"{from}\" is a Claude Code session or a Codex thread: it is recognized when it runs the command itself, and no one else can sign as it with --from. Run it in that session, or leave out --from"),
+        "party.claimed" => ("自称「{name}」", "Calls itself \"{name}\""),
 
         // the command line
         "cli.codex_cmd" => ("codex 命令：{v}", "codex command: {v}"),

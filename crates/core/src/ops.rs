@@ -695,6 +695,11 @@ fn party_of(id: &str, stored_name: &str, harness: Option<&str>, host: Option<(&s
     let host_id = host.map(|h| h.0).unwrap_or("");
     let key = format!("{host_id}|{}", id.to_lowercase());
     let s = index.get(&key);
+    // a name a command line gave itself, with no session of that id behind it: shown as the claim it is
+    if s.is_none() && !crate::send::recognized_sender(id) {
+        let name = t("party.claimed").replace("{name}", stored_name);
+        return (key.clone(), json!({ "key": key, "id": id, "name": name, "app_name": null, "harness": null, "host_id": host.map(|h| h.0), "host_name": host.map(|h| h.1), "person": false, "unknown": true, "address": null, "running": false, "status": null, "cwd_short": null, "avatar": null, "contact": null, "about": null }));
+    }
     let name = s.map(|s| s.display_name()).unwrap_or_else(|| stored_name.to_string());
     let harness = s.map(|s| s.harness.label()).or_else(|| harness_label(harness));
     let address = if id == "mcp" { None } else { Some(match host { Some((h, _)) => format!("{h}/{id}"), None => id.to_string() }) };
@@ -987,6 +992,15 @@ mod tests {
         // a message to the person is answered in the app only, never as the person from outside
         let e = reply_as_agent(&s, &to_you, "as you").unwrap_err().to_string();
         assert_eq!(e, t("reply.person_only_in_app"));
+
+        // a name a command line gave itself is shown as the claim it is
+        mk("d6", "Test Bot", "Test Bot", a, "A", "a claim", "2026-11-08 13:00", DELIVERED_INBOX);
+        let v = threads(&s, 10).unwrap();
+        let claim = v["threads"].as_array().unwrap().iter().find(|t| t["a"]["id"] == "Test Bot" || t["b"]["id"] == "Test Bot").unwrap().clone();
+        let side = if claim["a"]["id"] == "Test Bot" { &claim["a"] } else { &claim["b"] };
+        assert_eq!(side["name"], t("party.claimed").replace("{name}", "Test Bot"));
+        assert_eq!(side["unknown"], true);
+        assert_eq!(side["address"], Value::Null);
         crate::store::set_thread_root(None);
         let _ = std::fs::remove_dir_all(dir);
     }

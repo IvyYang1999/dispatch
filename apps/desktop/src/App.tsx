@@ -38,7 +38,7 @@ export function plain(name: string): string {
  *  app, starts with) on a soft tint, else its initial on a color of its own; the user's color
  *  wins either way. */
 export function Avatar({ name, look, appName, size = 24, harness, unknown }: { name: string; look?: Look | null; appName?: string | null; size?: number; harness?: string | null; unknown?: boolean }) {
-  if (harness) {
+  if (harness && harnessKey(harness) !== 'human') {
     return (
       <span className="avatar-wrap" style={{ width: size, height: size }}>
         <Avatar name={name} look={look} appName={appName} size={size} unknown={unknown} />
@@ -269,6 +269,9 @@ export function HarnessMark({ harness, size = 14 }: { harness?: string | null; s
   return <img className="hmark" width={size} height={size} src={src} alt={harness} title={harness} />
 }
 
+/** In the address book: named by the user, not just remembered for a reply. */
+const isContact = (s: Session) => !!s.contact && !s.provisional
+
 export function presence(s: Session): string {
   if (!s.running) return t('presence.offline')
   const st = s.status ?? 'idle'
@@ -352,11 +355,10 @@ function partySub(p: Party): string {
 function PartyCard({ p, onCompose, onOpen, onEdit }: { p: Party; onCompose: (to: string) => void; onOpen: (address: string) => void; onEdit: (p: Party) => void }) {
   return (
     <div className="party">
-      <Avatar name={p.name} look={p.avatar} appName={p.app_name} size={28} unknown={p.unknown} />
+      <Avatar name={p.name} look={p.avatar} appName={p.app_name} size={28} unknown={p.unknown} harness={p.harness} />
       <div className="party__names">
         <span className="party__name">
           <span className="party__label">{plain(p.name)}</span>
-          <HarnessMark harness={p.harness} />
         </span>
         {!p.person && <span className="party__sub" title={p.unknown ? t('party.unknownSub') : partySub(p)}>{p.unknown ? t('party.unknownSub') : partySub(p)}</span>}
         {p.person && <span className="party__sub">{t('party.youSub')}</span>}
@@ -508,17 +510,15 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
             return (
               <div key={th.key} className="row trow" data-selected={current?.key === th.key || undefined} onClick={() => setSelected(th.key)}>
                 <span className="pair">
-                  <Avatar name={th.a.name} look={th.a.avatar} appName={th.a.app_name} size={22} unknown={th.a.unknown} />
-                  <Avatar name={th.b.name} look={th.b.avatar} appName={th.b.app_name} size={22} unknown={th.b.unknown} />
+                  <Avatar name={th.a.name} look={th.a.avatar} appName={th.a.app_name} size={22} unknown={th.a.unknown} harness={th.a.harness} />
+                  <Avatar name={th.b.name} look={th.b.avatar} appName={th.b.app_name} size={22} unknown={th.b.unknown} harness={th.b.harness} />
                 </span>
                 <div className="row__main">
                   <div className="row__line">
                     <span className="trow__names">
                       <span className="trow__name" title={th.a.host_name ?? ''}>{plain(th.a.name)}</span>
-                      <HarnessMark harness={th.a.harness} size={12} />
                       <span className="trow__sep">⇄</span>
                       <span className="trow__name" title={th.b.host_name ?? ''}>{plain(th.b.name)}</span>
-                      <HarnessMark harness={th.b.harness} size={12} />
                     </span>
                   </div>
                   <div className="row__line">
@@ -554,11 +554,10 @@ function Feed({ onCompose, pick }: { onCompose: (to?: string) => void; pick: str
                   const who = m.side === 'a' ? current.a : current.b
                   return (
                     <div key={m.letter_id} className="tmsg">
-                      <Avatar name={who.name} look={who.avatar} appName={who.app_name} size={28} unknown={who.unknown} />
+                      <Avatar name={who.name} look={who.avatar} appName={who.app_name} size={28} unknown={who.unknown} harness={who.harness} />
                       <div className="tmsg__main">
                       <div className="tmsg__head">
                         <span className="tmsg__who">{plain(who.name)}</span>
-                        <HarnessMark harness={who.harness} size={12} />
                         <span className="tmsg__at">{when(m.at)}</span>
                       </div>
                       <div className="tmsg__body">
@@ -649,7 +648,6 @@ function Agents({ onCompose, onOpenPage }: { onCompose: (to: string) => void; on
   }, [query, search, lang])
   const base = results ?? sessions
   const tools = useMemo(() => Array.from(new Set(base.map((s) => s.harness))), [base])
-  const isContact = (s: Session) => !!s.contact && !s.provisional
   const shown = base.filter((s) => tool === 'all' || (tool === 'contacts' ? isContact(s) : s.harness === tool))
   // this machine first, then each paired machine under its own name
   const groups = useMemo(() => {
@@ -800,11 +798,10 @@ function SessionPage({ id, onCompose, onFeedPick, onBack }: { id: string; onComp
         <div className="spage">
           <div className="spage__head">
             <div className="who">
-              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={40} />
+              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={40} harness={s.harness} />
               <div className="who__text">
                 <div className="who__line">
                   <span className="who__name">{plain(s.name)}</span>
-                  <HarnessMark harness={s.harness} size={16} />
                   {s.host && <span className="tag">{s.host.name}</span>}
                 </div>
                 {s.about && <div className="who__about">{s.about}</div>}
@@ -1472,6 +1469,17 @@ export function App() {
     setScreen('compose')
   }
 
+  // the address book first, most recently active on top; then recent sessions not in it, per machine
+  const contacts = live.filter(isContact).sort((a, b) => b.last_active - a.last_active)
+  const others = live.filter((s) => !isContact(s))
+  const sideRow = (s: Session) => (
+    <div key={`${s.host?.id ?? ''}|${s.id}`} className="agent agent--link" title={[s.host?.name, s.cwd].filter(Boolean).join(' · ')} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
+      <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={20} harness={s.harness} />
+      <span className="agent__name">{plain(s.name)}</span>
+      <span className="presence" data-on={s.running || undefined} title={s.running ? t('presence.onTip') : t('presence.offlineTip')} />
+    </div>
+  )
+
   return (
     <div className="shell">
       <nav className="side" data-tauri-drag-region>
@@ -1485,28 +1493,26 @@ export function App() {
             </button>
           ))}
         </div>
-        <div className="group">
-          <div className="section">{t('side.local')}</div>
-          {live.filter((s) => !s.host).slice(0, 8).map((s) => (
-            <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
-              <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={20} harness={s.harness} />
-              <span className="agent__name">{plain(s.name)}</span>
-              <span className="presence" data-on={s.running || undefined} title={s.running ? t('presence.onTip') : t('presence.offlineTip')} />
+        <div className="side__sessions">
+          {contacts.length > 0 && (
+            <div className="group">
+              <div className="section" title={t('agents.contactsTip')}>{t('agents.contacts')}</div>
+              {contacts.map(sideRow)}
+            </div>
+          )}
+          {others.some((s) => !s.host) && (
+            <div className="group">
+              <div className="section">{t('side.local')}</div>
+              {others.filter((s) => !s.host).slice(0, 8).map(sideRow)}
+            </div>
+          )}
+          {Array.from(new Map(others.filter((s) => s.host).map((s) => [s.host!.id, s.host!])).values()).map((h) => (
+            <div key={h.id} className="group">
+              <div className="section">{h.name}</div>
+              {others.filter((s) => s.host?.id === h.id).slice(0, 5).map(sideRow)}
             </div>
           ))}
         </div>
-        {Array.from(new Map(live.filter((s) => s.host).map((s) => [s.host!.id, s.host!])).values()).map((h) => (
-          <div key={h.id} className="group">
-            <div className="section">{h.name}</div>
-            {live.filter((s) => s.host?.id === h.id).slice(0, 5).map((s) => (
-              <div key={s.id} className="agent agent--link" title={s.cwd ?? ''} data-active={(screen === 'session' && sessionId === addressOf(s)) || undefined} onClick={() => openPage(addressOf(s))}>
-                <Avatar name={s.name} look={s.avatar} appName={s.app_name} size={20} harness={s.harness} />
-                <span className="agent__name">{plain(s.name)}</span>
-                <span className="presence" data-on={s.running || undefined} title={s.running ? t('presence.onTip') : t('presence.offlineTip')} />
-              </div>
-            ))}
-          </div>
-        ))}
         <div className="side__foot">
           <button className="nav" data-active={screen === 'settings' || undefined} onClick={() => setScreen('settings')}>
             <span className="nav__icon"><Icon name="settings" size={17} /></span>

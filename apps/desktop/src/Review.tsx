@@ -8,7 +8,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { LogicalSize } from '@tauri-apps/api/dpi'
 import { api, type ReviewInfo } from './api'
 import { loadLang, t, useLang, type Key } from './i18n'
-import { Avatar, Clamp, HarnessMark, Icon, loadIcons, localStamp, plain, presence } from './App'
+import { Avatar, Clamp, Icon, loadIcons, localStamp, plain, presence } from './App'
 
 function modeText(mode: string | null | undefined, running: boolean): string {
   if (!running) return t('review.notRunning')
@@ -236,17 +236,17 @@ export function Review() {
         <div className="review__body" ref={body}>
           <div className="review__who">
             <div className="review__party">
-              <Avatar name={info.from_name} look={info.from_avatar} size={30} unknown={info.from_unknown} />
+              <Avatar name={info.from_name} look={info.from_avatar} size={30} unknown={info.from_unknown} harness={harnessLabel(info.from_harness)} />
               <div className="review__names">
-                <span className="review__name">{plain(info.from_name)} <HarnessMark harness={harnessLabel(info.from_harness)} /></span>
+                <span className="review__name">{plain(info.from_name)}</span>
                 <span className="review__sub">{t('review.wantsTo')}</span>
               </div>
             </div>
             <div className="review__arrow">→</div>
             <div className="review__party">
-              <Avatar name={shown} look={s?.avatar} appName={s?.app_name} size={30} />
+              <Avatar name={shown} look={s?.avatar} appName={s?.app_name} size={30} harness={s?.harness ?? harnessLabel(info.to_harness)} />
               <div className="review__names">
-                <span className="review__name">{plain(shown)} <HarnessMark harness={s?.harness ?? harnessLabel(info.to_harness)} /></span>
+                <span className="review__name">{plain(shown)}</span>
                 <span className="review__sub review__sub--open">
                   <span className="review__where" title={where ?? undefined}>{where}</span>
                   <button className="review__open" title={t('review.open')} onClick={openIt}>
@@ -309,12 +309,16 @@ export function Review() {
             <div className="review__done">{done}</div>
           ) : (
             <>
-              <label className="review__always">
-                <input type="checkbox" checked={always} disabled={busy || !info.waiting} onChange={(e) => setAlways(e.target.checked)} />
-                <span>{t('review.trustBox')}</span>
-              </label>
+              {info.from_unknown ? (
+                <span className="review__always review__always--note" title={t('review.askEveryTimeTip')}>{t('review.askEveryTime')}</span>
+              ) : (
+                <label className="review__always">
+                  <input type="checkbox" checked={always} disabled={busy || !info.waiting} onChange={(e) => setAlways(e.target.checked)} />
+                  <span>{t('review.trustBox')}</span>
+                </label>
+              )}
               <button className="btn" disabled={busy || !info.waiting} onClick={() => decide('decline')}>{t('review.decline')}</button>
-              <button className="btn btn--primary" disabled={busy || !info.waiting} onClick={() => decide(always ? 'trust' : 'send')}>{t('review.send')}</button>
+              <button className="btn btn--primary" disabled={busy || !info.waiting} onClick={() => decide(always && !info.from_unknown ? 'trust' : 'send')}>{t('review.send')}</button>
             </>
           )}
         </div>

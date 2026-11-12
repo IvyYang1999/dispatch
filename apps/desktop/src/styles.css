@@ -98,6 +98,8 @@ input, textarea { font: inherit; }
 .nav[data-active] { background: var(--nav-active); color: var(--text-strong); }
 .nav__icon { width: 20px; display: grid; place-items: center; color: var(--nav-icon); }
 .icon { display: block; flex: none; }
+.side__sessions { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -10px; padding: 0 10px; display: flex; flex-direction: column; gap: 18px; scrollbar-width: none; }
+.side__sessions::-webkit-scrollbar { display: none; }
 .side__foot { margin-top: auto; padding-bottom: 12px; display: flex; flex-direction: column; }
 .nav[data-active] .nav__icon { color: var(--text-strong); }
 .nav__label { flex: 1; }
@@ -167,9 +169,12 @@ input, textarea { font: inherit; }
 .trow { align-items: center; }
 .trow .row__main { gap: 3px; }
 .pair { flex: none; position: relative; width: 36px; height: 30px; }
-.pair .avatar { position: absolute; box-shadow: 0 0 0 2px var(--surface); }
-.pair .avatar:first-child { left: 0; top: 0; }
-.pair .avatar:last-child { left: 13px; top: 8px; }
+.pair > .avatar, .pair > .avatar-wrap { position: absolute; }
+.pair .avatar { box-shadow: 0 0 0 2px var(--surface); }
+.pair > :first-child { left: 0; top: 0; }
+.pair > :last-child { left: 13px; top: 8px; }
+/* the back picture's mark sits on its free corner, out from under the front one */
+.pair > .avatar-wrap:first-child .avatar-badge { right: auto; left: -4px; }
 .trow[data-selected] .pair .avatar { box-shadow: 0 0 0 2px var(--row-selected); }
 .trow__names { flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; overflow: hidden; }
 .trow__name { min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--text-strong); }
@@ -389,6 +394,7 @@ input, textarea { font: inherit; }
 .review__foot { flex: none; padding: 12px 16px; border-top: 1px solid var(--line); background: var(--surface); display: flex; align-items: center; gap: 8px; }
 .review__always { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); cursor: default; }
 .review__always input { margin: 0; }
+.review__always--note { color: var(--text-faint); }
 .review__sub .review__open { display: inline-flex; align-items: center; gap: 3px; margin-left: 8px; font-size: 11.5px; color: var(--accent); }
 .review__sub .review__open:hover { text-decoration: underline; }
 .review__deadline { font-size: 11.5px; color: var(--text-faint); }

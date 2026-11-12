@@ -174,7 +174,9 @@ pub fn needed(store: &Store, from: &str, to: &Session) -> bool {
     match mode() {
         OFF => false,
         ALL => true,
-        _ => !trusted(store, from, &to.id, to.host.as_ref().map(|h| h.id.as_str())),
+        // a sender Dispatch could not recognize is asked about every time: anyone can be "cli"
+        // or give a name, so letting one through would let them all through
+        _ => !send::recognized_sender(from) || !trusted(store, from, &to.id, to.host.as_ref().map(|h| h.id.as_str())),
     }
 }
 
@@ -258,17 +260,19 @@ pub fn decide(store: &Store, letter_id: &str, decision: &str) -> Result<Value> {
             Ok(json!({ "letter_id": l.id, "decision": "declined", "text": t("review.declined_text") }))
         }
         "send" | "trust" => {
-            if decision == "trust" {
+            // a sender Dispatch could not recognize is never let through for next time
+            let trusting = decision == "trust" && send::recognized_sender(&l.from);
+            if trusting {
                 trust(store, &l.from, &l.to, l.to_host.as_deref())?;
             }
             store.set_status(&mut l, store::UNREAD)?;
-            store.append_run(&l.id, "review", if decision == "trust" { "trusted" } else { "approved" }, "by the user")?;
+            store.append_run(&l.id, "review", if trusting { "trusted" } else { "approved" }, "by the user")?;
             // the wait for delivery starts now, not when the agent asked
             let fresh = store::deadline_text(&store::now_text(), store::default_wait(&l.urgency));
             store.set_deadline(&mut l, &fresh)?;
             let to = send::target_of(&l);
             let rep = send::deliver(store, &to, &mut l, true, false)?;
-            Ok(json!({ "letter_id": l.id, "decision": if decision == "trust" { "trusted" } else { "approved" }, "route": rep.route, "detail": rep.detail, "text": rep.detail }))
+            Ok(json!({ "letter_id": l.id, "decision": if trusting { "trusted" } else { "approved" }, "route": rep.route, "detail": rep.detail, "text": rep.detail }))
         }
         other => Err(anyhow!("a review is decided with send, trust or decline, not \"{other}\"")),
     }
@@ -343,9 +347,15 @@ pub fn info(store: &Store, letter_id: &str) -> Result<Value> {
         "waiting": l.status == store::REVIEW,
         "from": l.from,
         // a sender no session was recognized behind is named for what it is, not by the label it gave
-        "from_name": match l.from.as_str() { "cli" => crate::i18n::t("party.cli").to_string(), "mcp" => crate::i18n::t("party.mcp").to_string(), _ => l.from_name.clone() },
-        "from_unknown": matches!(l.from.as_str(), "cli" | "mcp"),
-        "from_harness": if matches!(l.from.as_str(), "cli" | "mcp") { None } else { l.from_harness.clone() },
+        "from_name": match l.from.as_str() {
+            "cli" => crate::i18n::t("party.cli").to_string(),
+            "mcp" => crate::i18n::t("party.mcp").to_string(),
+            f if !send::recognized_sender(f) => crate::i18n::t("party.claimed").replace("{name}", &l.from_name),
+            _ => l.from_name.clone(),
+        },
+        // not recognized: shown with a question mark, and never offered "send this pair without asking"
+        "from_unknown": !send::recognized_sender(&l.from),
+        "from_harness": if send::recognized_sender(&l.from) { l.from_harness.clone() } else { None },
         "from_avatar": crate::contacts::for_session(&l.from, None).and_then(|c| c.avatar),
         "to": l.to,
         "to_name": l.to_name,
@@ -540,6 +550,37 @@ mod tests {
         let person = session("app", Harness::Human, None);
         assert!(!needed(&store, "app", &to), "the user wrote it in the app");
         assert!(!needed(&store, agent, &person), "a reply to the person lands in the feed");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// The command line with no session behind it, an MCP caller no one recognized, and a name a
+    /// command line gave itself: each message waits for the user, "don't ask again" is not kept,
+    /// and the window says it is not recognized.
+    #[test]
+    fn a_sender_dispatch_cannot_recognize_is_asked_about_every_time() {
+        let dir = std::env::temp_dir().join(format!("dispatch-review-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let store = Store::open();
+        touch_app(&store);
+        let b = "bbbbbbbb-1111-4222-8333-444455556666";
+        let send_from = |from: &str| send::send(&store, send::Request { to: session(b, Harness::Claude, None), from: from.into(), from_name: from.into(), text: "hello".into(), urgency: "普通".into(), dispatch_id: None, wait: false, allow_resume: false, deadline: None, review: true }).unwrap();
+        for from in ["cli", "mcp", "Test Bot"] {
+            let rep = send_from(from);
+            assert_eq!(rep.route, "review", "{from} is held");
+            let v = info(&store, &rep.letter_id).unwrap();
+            assert_eq!(v["from_unknown"], true, "{from} is shown as not recognized");
+            assert!(v["from_harness"].is_null());
+            let out = decide(&store, &rep.letter_id, "trust").unwrap();
+            assert_eq!(out["decision"], "approved", "{from}: sent, but not let through for next time");
+            assert!(!trusted(&store, from, b, None));
+            let again = send_from(from);
+            assert_eq!(again.route, "review", "{from}: the next one asks again");
+            decide(&store, &again.letter_id, "decline").unwrap();
+        }
+        let claim = send_from("Test Bot");
+        assert_eq!(info(&store, &claim.letter_id).unwrap()["from_name"], t("party.claimed").replace("{name}", "Test Bot"));
+        assert_eq!(info(&store, &send_from("cli").letter_id).unwrap()["from_name"], t("party.cli"));
+        crate::store::set_thread_root(None);
         let _ = fs::remove_dir_all(dir);
     }
 }

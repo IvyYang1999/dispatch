@@ -161,6 +161,14 @@ pub fn is_person(id: &str) -> bool {
     matches!(id, "app" | "cli" | "mcp")
 }
 
+/// Whether Dispatch itself knows who sent this: the person at the app, or a Claude Code session
+/// or Codex thread recognized when it ran the command or called the MCP server (their ids are
+/// uuids, and the command line does not let anyone else give one). Everything else is a process
+/// that did not say who it is (`cli`, `mcp`) or a name it gave itself, such as a Grok bot's.
+pub fn recognized_sender(from: &str) -> bool {
+    from == "app" || is_uuid(from)
+}
+
 /// What a sender runs on: a person at the app or the command line, or whatever discovery
 /// knows the id or name as. None when nothing says.
 pub fn sender_harness(from: &str) -> Option<&'static str> {

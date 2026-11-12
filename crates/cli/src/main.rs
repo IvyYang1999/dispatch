@@ -35,7 +35,7 @@ enum Cmd {
     Send {
         #[arg(long)]
         to: Vec<String>,
-        /// Who it is from: a session id or a name (defaults to the session running this, else "cli"; never "app")
+        /// Who it is from, when not run inside a session: a name such as a Grok bot's, which always waits for review (defaults to the session running this, else "cli"; never "app", and never another Claude Code session or Codex thread)
         #[arg(long)]
         from: Option<String>,
         /// normal or urgent
@@ -217,31 +217,68 @@ fn main() {
     std::process::exit(code);
 }
 
+/// Who a command-line message is from.
+///
+/// - `app` is never accepted: only the app writes as the person, and what it sends skips review.
+/// - Run inside a Claude Code session or a Codex thread, the command sends as that one, and
+///   `--from` may only name it.
+/// - Run anywhere else, `--from` may not name a Claude Code session or a Codex thread (they are
+///   recognized when they run the command themselves). Any other name, a Grok bot's for one, is
+///   taken as what the sender calls itself: it always waits for the user's review, and the app
+///   shows it as a claim.
+/// - With neither, the sender is the unrecognized command line.
 fn sender_identity(from: Option<String>) -> Result<(String, String)> {
-    Ok(sender_identity_inner(from.map(|f| f.trim().to_string()).map(|f| if f.eq_ignore_ascii_case("app") { Err(anyhow!("{}", t("cli.from_app"))) } else { Ok(f) }).transpose()?))
+    let from = from.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    if from.as_deref().map(|f| f.eq_ignore_ascii_case("app")).unwrap_or(false) {
+        return Err(anyhow!("{}", t("cli.from_app")));
+    }
+    match (running_inside(), from) {
+        (Some((id, name)), Some(f)) => {
+            if names(&f, &id, &name) {
+                Ok((id, name))
+            } else {
+                let shown = dispatch_core::contacts::for_session(&id, None).map(|c| c.name).unwrap_or(name);
+                Err(anyhow!("{}", t("cli.from_other").replace("{me}", &shown).replace("{from}", &f)))
+            }
+        }
+        (Some(me), None) => Ok(me),
+        (None, Some(f)) => {
+            if claims_a_session(&f) {
+                Err(anyhow!("{}", t("cli.from_session").replace("{from}", &f)))
+            } else {
+                Ok((f.clone(), f))
+            }
+        }
+        (None, None) => Ok(("cli".into(), "cli".into())),
+    }
 }
 
-/// Who a command-line message is from. `app` is never accepted here: only the app writes as the
-/// person, and a message from the app is not held for review.
-fn sender_identity_inner(from: Option<String>) -> (String, String) {
-    if let Some(f) = from {
-        if model::is_uuid(&f) {
-            let name = claude::find_live(&f).and_then(|i| i.name).unwrap_or_else(|| model::short_id(&f));
-            return (f.to_lowercase(), name);
-        }
-        return (f.clone(), f);
-    }
+/// The Claude Code session or Codex thread this command runs in, when it runs in one.
+fn running_inside() -> Option<(String, String)> {
     if let Ok(sid) = std::env::var("CLAUDE_SESSION_ID") {
         if model::is_uuid(&sid) {
             let name = claude::find_live(&sid).and_then(|i| i.name).unwrap_or_else(|| model::short_id(&sid));
-            return (sid.to_lowercase(), name);
+            return Some((sid.to_lowercase(), name));
         }
     }
-    // run by a Claude Code session or a Codex thread without saying so: it is still that one writing
-    if let Some(c) = dispatch_core::ops::caller() {
-        return (c.id, c.name);
+    dispatch_core::ops::caller().map(|c| (c.id, c.name))
+}
+
+/// Whether `f` names this session: its id, an id prefix, its name, or anything that resolves to it.
+fn names(f: &str, id: &str, name: &str) -> bool {
+    f.eq_ignore_ascii_case(id)
+        || (f.len() >= 8 && id.starts_with(&f.to_lowercase()))
+        || f.eq_ignore_ascii_case(name)
+        || send::resolve(f).map(|s| s.id.eq_ignore_ascii_case(id)).unwrap_or(false)
+}
+
+/// Whether `f` is a Claude Code session or a Codex thread: an id, or a name or id prefix that
+/// picks one out (a fragment of a title does not count).
+fn claims_a_session(f: &str) -> bool {
+    if model::is_uuid(f) {
+        return true;
     }
-    ("cli".into(), "cli".into())
+    matches!(send::resolve_how(f), Ok((s, m)) if m != send::Match::Fragment && matches!(s.harness, model::Harness::Claude | model::Harness::Codex))
 }
 
 fn run() -> Result<i32> {

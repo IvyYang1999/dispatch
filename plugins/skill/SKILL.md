@@ -85,7 +85,10 @@ Computer), with the command line at `~/.dispatch/bin/dispatch`:
 - `~/.dispatch/bin/dispatch inbox --session "<your bot name>"` for messages sent to you.
 - `~/.dispatch/bin/dispatch reply <id> "<text>"` to answer one.
 
-Always pass `--from` with your bot name, so replies find you.
+Always pass `--from` with your bot name, so replies find you. Dispatch cannot check that
+name, so every message you send waits for the user's review in the Dispatch app; that is
+expected, not an error. Never pass the name or id of a Claude Code session or a Codex thread:
+the command refuses it.
 
 ## Rules
 
