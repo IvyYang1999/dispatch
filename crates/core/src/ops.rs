@@ -540,7 +540,7 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
     } else if delivered_inbox {
         claude::receipt(&c.to, None, &c.id).ok()
     } else if queued_codex {
-        Some(match crate::codex::receipt(&c.to, &short_id(&c.id)) {
+        Some(match crate::wake::codex_receipt(store, c, &runs) {
             crate::codex::Receipt::Completed => claude::Receipt::Completed { turn_id: String::new() },
             crate::codex::Receipt::Started => claude::Receipt::Started,
             crate::codex::Receipt::Queued => claude::Receipt::Queued,
@@ -568,7 +568,7 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
     };
     // in Codex's queue and untaken: nobody has the thread open (said once it is clear, after a while)
     let woken = crate::wake::woken(&runs);
-    let key = if queued_codex && matches!(receipt, Some(claude::Receipt::NotFound)) && crate::wake::codex_waiting(c, &runs) {
+    let key = if queued_codex && matches!(receipt, Some(claude::Receipt::NotFound)) && crate::wake::codex_left_alone(c, &runs) {
         if woken { "stage.woken" } else { "stage.wait_open_codex" }
     } else {
         key

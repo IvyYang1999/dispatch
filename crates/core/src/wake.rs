@@ -80,13 +80,43 @@ fn current(l: &Letter) -> bool {
     chrono::Local::now().naive_local() <= l.deadline_at()
 }
 
+/// What the Codex thread did with this copy, and it never goes backwards: the first time the
+/// thread is seen to have taken it, and the time its turn is seen finished, are written into the
+/// copy's log. A thread's log moves on and old lines fall out of what is read, so "not found
+/// now" must not undo "taken then": that sent reminders for messages read hours before.
+pub fn codex_receipt(store: &Store, l: &Letter, runs: &[Run]) -> crate::codex::Receipt {
+    use crate::codex::Receipt;
+    let noted = |result: &str| runs.iter().any(|r| r.action == "receipt" && r.result == result);
+    if noted("completed") {
+        return Receipt::Completed;
+    }
+    let taken = noted("taken");
+    match crate::codex::receipt(&l.to, &short_id(&l.id)) {
+        Receipt::Completed => {
+            let _ = store.append_run(&l.id, "receipt", "completed", "");
+            Receipt::Completed
+        }
+        // taken once, and its log no longer shows it (the file is gone or was replaced): long over
+        Receipt::NotFound if taken => Receipt::Completed,
+        Receipt::NotFound => Receipt::NotFound,
+        r => {
+            if !taken {
+                let _ = store.append_run(&l.id, "receipt", "taken", "");
+            }
+            r
+        }
+    }
+}
+
+/// A Codex copy in the thread's queue for a while with nobody running the thread: the part of
+/// "is it waiting" that needs no receipt.
+pub fn codex_left_alone(l: &Letter, runs: &[Run]) -> bool {
+    l.status == store::DELIVERED_CODEX && current(l) && queued_at(runs).map(|at| age_secs(at) >= AFTER_SECS).unwrap_or(false) && !codex_busy(&l.to)
+}
+
 /// A Codex copy sitting in the thread's queue, untaken for a while, with nobody running the thread.
-pub fn codex_waiting(l: &Letter, runs: &[Run]) -> bool {
-    l.status == store::DELIVERED_CODEX
-        && current(l)
-        && queued_at(runs).map(|at| age_secs(at) >= AFTER_SECS).unwrap_or(false)
-        && matches!(crate::codex::receipt(&l.to, &short_id(&l.id)), crate::codex::Receipt::NotFound)
-        && !codex_busy(&l.to)
+pub fn codex_waiting(store: &Store, l: &Letter, runs: &[Run]) -> bool {
+    codex_left_alone(l, runs) && matches!(codex_receipt(store, l, runs), crate::codex::Receipt::NotFound)
 }
 
 /// The link that opens this session in its own app, when there is one: any Codex thread opens in
@@ -124,7 +154,7 @@ pub fn waiting(store: &Store) -> Vec<Value> {
         let Some(s) = local.iter().find(|s| s.id.eq_ignore_ascii_case(&l.to)).cloned().or_else(|| crate::discover::lookup(&l.to)) else { continue };
         let runs = store.runs(&l.id);
         let since = match s.harness {
-            Harness::Codex if codex_waiting(&l, &runs) => queued_at(&runs).map(str::to_string),
+            Harness::Codex if codex_waiting(store, &l, &runs) => queued_at(&runs).map(str::to_string),
             Harness::Claude if l.status == store::UNREAD && !s.running => runs.first().map(|r| r.at.clone()).filter(|at| age_secs(at) >= AFTER_SECS_CLAUDE),
             _ => None,
         };
@@ -177,6 +207,49 @@ mod tests {
     fn run(action: &str, result: &str, secs_ago: i64) -> Run {
         let at = (chrono::Local::now() - chrono::Duration::seconds(secs_ago)).to_rfc3339();
         Run { at, action: action.into(), result: result.into(), detail: String::new() }
+    }
+
+    /// The reminder that would not go away: a message the thread took hours ago, whose line has
+    /// since left what is read of the log. Once taken is written down, it is never waiting again.
+    #[test]
+    fn a_message_once_taken_never_waits_again() {
+        let dir = std::env::temp_dir().join(format!("dispatch-taken-{}", uuid::Uuid::new_v4()));
+        let s = Store::at(dir.clone());
+        let mut l = Letter {
+            id: uuid::Uuid::new_v4().to_string(),
+            dispatch_id: uuid::Uuid::new_v4().to_string(),
+            from: "aaaaaaaa-1111-4222-8333-444455556666".into(),
+            from_name: "A".into(),
+            // a thread with no log on this machine: every lookup says "not found"
+            to: uuid::Uuid::new_v4().to_string(),
+            to_name: "B".into(),
+            urgency: "普通".into(),
+            wake: true,
+            status: store::DELIVERED_CODEX.into(),
+            created: store::now_text(),
+            deadline: None,
+            to_harness: Some("codex".into()),
+            from_host: None,
+            from_host_name: None,
+            to_host: None,
+            to_host_name: None,
+            from_harness: Some("claude".into()),
+            signature: None,
+            body: "hello".into(),
+            path: String::new(),
+        };
+        s.write_letter(&mut l).unwrap();
+        let queued = vec![run("codex", "queued", 60)];
+        assert!(codex_waiting(&s, &l, &queued), "queued a minute ago and never taken: it waits");
+        let mut taken = queued.clone();
+        taken.push(run("receipt", "taken", 30));
+        assert_eq!(codex_receipt(&s, &l, &taken), crate::codex::Receipt::Completed);
+        assert!(!codex_waiting(&s, &l, &taken), "taken once: not waiting, whatever the log shows now");
+        let mut done = queued.clone();
+        done.push(run("receipt", "completed", 30));
+        assert!(!codex_waiting(&s, &l, &done));
+        assert!(s.runs(&l.id).iter().all(|r| r.action != "receipt"), "a lookup that finds nothing writes nothing");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

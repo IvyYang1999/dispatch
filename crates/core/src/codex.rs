@@ -434,6 +434,9 @@ fn events_of(text: &str) -> Vec<Event> {
     out
 }
 
+/// How much of the end of a rollout file is read on every change.
+const TAIL_BYTES: u64 = 4 * 1024 * 1024;
+
 /// The events in the last 4 MiB of each rollout file, read once per version of the file.
 type Tails = std::collections::HashMap<PathBuf, (u64, Option<std::time::SystemTime>, std::sync::Arc<Vec<Event>>)>;
 static TAILS: Mutex<Option<Tails>> = Mutex::new(None);
@@ -446,7 +449,7 @@ fn tail_events(path: &Path) -> Option<std::sync::Arc<Vec<Event>>> {
             return Some(ev);
         }
     }
-    let ev = std::sync::Arc::new(events_of(&crate::claude::read_tail(path, 4 * 1024 * 1024).ok()?));
+    let ev = std::sync::Arc::new(events_of(&crate::claude::read_tail(path, TAIL_BYTES).ok()?));
     if let Ok(mut t) = TAILS.lock() {
         let t = t.get_or_insert_with(Default::default);
         if t.len() >= 64 {
@@ -460,10 +463,108 @@ fn tail_events(path: &Path) -> Option<std::sync::Arc<Vec<Event>>> {
 /// Correlate the user item with its active turn; task_started normally precedes it.
 pub fn receipt(thread_id: &str, marker: &str) -> Receipt {
     let Some(path) = rollout_path(thread_id) else { return Receipt::NotFound };
-    match tail_events(&path) {
-        Some(ev) => receipt_in(&ev, marker),
-        None => Receipt::NotFound,
+    receipt_at(&path, marker)
+}
+
+/// The tail answers for a recent message. One the tail does not hold may simply be older than
+/// the tail: a busy thread writes megabytes after it, and "not in the last 4 MiB" is not "never
+/// taken". So the part before the tail is searched as well, once.
+fn receipt_at(path: &Path, marker: &str) -> Receipt {
+    match tail_events(path).map(|ev| receipt_in(&ev, marker)) {
+        Some(Receipt::NotFound) | None => receipt_before_tail(path, marker),
+        Some(r) => r,
     }
+}
+
+/// What is known about one message in the part of a rollout before its tail: how far that part
+/// has been searched (the file only grows, so it is never searched twice), the line the message
+/// is on once found, and the answer for the file as it was then.
+#[derive(Default, Clone)]
+struct Older {
+    searched_to: u64,
+    found_at: Option<u64>,
+    answer: Option<(u64, Receipt)>,
+}
+static OLDER: Mutex<Option<std::collections::HashMap<(PathBuf, String), Older>>> = Mutex::new(None);
+
+fn receipt_before_tail(path: &Path, marker: &str) -> Receipt {
+    use std::io::{BufRead, Seek, SeekFrom};
+    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else { return Receipt::NotFound };
+    if len <= TAIL_BYTES {
+        return Receipt::NotFound;
+    }
+    // the tail drops the line it starts in, so every line starting at or before this is not in it
+    let head_end = len - TAIL_BYTES;
+    let key = (path.to_path_buf(), marker.to_string());
+    let mut known = OLDER.lock().ok().and_then(|m| m.as_ref().and_then(|m| m.get(&key).cloned())).unwrap_or_default();
+    if known.searched_to > len {
+        known = Older::default();
+    }
+    if let Some((at, r)) = &known.answer {
+        if *at == len {
+            return r.clone();
+        }
+    }
+    if known.found_at.is_none() {
+        let Ok(mut f) = std::fs::File::open(path) else { return Receipt::NotFound };
+        if f.seek(SeekFrom::Start(known.searched_to)).is_err() {
+            return Receipt::NotFound;
+        }
+        let mut reader = std::io::BufReader::with_capacity(1024 * 1024, f);
+        let mut line = Vec::new();
+        let mut pos = known.searched_to;
+        while pos <= head_end {
+            line.clear();
+            let n = match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => n as u64,
+            };
+            let text = String::from_utf8_lossy(&line);
+            if text.contains(marker) && events_of(&text).iter().any(|e| matches!(e, Event::User { text, .. } if text.contains(marker))) {
+                known.found_at = Some(pos);
+                break;
+            }
+            pos += n;
+            known.searched_to = pos;
+        }
+    }
+    let answer = match known.found_at {
+        None => Receipt::NotFound,
+        // from a little before its line (the turn it belongs to starts just above) to the end
+        Some(at) => match read_from(path, at.saturating_sub(1024 * 1024)) {
+            Some(text) => match receipt_in(&events_of(&text), marker) {
+                // the line is there, so the thread took it, whatever the turns around it say
+                Receipt::NotFound => Receipt::Queued,
+                r => r,
+            },
+            // more than is worth reading after it: that turn is long over
+            None => Receipt::Completed,
+        },
+    };
+    known.answer = Some((len, answer.clone()));
+    if let Ok(mut m) = OLDER.lock() {
+        let m = m.get_or_insert_with(Default::default);
+        if m.len() >= 256 {
+            m.clear();
+        }
+        m.insert(key, known);
+    }
+    answer
+}
+
+/// The file from the first whole line after `start` to its end; None when that is over 64 MiB.
+fn read_from(path: &Path, start: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    if len.saturating_sub(start) > 64 * 1024 * 1024 {
+        return None;
+    }
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::with_capacity((len - start.min(len)) as usize);
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    Some(if start > 0 { text.find('\n').map(|i| text[i + 1..].to_string()).unwrap_or_default() } else { text.into_owned() })
 }
 
 #[cfg(test)]
@@ -605,6 +706,34 @@ mod tests {
     #[test]
     fn queued_message_does_not_borrow_later_turn() {
         assert_eq!(receipt_text(&lines(&[user("marker"),event("task_started","b"),event("task_complete","b")]),"marker"),Receipt::Queued);
+    }
+    /// A busy thread writes megabytes after a message. The message is then older than the tail
+    /// that is read on every change, and it must still be found: taken, and its turn finished.
+    #[test]
+    fn a_message_older_than_the_tail_is_still_found() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("dispatch-older-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollout.jsonl");
+        let filler = json!({"type":"response_item","payload":{"type":"function_call_output","output":"x".repeat(64 * 1024)}}).to_string();
+        let mut f = std::fs::File::create(&path).unwrap();
+        writeln!(f, "{}", lines(&[event("task_started", "a"), user("first-marker"), event("task_complete", "a"), event("task_started", "b"), user("second-marker")])).unwrap();
+        for _ in 0..80 {
+            writeln!(f, "{filler}").unwrap();
+        }
+        f.flush().unwrap();
+        assert!(std::fs::metadata(&path).unwrap().len() > TAIL_BYTES + 1024 * 1024);
+        assert_eq!(receipt_in(&tail_events(&path).unwrap(), "first-marker"), Receipt::NotFound, "the tail alone no longer holds it");
+        assert_eq!(receipt_at(&path, "first-marker"), Receipt::Completed);
+        assert_eq!(receipt_at(&path, "second-marker"), Receipt::Started, "taken, its turn still running");
+        assert_eq!(receipt_at(&path, "never-sent"), Receipt::NotFound, "one that was never taken is still not found");
+        // the file grows: the turn ends, and a message arrives that the tail holds
+        writeln!(f, "{}", lines(&[event("task_complete", "b"), event("task_started", "c"), user("third-marker")])).unwrap();
+        f.flush().unwrap();
+        assert_eq!(receipt_at(&path, "second-marker"), Receipt::Completed);
+        assert_eq!(receipt_at(&path, "third-marker"), Receipt::Started);
+        assert_eq!(receipt_at(&path, "never-sent"), Receipt::NotFound);
+        let _ = std::fs::remove_dir_all(dir);
     }
     #[test]
     fn receipt_ignores_assistant_and_event_text() {
