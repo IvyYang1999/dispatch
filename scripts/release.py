@@ -206,10 +206,12 @@ def finish(out, plan, config, runner):
             'Dispatch ' + version + '\n\n'
             'App 和命令行均已 Developer ID 签名、公证。\n'
             '1. 把 Dispatch.app 拖到「应用程序」。\n'
-            '2. 首次使用：打开 App → 设置 → 一键安装；或者运行 ./dispatch install。\n'
+            '2. 首次使用：打开 App → 设置 → Agent，点「一键安装」；或者运行 ./dispatch install。\n'
             '   以后 App 更新并重启时会自动同步已经安装的 CLI。\n'
-            '3. Claude Code：/plugin install dispatch --marketplace IvyYang1999/dispatch\n'
-            '   Codex：codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch\n', encoding='utf-8')
+            '3. 插件：在同一页 Claude Code 和 Codex 各有「安装插件」按钮。自己动手是：\n'
+            '   Claude Code 里依次输入 /plugin marketplace add IvyYang1999/dispatch\n'
+            '   和 /plugin install dispatch@dispatch\n'
+            '   Codex：codex plugin marketplace add IvyYang1999/dispatch && codex plugin add dispatch@dispatch\n', encoding='utf-8')
         zip_file = out / (package.name + '-signed.zip')
         tar = out / ('Dispatch-' + version + '-' + target + '.app.tar.gz')
         zip_file.unlink(missing_ok=True)
