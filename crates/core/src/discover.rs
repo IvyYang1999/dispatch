@@ -49,6 +49,30 @@ fn head_of(path: &Path, mtime: i64) -> (Option<String>, Option<String>) {
     (cwd, title)
 }
 
+/// Whether a Codex rollout belongs to a helper Codex runs on its own: a sub-agent another thread
+/// spawned (the automatic approval reviewer writes one "Guardian review" thread per check,
+/// hundreds of them). Its first line says so: `"source":{"subagent":…}`, or a `thread_source`
+/// that is not the user's. Nobody opens such a thread and nothing reads a message sent to it,
+/// so it is not a session to list or to write to. The first line never changes: read once.
+fn codex_helper(path: &Path) -> bool {
+    static SEEN: LazyLock<Mutex<HashMap<PathBuf, bool>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+    if let Some(h) = SEEN.lock().unwrap().get(path) {
+        return *h;
+    }
+    let head = read_head(path, 64 * 1024);
+    let first = head.split('\n').next().unwrap_or("");
+    let helper = is_helper_meta(first);
+    SEEN.lock().unwrap().insert(path.to_path_buf(), helper);
+    helper
+}
+
+fn is_helper_meta(first_line: &str) -> bool {
+    static SUBAGENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""source"\s*:\s*\{\s*"subagent""#).unwrap());
+    static SOURCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""thread_source"\s*:\s*"([a-z_]+)""#).unwrap());
+    first_line.contains("session_meta")
+        && (SUBAGENT.is_match(first_line) || SOURCE.captures(first_line).map(|c| matches!(&c[1], "guardian_review" | "subagent")).unwrap_or(false))
+}
+
 fn read_head(p: &Path, bytes: usize) -> String {
     let Ok(mut f) = fs::File::open(p) else { return String::new() };
     let mut buf = vec![0u8; bytes];
@@ -173,6 +197,9 @@ fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>) -> Vec<Se
         let Some(mtime) = mtime_ms(e.path()) else { continue };
         let is_loaded = loaded.contains(&id);
         if !is_loaded && max_age.map(|m| now - mtime > m).unwrap_or(false) {
+            continue;
+        }
+        if codex_helper(e.path()) {
             continue;
         }
         let (cwd, title) = head_of(e.path(), mtime);
@@ -525,7 +552,8 @@ fn lookup_files_raw(id: &str) -> Option<Session> {
                 app_name: None,
             });
         }
-        if let Some(p) = codex_rollout(&id) {
+        // a helper thread of Codex's own is no session, even asked for by its id
+        if let Some(p) = codex_rollout(&id).filter(|p| !codex_helper(p)) {
             let mtime = mtime_ms(&p).unwrap_or(0);
             let (cwd, title) = head_of(&p, mtime);
             let loaded = crate::codex::state().loaded.contains(&id);
@@ -585,6 +613,24 @@ mod tests {
         p.project = Some("Trends Lab".into());
         p.cwd = None;
         assert_eq!(reason(&p, &w("trends lab"), None), Some("project"));
+    }
+
+    /// Codex's automatic approval reviewer writes a thread per check ("Guardian review"), with a
+    /// sub-agent source and a parent; such threads cannot be opened and never read a message.
+    #[test]
+    fn codex_helper_threads_are_not_sessions() {
+        let guardian = r#"{"timestamp":"2026-11-12T13:00:00Z","type":"session_meta","payload":{"session_id":"01a19aac","id":"01a19aac","cwd":"/w/transparent","originator":"codex_vscode","cli_version":"0.9","source":{"subagent":{"other":"guardian"}},"thread_source":"guardian_review","parent_thread_id":"01a12f04"}}"#;
+        let spawned = r#"{"type":"session_meta","payload":{"id":"x","source":{ "subagent" : {"thread_spawn":{"depth":1}}}}}"#;
+        let only_kind = r#"{"type":"session_meta","payload":{"id":"x","source":"vscode","thread_source":"guardian_review"}}"#;
+        let user = r#"{"type":"session_meta","payload":{"id":"01a1aa83","source":"vscode","thread_source":"user"}}"#;
+        let exec = r#"{"type":"session_meta","payload":{"id":"y","source":"exec","thread_source":"user"}}"#;
+        let message = r#"{"type":"response_item","payload":{"text":""source":{"subagent" is just words here"}}"#;
+        assert!(is_helper_meta(guardian));
+        assert!(is_helper_meta(spawned));
+        assert!(is_helper_meta(only_kind));
+        assert!(!is_helper_meta(user));
+        assert!(!is_helper_meta(exec));
+        assert!(!is_helper_meta(message), "only the session's own first line counts");
     }
 
     #[test]
