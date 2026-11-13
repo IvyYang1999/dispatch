@@ -135,7 +135,8 @@ pub fn open_url(s: &Session) -> Option<String> {
 pub fn open_command(s: &Session) -> Option<(String, Option<String>)> {
     let cwd = s.cwd.clone().filter(|c| std::path::Path::new(c).is_dir());
     match s.harness {
-        Harness::Claude => cwd.map(|c| (format!("claude --resume {}", s.id), Some(c))),
+        // no `claude` program here: there is nothing a terminal could run
+        Harness::Claude => cwd.and_then(|c| Some((crate::claude::resume_command(&s.id)?, Some(c)))),
         Harness::Codex => Some((format!("codex resume {}", s.id), cwd)),
         _ => None,
     }

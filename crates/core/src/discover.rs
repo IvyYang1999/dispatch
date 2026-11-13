@@ -387,8 +387,9 @@ fn gather(max_age: Option<i64>) -> Vec<Session> {
             app_name: None,
         });
         entry.running = true;
-        entry.desktop = r.desktop;
-        entry.host_session_id = r.host_session_id.clone();
+        // a live record that says nothing does not undo what the app's records said
+        entry.desktop = r.desktop || entry.desktop;
+        entry.host_session_id = r.host_session_id.clone().or_else(|| entry.host_session_id.clone());
         entry.status = r.status.clone();
         if r.name.is_some() {
             entry.name = r.name.clone();
@@ -406,6 +407,10 @@ fn gather(max_age: Option<i64>) -> Vec<Session> {
     let mut all: Vec<Session> = by_id.into_values().collect();
     // the address book: names on listed sessions, and the named ones the window left out
     crate::contacts::apply_local(&mut all);
+    let app = claude::desktop_sessions();
+    for s in &mut all {
+        mark_desktop(s, &app);
+    }
     all.sort_by(|a, b| b.running.cmp(&a.running).then(b.last_active.cmp(&a.last_active)));
     all
 }
@@ -467,6 +472,20 @@ pub fn anywhere(query: &str, only: Option<&crate::peer::PeerInfo>) -> Vec<Sessio
     all
 }
 
+/// The Claude app's own records say which Claude Code sessions are its, running or not: those
+/// open in the app. A closed one is not a terminal session just because nothing runs it now.
+fn mark_desktop(s: &mut Session, app: &HashMap<String, String>) {
+    if s.harness != Harness::Claude || s.host.is_some() {
+        return;
+    }
+    if let Some(app_id) = app.get(&s.id.to_lowercase()) {
+        s.desktop = true;
+        if s.host_session_id.is_none() {
+            s.host_session_id = Some(app_id.clone());
+        }
+    }
+}
+
 /// One session by id, whatever its age: the recent list first, then its files.
 pub fn lookup(id: &str) -> Option<Session> {
     if let Some(s) = local().into_iter().find(|s| s.id.eq_ignore_ascii_case(id)) {
@@ -477,6 +496,12 @@ pub fn lookup(id: &str) -> Option<Session> {
 
 /// A session from its files alone: a Claude Code transcript, a Codex rollout, or a Grok bot.
 pub fn lookup_files(id: &str) -> Option<Session> {
+    let mut s = lookup_files_raw(id)?;
+    mark_desktop(&mut s, &claude::desktop_sessions());
+    Some(s)
+}
+
+fn lookup_files_raw(id: &str) -> Option<Session> {
     let id = id.to_lowercase();
     if crate::model::is_uuid(&id) {
         if let Some(p) = claude::transcript_path(&id, None) {

@@ -97,7 +97,8 @@ pub fn plain(s: &Session, r: &Reach) -> Plain {
             }
         }
         Some("reach.off_later") => {
-            let gone = s.host.is_none() && s.cwd.as_deref().map(|c| !std::path::Path::new(c).is_dir()).unwrap_or(false) && !s.desktop;
+            // a terminal session Dispatch cannot start again: its folder is gone, or there is no `claude` here
+            let gone = s.host.is_none() && !s.desktop && (s.cwd.as_deref().map(|c| !std::path::Path::new(c).is_dir()).unwrap_or(false) || crate::claude::executable().is_none());
             if auto && !gone {
                 plain_of("auto", "plain.auto_title", t(if s.desktop { "plain.claude_desktop" } else { "plain.claude_terminal" }).into(), None)
             } else {

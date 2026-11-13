@@ -148,6 +148,7 @@ pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
         "plain.now" => ("它开着，信一到就能看到。", "It is open and sees the message as soon as it arrives."),
         "plain.auto_title" => ("Dispatch 会帮你打开它", "Dispatch opens it for you"),
         "plain.codex" => ("它在 Codex 里开着的话，十秒内收到；没开着，Dispatch 会在 Codex 里把它打开，打开就收到。你不用做什么。", "If it is open in Codex, it gets the message within ten seconds; if not, Dispatch opens it in Codex and it gets it then. Nothing for you to do."),
+        "open.no_claude" => ("这台电脑上找不到 claude 命令，没法在终端里接着跑它。请在你开它的地方（终端或 Claude）自己打开它。", "There is no claude command on this computer, so it cannot be started again in a terminal. Open it where you started it (a terminal or Claude)."),
         "plain.claude_desktop" => ("它没开着。Dispatch 会在 Claude 里把它打开，打开就收到。你不用做什么。", "It is not open. Dispatch opens it in Claude and it gets the message then. Nothing for you to do."),
         "plain.claude_terminal" => ("它没开着。Dispatch 会开一个终端窗口接着跑它，跑起来就收到。你不用做什么。", "It is not open. Dispatch starts it again in a Terminal window and it gets the message then. Nothing for you to do."),
         "plain.you_title" => ("要你打开它", "You need to open it"),

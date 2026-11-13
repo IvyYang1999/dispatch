@@ -287,6 +287,20 @@ pub fn transcript_path(session_id: &str, cwd: Option<&str>) -> Option<PathBuf> {
 /// desktop app keeps for its own Code sessions (the newest one). The app is started by Finder
 /// without the terminal's PATH, so the folders are looked in directly.
 pub fn executable() -> Option<PathBuf> {
+    static FOUND: std::sync::Mutex<Option<(Instant, Option<PathBuf>)>> = std::sync::Mutex::new(None);
+    if let Some((at, p)) = FOUND.lock().ok().and_then(|f| f.clone()) {
+        if at.elapsed() < Duration::from_secs(60) {
+            return p;
+        }
+    }
+    let p = find_executable();
+    if let Ok(mut f) = FOUND.lock() {
+        *f = Some((Instant::now(), p.clone()));
+    }
+    p
+}
+
+fn find_executable() -> Option<PathBuf> {
     let home = home_dir();
     let names = crate::codex::command_names("claude");
     let mut candidates: Vec<PathBuf> = std::env::var_os("PATH").map(|paths| std::env::split_paths(&paths).flat_map(|dir| names.iter().map(move |n| dir.join(n)).collect::<Vec<_>>()).collect()).unwrap_or_default();
@@ -305,6 +319,67 @@ pub fn executable() -> Option<PathBuf> {
         .filter(|e| e.file_type().is_file() && e.file_name() == "claude" && crate::codex::is_executable(e.path()))
         .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()))
         .map(|e| e.path().to_path_buf())
+}
+
+/// The command that resumes a session in a terminal: the `claude` program found above, by its
+/// full path (the terminal's own PATH may not have it, and the Claude app's copy is on no PATH).
+/// None when there is no `claude` program on this machine at all.
+pub fn resume_command(session_id: &str) -> Option<String> {
+    let exe = executable()?;
+    Some(format!("{} --resume {}", sh_quote(&exe.to_string_lossy()), session_id))
+}
+
+/// One word for a POSIX shell, whatever it holds.
+pub fn sh_quote(s: &str) -> String {
+    if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+=:@%".contains(c)) {
+        return s.to_string();
+    }
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Where the Claude desktop app keeps a record of each of its Code sessions.
+fn desktop_records_root() -> PathBuf {
+    if let Ok(d) = std::env::var("DISPATCH_CLAUDE_APP_SESSIONS") {
+        return d.into();
+    }
+    home_dir().join("Library/Application Support/Claude/claude-code-sessions")
+}
+
+/// The Claude desktop app's Code sessions, as Claude Code session id → the app's own id
+/// (`local_…`, what `claude://code/continue` opens). These records are there whether or not the
+/// session is running, so a closed desktop session is opened in the app, not in a terminal.
+pub fn desktop_sessions() -> std::sync::Arc<std::collections::HashMap<String, String>> {
+    type Kept = (Instant, std::sync::Arc<std::collections::HashMap<String, String>>);
+    static KEPT: std::sync::Mutex<Option<Kept>> = std::sync::Mutex::new(None);
+    if let Some((at, m)) = KEPT.lock().ok().and_then(|k| k.clone()) {
+        if at.elapsed() < Duration::from_secs(30) {
+            return m;
+        }
+    }
+    let m = std::sync::Arc::new(desktop_sessions_in(&desktop_records_root()));
+    if let Ok(mut k) = KEPT.lock() {
+        *k = Some((Instant::now(), m.clone()));
+    }
+    m
+}
+
+fn desktop_sessions_in(root: &Path) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    for e in walkdir::WalkDir::new(root).max_depth(3).into_iter().flatten() {
+        let name = e.file_name().to_string_lossy();
+        if !e.file_type().is_file() || !name.starts_with("local_") || !name.ends_with(".json") {
+            continue;
+        }
+        let Some(r) = read_json(e.path(), 4 * 1024 * 1024) else { continue };
+        let Some(app_id) = r.get("sessionId").and_then(|v| v.as_str()).filter(|s| s.starts_with("local_")) else { continue };
+        // the session it runs now, and the one it last answered from (a resume can start a new one)
+        for k in ["cliSessionId", "lastAssistantCliSessionId"] {
+            if let Some(id) = r.get(k).and_then(|v| v.as_str()).filter(|id| is_uuid(id)) {
+                out.entry(id.to_lowercase()).or_insert_with(|| app_id.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// The end of a file, whole lines only.
@@ -699,6 +774,31 @@ mod tests {
         let next = r#"{"type":"user","uuid":"u2","parentUuid":"a1","message":{"content":"and another thing"}}"#;
         let late = r#"{"type":"assistant","uuid":"a3","parentUuid":"u2","message":{"stop_reason":"end_turn"}}"#;
         assert_eq!(state(&[&user, working, next, late]), Receipt::Started);
+    }
+
+    #[test]
+    fn the_desktop_app_records_say_which_sessions_open_in_claude() {
+        let dir = std::env::temp_dir().join(format!("dispatch-desktop-{}", uuid::Uuid::new_v4()));
+        let inner = dir.join("account").join("org");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(inner.join("local_aaaa.json"), r#"{"sessionId":"local_aaaa","cliSessionId":"42929D07-E293-4AEC-8927-2F82342DA663","lastAssistantCliSessionId":"11111111-2222-4333-8444-555555555555","title":"handoff"}"#).unwrap();
+        fs::write(inner.join("local_bbbb.json"), r#"{"sessionId":"not-local","cliSessionId":"22222222-2222-4333-8444-555555555555"}"#).unwrap();
+        fs::write(inner.join("other.json"), r#"{"sessionId":"local_cccc","cliSessionId":"33333333-2222-4333-8444-555555555555"}"#).unwrap();
+        fs::write(inner.join("local_dddd.json"), "not json").unwrap();
+        let m = desktop_sessions_in(&dir);
+        assert_eq!(m.get("42929d07-e293-4aec-8927-2f82342da663").map(String::as_str), Some("local_aaaa"));
+        assert_eq!(m.get("11111111-2222-4333-8444-555555555555").map(String::as_str), Some("local_aaaa"));
+        assert_eq!(m.len(), 2, "only the app's own records, and only what they say");
+        assert!(desktop_sessions_in(&dir.join("missing")).is_empty());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_path_is_one_word_to_the_shell() {
+        assert_eq!(sh_quote("/usr/local/bin/claude"), "/usr/local/bin/claude");
+        assert_eq!(sh_quote("/Users/me/Library/Application Support/Claude/claude"), "'/Users/me/Library/Application Support/Claude/claude'");
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+        assert_eq!(sh_quote(""), "''");
     }
 
     #[test]
