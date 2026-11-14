@@ -219,11 +219,15 @@ fn bare(c: &Contact) -> Session {
 /// Put this machine's contacts onto its discovery list: names on listed sessions, and an entry
 /// for each contact whose session the list lacks (looked up by id, else from the contact alone).
 pub fn apply_local(list: &mut Vec<Session>) {
+    apply_local_with(list, crate::discover::lookup_files);
+}
+
+pub(crate) fn apply_local_with(list: &mut Vec<Session>, lookup: impl Fn(&str) -> Option<Session>) {
     for c in self::list().into_iter().filter(|c| c.host.is_none()) {
         match list.iter_mut().find(|s| s.id.eq_ignore_ascii_case(&c.session_id)) {
             Some(s) => rename(s, &c),
             None => {
-                let mut s = crate::discover::lookup_files(&c.session_id).unwrap_or_else(|| bare(&c));
+                let mut s = lookup(&c.session_id).unwrap_or_else(|| bare(&c));
                 rename(&mut s, &c);
                 list.push(s);
             }

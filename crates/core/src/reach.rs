@@ -41,7 +41,7 @@ const KEYS: &[&str] = &[
     "reach.off_later", "reach.off_none", "reach.noinbox_later", "reach.noinbox_none", "reach.now_desktop", "reach.now_terminal",
     "reach.bypass_busy", "reach.bypass_idle", "reach.unknown_later", "reach.refuse_later", "reach.bypass_none", "reach.codex_nocli",
     "reach.codex_nodaemon", "reach.codex_queue", "reach.codex_now", "reach.codex_notloaded", "reach.grok_noapp", "reach.grok_nologin",
-    "reach.grok_nocli", "reach.grok_now", "reach.nosocket_later", "reach.nosocket_none", "reach.human", "reach.peer_offline",
+    "reach.grok_nocli", "reach.grok_now", "reach.nosocket_later", "reach.nosocket_none", "reach.human", "reach.peer_offline", "reach.checking",
 ];
 
 /// A reach another machine worked out, its text in this machine's language when it is one of
@@ -137,11 +137,15 @@ pub fn after_send(p: &Plain, route: &str, detail: &str) -> String {
 }
 
 pub fn decide(s: &Session, hook_installed: bool) -> Reach {
+    decide_with(s, hook_installed, None)
+}
+
+pub(crate) fn decide_with(s: &Session, hook_installed: bool, clients: Option<&crate::discover::ClientStates>) -> Reach {
     if s.host.is_some() {
         // the machine it runs on worked all of this out, mode and client included
         return crate::peer::remote_reach(s);
     }
-    let mut r = decide_here(s, hook_installed);
+    let mut r = decide_here(s, hook_installed, clients);
     if s.running {
         match s.harness {
             Harness::Claude => {
@@ -160,7 +164,11 @@ pub fn decide(s: &Session, hook_installed: bool) -> Reach {
     r
 }
 
-fn decide_here(s: &Session, hook_installed: bool) -> Reach {
+fn checking() -> Reach {
+    Reach { level: Level::Later, text: t("reach.checking").into(), fix: None, mode: None, client: None }
+}
+
+fn decide_here(s: &Session, hook_installed: bool, clients: Option<&crate::discover::ClientStates>) -> Reach {
     match s.harness {
         Harness::Claude => {
             if !s.running {
@@ -213,7 +221,7 @@ fn decide_here(s: &Session, hook_installed: bool) -> Reach {
             }
         }
         Harness::Codex => {
-            let st = crate::codex::state();
+            let Some(st) = clients.map(|c| c.codex.clone()).unwrap_or_else(|| Some(crate::codex::state())) else { return checking() };
             if !st.cli {
                 Reach { level: Level::None, text: t("reach.codex_nocli").into(), fix: Some("login".into()), mode: None, client: None }
             } else if st.daemon && st.loaded.contains(&s.id) {
@@ -223,7 +231,7 @@ fn decide_here(s: &Session, hook_installed: bool) -> Reach {
             }
         }
         Harness::Grok => {
-            let st = crate::grok::state();
+            let Some(st) = clients.map(|c| c.grok.clone()).unwrap_or_else(|| Some(crate::grok::state())) else { return checking() };
             if !st.app {
                 Reach { level: Level::None, text: t("reach.grok_noapp").into(), fix: Some("install".into()), mode: None, client: None }
             } else if !st.signed_in {

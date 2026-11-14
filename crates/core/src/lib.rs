@@ -13,6 +13,7 @@
 //! - `contacts`: the address book: stable names for sessions, kept past discovery's window.
 //! - `transcript`: the last turns of a session's own record, for the session page.
 
+mod snapshot;
 pub mod claude;
 pub mod codex;
 pub mod contacts;

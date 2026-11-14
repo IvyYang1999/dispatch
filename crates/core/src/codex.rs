@@ -242,18 +242,16 @@ pub struct State {
     pub at: i64,
 }
 
-static STATE: Mutex<Option<State>> = Mutex::new(None);
-const STATE_TTL_MS: i64 = 5000;
+static STATE: crate::snapshot::Snapshot<State> = crate::snapshot::Snapshot::new();
+const STATE_TTL: Duration = Duration::from_secs(5);
 
 pub fn state() -> State {
-    if let Some(s) = STATE.lock().unwrap().as_ref() {
-        if now_ms() - s.at < STATE_TTL_MS {
-            return s.clone();
-        }
-    }
-    let s = state_now();
-    *STATE.lock().unwrap() = Some(s.clone());
-    s
+    STATE.get(STATE_TTL, |_| state_now())
+}
+
+/// Peer listings never wait for the CLI or app-server. Sending still uses `state`.
+pub(crate) fn state_snapshot() -> Option<State> {
+    STATE.read(STATE_TTL, |_| state_now())
 }
 
 /// Whether the codex command runs here. Asked by starting it, which costs a tenth of a second of

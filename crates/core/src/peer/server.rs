@@ -125,14 +125,7 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
             let store = Store::open();
             match other {
                 Request::Sessions { query } => {
-                    let hook_on = hook::installed();
-                    let list = match query.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-                        // a search: every session here, whatever its age, that has all the words
-                        Some(q) => discover::matching(q, discover::all_local()).into_iter().map(|(s, _)| s).take(SEARCH_MAX).collect(),
-                        None => discover::local(),
-                    };
-                    let sessions = list.into_iter().map(|s| RemoteSession { reach: reach::decide(&s, hook_on), session: s }).collect();
-                    Response::Sessions { hook_installed: hook_on, sessions }
+                    sessions_response(query.as_deref(), &discover::ClientStates::snapshot())
                 }
                 Request::Keys { iroh, iroh_addr } => match super::pin_keys(&peer.id, iroh, iroh_addr) {
                     Ok(()) => Response::Keys { iroh: net::my_id(), iroh_addr: net::my_addr() },
@@ -189,6 +182,75 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
 
 /// At most this many sessions answer a search from another machine.
 const SEARCH_MAX: usize = 200;
+
+fn sessions_response(query: Option<&str>, clients: &discover::ClientStates) -> Response {
+    let hook_on = hook::installed();
+    let query = query.map(str::trim).filter(|q| !q.is_empty());
+    let limit = if query.is_some() { SEARCH_MAX } else { usize::MAX };
+    let sessions = discover::for_peer(query, clients).into_iter().take(limit)
+        .map(|s| RemoteSession { reach: reach::decide_with(&s, hook_on, Some(clients)), session: s }).collect();
+    Response::Sessions { hook_installed: hook_on, sessions }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::{contacts, discover::ClientStates, model::{Harness, Session}, snapshot::Snapshot};
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    #[test]
+    fn peer_list_and_search_answer_while_client_probes_are_blocked() {
+        let root = std::env::temp_dir().join(format!("dispatch-peer-snapshot-{}", uuid::Uuid::new_v4()));
+        store::set_thread_root(Some(root.clone()));
+        struct Reset(std::path::PathBuf);
+        impl Drop for Reset {
+            fn drop(&mut self) { store::set_thread_root(None); let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let _reset = Reset(root);
+        // Named contacts missing from discovery must not fall through to a blocking lookup.
+        let names = ["snapshot-codex-fixture", "snapshot-grok-fixture"];
+        for (name, harness) in names.iter().zip([Harness::Codex, Harness::Grok]) {
+            let s = Session { harness, id: name.to_string(), short_id: name.to_string(), name: None,
+                cwd: None, title: None, last_active: 0, running: false, desktop: false,
+                host_session_id: None, status: None, transcript: None, host: None, project: None, app_name: None };
+            contacts::set(name, &s, "test", None, false).unwrap();
+        }
+        fn blocked<T: Clone + Send + 'static>(value: T) -> (Option<T>, mpsc::Sender<()>, mpsc::Receiver<()>) {
+            let cache: &'static Snapshot<T> = Box::leak(Box::new(Snapshot::new()));
+            let (release, wait) = mpsc::channel();
+            let (entered_tx, entered) = mpsc::channel();
+            let (done_tx, done) = mpsc::channel();
+            let current = cache.read(Duration::from_secs(60), move |_| {
+                entered_tx.send(()).unwrap();
+                let _ = wait.recv_timeout(Duration::from_secs(30));
+                let _ = done_tx.send(());
+                value
+            });
+            entered.recv_timeout(Duration::from_secs(2)).unwrap();
+            (current, release, done)
+        }
+        let (codex, release_codex, done_codex) = blocked(crate::codex::State { cli: true, daemon: true, loaded: Default::default(), at: 0 });
+        let (grok, release_grok, done_grok) = blocked(crate::grok::State { cli: Some("gbot".into()), app: true, signed_in: true, bots: vec![], error: None, at: 0 });
+        let clients = ClientStates { codex, grok };
+        for query in [None, Some("snapshot")] {
+            let start = Instant::now();
+            let response = crate::snapshot::without_blocking_probes(|| sessions_response(query, &clients));
+            assert!(start.elapsed() < IO_TIMEOUT, "client probes blocked the peer response");
+            let Response::Sessions { sessions, .. } = response else { panic!("expected sessions") };
+            for name in names {
+                let found = sessions.iter().find(|r| r.session.id == name).expect("named contact must remain listed");
+                assert_eq!(found.reach.level, reach::Level::Later);
+                assert!(found.reach.fix.is_none(), "a pending probe is not a missing installation");
+                assert_eq!(found.reach.text, t("reach.checking"));
+            }
+        }
+        let _ = release_codex.send(());
+        let _ = release_grok.send(());
+        done_codex.recv_timeout(Duration::from_secs(2)).unwrap();
+        done_grok.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+}
 
 fn ok_id(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')

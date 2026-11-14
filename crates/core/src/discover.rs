@@ -24,6 +24,19 @@ const CODEX_RUNNING_WINDOW_MS: i64 = 15 * 60 * 1000;
 /// file heads are not free.
 const LIST_TTL: Duration = Duration::from_secs(3);
 
+/// One view of the external clients, shared by discovery, contact lookup and reach checks.
+/// A missing snapshot means the first probe is still running, not that a client is absent.
+pub(crate) struct ClientStates {
+    pub codex: Option<crate::codex::State>,
+    pub grok: Option<crate::grok::State>,
+}
+
+impl ClientStates {
+    pub(crate) fn snapshot() -> Self {
+        Self { codex: crate::codex::state_snapshot(), grok: crate::grok::state_snapshot() }
+    }
+}
+
 static LIST: Mutex<Option<(Instant, Vec<Session>)>> = Mutex::new(None);
 /// Every session on this machine whatever its age, for searches; remembered ten seconds.
 static ALL: Mutex<Option<(Instant, Vec<Session>)>> = Mutex::new(None);
@@ -180,11 +193,11 @@ fn discover_claude(running_ids: &std::collections::HashSet<String>, now: i64, ma
     out
 }
 
-fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>) -> Vec<Session> {
+fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>, state: Option<&crate::codex::State>) -> Vec<Session> {
     let root = home_dir().join(".codex").join("sessions");
     let uuid_re = Regex::new(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").unwrap();
     // Threads the shared daemon has loaded are running whatever the file times say.
-    let loaded = crate::codex::state().loaded;
+    let loaded = |id: &str| state.map(|s| s.loaded.contains(id)).unwrap_or(false);
     let threads = codex_threads();
     let mut out = vec![];
     for e in WalkDir::new(&root).max_depth(5).into_iter().flatten() {
@@ -195,7 +208,7 @@ fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>) -> Vec<Se
         let Some(m) = uuid_re.find(&name) else { continue };
         let id = m.as_str().to_lowercase();
         let Some(mtime) = mtime_ms(e.path()) else { continue };
-        let is_loaded = loaded.contains(&id);
+        let is_loaded = loaded(&id);
         if !is_loaded && max_age.map(|m| now - mtime > m).unwrap_or(false) {
             continue;
         }
@@ -298,8 +311,8 @@ fn parse_codex_threads(json: &str) -> HashMap<String, CodexThread> {
 
 /// Grok Bot: the bots the signed-in app can reach through its gateway. They live in the cloud,
 /// so they are always "running"; the list itself is remembered for a minute in `grok::state`.
-fn discover_grok(now: i64) -> Vec<Session> {
-    let st = crate::grok::state();
+fn discover_grok(now: i64, state: Option<&crate::grok::State>) -> Vec<Session> {
+    let Some(st) = state else { return vec![] };
     let sections = if st.bots.is_empty() { vec![] } else { crate::grok::sections() };
     st.bots
         .iter()
@@ -364,6 +377,20 @@ pub fn all_local() -> Vec<Session> {
 }
 
 fn gather(max_age: Option<i64>) -> Vec<Session> {
+    let clients = ClientStates { codex: Some(crate::codex::state()), grok: Some(crate::grok::state()) };
+    gather_with(max_age, &clients)
+}
+
+/// The peer route deliberately bypasses the foreground list caches: neither a cache miss nor
+/// a named old contact may fall back to a synchronous client probe.
+pub(crate) fn for_peer(query: Option<&str>, clients: &ClientStates) -> Vec<Session> {
+    match query.map(str::trim).filter(|q| !q.is_empty()) {
+        Some(q) => matching(q, gather_with(None, clients)).into_iter().map(|(s, _)| s).collect(),
+        None => gather_with(Some(MAX_AGE_MS), clients),
+    }
+}
+
+fn gather_with(max_age: Option<i64>, clients: &ClientStates) -> Vec<Session> {
     let now = now_ms();
     let procs = ps_commands();
     let mut running_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -379,7 +406,7 @@ fn gather(max_age: Option<i64>) -> Vec<Session> {
     let codex_running = Regex::new(r"\bcodex\b").map(|re| re.is_match(&procs)).unwrap_or(false);
 
     let mut by_id: HashMap<String, Session> = HashMap::new();
-    for s in discover_claude(&running_ids, now, max_age).into_iter().chain(discover_codex(codex_running, now, max_age)).chain(discover_grok(now)) {
+    for s in discover_claude(&running_ids, now, max_age).into_iter().chain(discover_codex(codex_running, now, max_age, clients.codex.as_ref())).chain(discover_grok(now, clients.grok.as_ref())) {
         match by_id.get_mut(&s.id) {
             Some(prev) => {
                 // a session can appear under several project slugs after a cwd change
@@ -433,7 +460,7 @@ fn gather(max_age: Option<i64>) -> Vec<Session> {
     }
     let mut all: Vec<Session> = by_id.into_values().collect();
     // the address book: names on listed sessions, and the named ones the window left out
-    crate::contacts::apply_local(&mut all);
+    crate::contacts::apply_local_with(&mut all, |id| lookup_files_with(id, Some(clients)));
     let app = claude::desktop_sessions();
     for s in &mut all {
         mark_desktop(s, &app);
@@ -523,12 +550,16 @@ pub fn lookup(id: &str) -> Option<Session> {
 
 /// A session from its files alone: a Claude Code transcript, a Codex rollout, or a Grok bot.
 pub fn lookup_files(id: &str) -> Option<Session> {
-    let mut s = lookup_files_raw(id)?;
+    lookup_files_with(id, None)
+}
+
+fn lookup_files_with(id: &str, clients: Option<&ClientStates>) -> Option<Session> {
+    let mut s = lookup_files_raw(id, clients)?;
     mark_desktop(&mut s, &claude::desktop_sessions());
     Some(s)
 }
 
-fn lookup_files_raw(id: &str) -> Option<Session> {
+fn lookup_files_raw(id: &str, clients: Option<&ClientStates>) -> Option<Session> {
     let id = id.to_lowercase();
     if crate::model::is_uuid(&id) {
         if let Some(p) = claude::transcript_path(&id, None) {
@@ -556,7 +587,10 @@ fn lookup_files_raw(id: &str) -> Option<Session> {
         if let Some(p) = codex_rollout(&id).filter(|p| !codex_helper(p)) {
             let mtime = mtime_ms(&p).unwrap_or(0);
             let (cwd, title) = head_of(&p, mtime);
-            let loaded = crate::codex::state().loaded.contains(&id);
+            let loaded = match clients {
+                Some(c) => c.codex.as_ref().map(|s| s.loaded.contains(&id)).unwrap_or(false),
+                None => crate::codex::state().loaded.contains(&id),
+            };
             return Some(Session {
                 harness: Harness::Codex,
                 short_id: short_id(&id),
@@ -576,7 +610,8 @@ fn lookup_files_raw(id: &str) -> Option<Session> {
             });
         }
     }
-    discover_grok(now_ms()).into_iter().find(|s| s.id.eq_ignore_ascii_case(&id))
+    let st = clients.map(|c| c.grok.clone()).unwrap_or_else(|| Some(crate::grok::state()));
+    discover_grok(now_ms(), st.as_ref()).into_iter().find(|s| s.id.eq_ignore_ascii_case(&id))
 }
 
 /// The rollout file of a Codex thread, by its id, at any age.
