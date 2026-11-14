@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon, type IconName } from './icons'
 import { LINKS } from './links'
 import { PAGE, type Lang, type ScreenId } from './i18n'
+import { installAnalytics } from './analytics.mjs'
 
 // The app itself is embedded twice, as its main window and its review window (public/app, built
 // from apps/desktop by scripts/build-app.mjs), with a stand-in backend that answers from made-up
@@ -196,6 +197,7 @@ export function App() {
   useEffect(() => {
     document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en'
     document.title = t.title
+    installAnalytics()
     try {
       localStorage.setItem('lang', lang)
     } catch {
@@ -247,7 +249,7 @@ export function App() {
           <h1>{t.h1}</h1>
           <p className="hero__sub">{t.sub}</p>
           <div className="hero__cta">
-            <a className="btn btn--primary" href={latest.mac}>
+            <a className="btn btn--primary" href={latest.mac} data-download-placement="hero">
               {t.download}
             </a>
             <a className="btn" href={LINKS.github} target="_blank" rel="noreferrer">
@@ -257,7 +259,7 @@ export function App() {
           <p className="hero__meta">
             {latest.version ? `${t.version} ${latest.version} · ` : ''}
             {t.meta}{' '}
-            <a href={LINKS.releases} target="_blank" rel="noreferrer">
+            <a href={LINKS.releases} target="_blank" rel="noreferrer" data-download-placement="other_platforms">
               {t.other}
             </a>
           </p>
@@ -314,7 +316,7 @@ export function App() {
             ))}
           </ol>
           <div className="hero__cta">
-            <a className="btn btn--primary" href={latest.mac}>
+            <a className="btn btn--primary" href={latest.mac} data-download-placement="getting_started">
               {t.download}
             </a>
             <a className="btn" href={docs} target="_blank" rel="noreferrer">
@@ -341,6 +343,7 @@ export function App() {
           <Out href={LINKS.email ? `mailto:${LINKS.email}` : null} soon={t.soon}>
             {LINKS.email ?? t.email}
           </Out>
+          <a className="out" href="/privacy.html">{lang === 'zh' ? '网站统计与隐私' : 'Website analytics & privacy'}</a>
         </div>
         <div className="foot__note">{t.license}</div>
       </footer>
