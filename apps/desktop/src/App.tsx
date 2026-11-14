@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { api, type Group, type Kind, type Look, type MergeSuggestion, type WaitItem, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
+import { api, type Group, type Kind, type Look, type MergeSuggestion, type UpdateStatus, type WaitItem, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
 type Screen = 'feed' | 'agents' | 'compose' | 'settings' | 'session'
@@ -1682,12 +1682,26 @@ function Peers() {
 
 type SettingsTab = 'agents' | 'peers' | 'general'
 
-function Settings() {
+function Settings({ tab0, onWelcome }: { tab0?: SettingsTab; onWelcome: () => void }) {
   const lang = useLang()
-  const [tab, setTab] = useState<SettingsTab>('agents')
+  const [tab, setTab] = useState<SettingsTab>(tab0 ?? 'agents')
+  useEffect(() => {
+    if (tab0) setTab(tab0)
+  }, [tab0])
   const [st, setSt] = useState<SetupStatus | null>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [upd, setUpd] = useState<UpdateCheck | null>(null)
+  const [ups, setUps] = useState<UpdateStatus | null>(null)
+  useEffect(() => {
+    const load = () => api.updateStatus().then(setUps).catch(() => {})
+    load()
+    const un = listen('update:changed', load)
+    const h = setInterval(load, 15000)
+    return () => {
+      clearInterval(h)
+      un.then((f) => f())
+    }
+  }, [])
   const [busy, setBusy] = useState<string | null>(null)
   const load = useCallback(() => api.setupStatus().then((s) => {
     setSt(s)
@@ -1708,7 +1722,18 @@ function Settings() {
       setBusy(null)
     }
   }
-  const check = () => run('check', async () => { setUpd(await api.updateCheck()) })
+  const check = () => run('check', async () => { setUpd(await api.updateCheck()); setUps(await api.updateStatus()) })
+  // what to say about updates: what was done in the background first, then what a check found
+  const updateLine = (): string => {
+    if (ups?.installed) return t('upd.installed', { v: ups.installed })
+    if (ups?.ready) return t('upd.ready', { v: ups.ready })
+    if (upd?.available) return `${t('settings.updateAvailable', { v: upd.version ?? '' })}${upd.notes ? `: ${upd.notes}` : ''}`
+    if (ups?.available) return t('settings.updateAvailable', { v: ups.available.version })
+    if (upd) return t('settings.upToDate')
+    if (ups?.checked_at) return t('upd.checked', { at: localStamp(new Date(ups.checked_at).toISOString()) })
+    return t('settings.updateIdle')
+  }
+  const restartable = !!(ups?.installed || ups?.ready || upd?.available || ups?.available)
   const ticked = (key: string) => !!st?.setup_done?.includes(key)
   const tick = (key: string) => (done: boolean) => run(key, async () => { await api.setupMark(key, done) })
   const plugin = (harness: 'claude' | 'codex') => run(`plugin-${harness}`, async () => { await api.installPlugin(harness) }, t(harness === 'claude' ? 'setup.claudePluginDone' : 'setup.codexPluginDone'))
@@ -1930,19 +1955,33 @@ function Settings() {
             </div>
             <div className="host">
               <div className="host__who">
+                <span className="host__name">{t('welcome.again')}</span>
+                <span className="host__found host__found--wrap">{t('welcome.againSub')}</span>
+              </div>
+              <button className="btn btn--small" onClick={onWelcome}>{t('welcome.open')}</button>
+            </div>
+            <div className="host">
+              <div className="host__who">
                 <span className="host__name">{t('settings.storeWhere')}</span>
                 <span className="host__found">{st?.store_root}</span>
               </div>
             </div>
-            <div className="host">
+            <div className="host host--update">
               <div className="host__who">
                 <span className="host__name">Dispatch {st?.version ?? ''}</span>
-                <span className="host__found host__found--wrap">
-                  {upd === null ? t('settings.updateIdle') : upd.available ? `${t('settings.updateAvailable', { v: upd.version ?? '' })}${upd.notes ? `: ${upd.notes}` : ''}` : t('settings.upToDate')}
+                <span className="host__found host__found--wrap">{updateLine()}</span>
+                <span className="host__row">
+                  <span className="seg seg--small">
+                    {(['manual', 'notify', 'download', 'install'] as const).map((m) => (
+                      <button key={m} data-active={(ups?.mode ?? 'download') === m || undefined} title={t(`upd.mode.${m}Sub` as const)} onClick={() => run('upd-mode', async () => { await api.setUpdateMode(m); setUps(await api.updateStatus()) })}>{t(`upd.mode.${m}` as const)}</button>
+                    ))}
+                  </span>
                 </span>
+                <span className="host__found host__found--wrap">{t(`upd.mode.${ups?.mode ?? 'download'}Sub` as const)}</span>
+                {ups?.error && !restartable && <span className="host__found host__found--wrap">{t('upd.error', { e: ups.error })}</span>}
               </div>
-              {upd?.available ? (
-                <button className="btn btn--primary btn--small" disabled={busy !== null} onClick={() => run('update', api.updateInstall)}>{t('settings.updateRestart')}</button>
+              {restartable ? (
+                <button className="btn btn--primary btn--small" disabled={busy !== null} onClick={() => run('update', api.updateInstall)}>{busy === 'update' ? t('setup.installing') : t('settings.updateRestart')}</button>
               ) : (
                 <button className="btn btn--small" disabled={busy !== null} onClick={check}>{busy === 'check' ? t('settings.checking') : t('settings.check')}</button>
               )}
@@ -2233,6 +2272,198 @@ function ProjectPicker({ s, groups, onMoved }: { s: Session; groups: Group[]; on
   )
 }
 
+// ---- Welcome: the first-run guide ----
+
+type WelcomeStep = 'hello' | 'cli' | 'agents' | 'try' | 'more'
+const WELCOME_STEPS: WelcomeStep[] = ['hello', 'cli', 'agents', 'try', 'more']
+
+/** One agent in the guide: whether it is on this computer, what is left, and the one button that does it. */
+function WelcomeAgent({ harness, name, state, done, children }: { harness: string; name: string; state: string; done: boolean | null; children?: React.ReactNode }) {
+  return (
+    <div className="wagent" data-done={done === true || undefined} data-none={done === null || undefined}>
+      <HarnessMark harness={harness} size={22} />
+      <div className="wagent__main">
+        <span className="wagent__name">{name}</span>
+        <span className="wagent__state">{state}</span>
+      </div>
+      {done === true ? <span className="wagent__check">✓</span> : children}
+    </div>
+  )
+}
+
+/** The guide a new user sees once: what Dispatch is, the command line, each agent, a first
+ *  message, and where the rest lives. Every step can be skipped; Settings opens it again. */
+function Welcome({ onDone, onSettings }: { onDone: () => void; onSettings: (tab: SettingsTab) => void }) {
+  useLang()
+  const [step, setStep] = useState<WelcomeStep>('hello')
+  const [st, setSt] = useState<SetupStatus | null>(null)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [msg, setMsg] = useState<string | null>(null)
+  const [first, setFirst] = useState<number | null>(null)
+  const [copied, setCopied] = useState(false)
+  const load = useCallback(() => api.setupStatus().then(setSt).catch(() => {}), [])
+  useEffect(() => {
+    load()
+  }, [load])
+  // on the "try it" step, watch for the first message to appear
+  useEffect(() => {
+    if (step !== 'try') return
+    let base: number | null = null
+    const look = () =>
+      api.feed(50).then((f) => {
+        const n = f.dispatches.length
+        if (base === null) base = n
+        else if (n > base) setFirst(n)
+      }).catch(() => {})
+    look()
+    const h = setInterval(look, 3000)
+    return () => clearInterval(h)
+  }, [step])
+  const run = async (what: string, f: () => Promise<unknown>) => {
+    setBusy(what)
+    setMsg(null)
+    try {
+      await f()
+    } catch (e) {
+      setMsg(String(e))
+    } finally {
+      setBusy(null)
+      load()
+    }
+  }
+  const at = WELCOME_STEPS.indexOf(step)
+  const next = () => (at < WELCOME_STEPS.length - 1 ? setStep(WELCOME_STEPS[at + 1]) : onDone())
+  const back = () => at > 0 && setStep(WELCOME_STEPS[at - 1])
+  const cliDone = !!st?.binary && !!st?.hook_installed
+  const claudeDone = !!st?.hook_installed && !!st?.claude_plugin
+  const codexDone = !!st?.codex_mcp
+  const grokDone = !!st?.grok_signed_in && !!st?.gbot
+  const tryText = t('welcome.tryText')
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(tryText)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      /* the text stays selectable */
+    }
+  }
+  return (
+    <div className="welcome" data-tauri-drag-region>
+      <div className="welcome__card">
+        <div className="welcome__dots">
+          {WELCOME_STEPS.map((s, i) => (
+            <button key={s} className="welcome__dot" data-on={i <= at || undefined} aria-label={t(`welcome.${s}.title` as const)} onClick={() => setStep(s)} />
+          ))}
+          <button className="welcome__skip" onClick={onDone}>{t('welcome.skip')}</button>
+        </div>
+
+        {step === 'hello' && (
+          <div className="welcome__body">
+            <img className="welcome__logo" src="./app-icon.png" alt="" width={72} height={72} />
+            <h1 className="welcome__title">{t('welcome.hello.title')}</h1>
+            <p className="welcome__lead">{t('welcome.hello.lead')}</p>
+            <ul className="welcome__points">
+              <li><b>{t('welcome.hello.p1')}</b>{t('welcome.hello.p1Sub')}</li>
+              <li><b>{t('welcome.hello.p2')}</b>{t('welcome.hello.p2Sub')}</li>
+              <li><b>{t('welcome.hello.p3')}</b>{t('welcome.hello.p3Sub')}</li>
+            </ul>
+          </div>
+        )}
+
+        {step === 'cli' && (
+          <div className="welcome__body">
+            <h1 className="welcome__title">{t('welcome.cli.title')}</h1>
+            <p className="welcome__lead">{t('welcome.cli.lead')}</p>
+            <div className="wagent" data-done={cliDone || undefined}>
+              <span className="wagent__icon">⌘</span>
+              <div className="wagent__main">
+                <span className="wagent__name">{t('welcome.cli.what')}</span>
+                <span className="wagent__state">{cliDone ? t('welcome.cli.done', { p: st?.binary ?? '' }) : st?.bundled_cli ? t('welcome.cli.todo') : t('settings.cliNone')}</span>
+              </div>
+              {cliDone ? <span className="wagent__check">✓</span> : (
+                <button className="btn btn--primary" disabled={busy !== null || !st?.bundled_cli} onClick={() => run('cli', api.installCli)}>{busy === 'cli' ? t('setup.installing') : t('settings.install')}</button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {step === 'agents' && (
+          <div className="welcome__body">
+            <h1 className="welcome__title">{t('welcome.agents.title')}</h1>
+            <p className="welcome__lead">{t('welcome.agents.lead')}</p>
+            <WelcomeAgent harness="Claude" name="Claude Code" done={claudeDone} state={claudeDone ? t('welcome.agents.ready') : !st?.hook_installed ? t('welcome.agents.claudeHook') : t('welcome.agents.claudePlugin')}>
+              {!st?.hook_installed ? (
+                <button className="btn btn--primary btn--small" disabled={busy !== null || !st?.bundled_cli} onClick={() => run('hook', st?.binary ? api.installHook : api.installCli)}>{t('settings.install')}</button>
+              ) : (
+                <button className="btn btn--primary btn--small" disabled={busy !== null || !st?.claude_cli} title={st?.claude_cli ? undefined : t('welcome.agents.noClaude')} onClick={() => run('claude', () => api.installPlugin('claude'))}>{busy === 'claude' ? t('setup.installing') : t('setup.installPlugin')}</button>
+              )}
+            </WelcomeAgent>
+            {st?.codex ? (
+              <WelcomeAgent harness="Codex" name="Codex" done={codexDone} state={codexDone ? t('welcome.agents.ready') : t('welcome.agents.codexTodo')}>
+                <button className="btn btn--primary btn--small" disabled={busy !== null || !st?.bundled_cli} onClick={() => run('codex', api.installCli)}>{busy === 'codex' ? t('setup.installing') : t('setup.register')}</button>
+              </WelcomeAgent>
+            ) : (
+              <WelcomeAgent harness="Codex" name="Codex" done={null} state={t('setup.notHere')} />
+            )}
+            {st?.grok_app ? (
+              <WelcomeAgent harness="Grok Bot" name="Grok Bot" done={grokDone} state={grokDone ? t('setup.grokBots', { n: st.grok_bots }) : t('welcome.agents.grokTodo')}>
+                <button className="btn btn--small" onClick={() => onSettings('agents')}>{t('welcome.agents.grokSteps')}</button>
+              </WelcomeAgent>
+            ) : (
+              <WelcomeAgent harness="Grok Bot" name="Grok Bot" done={null} state={t('setup.notHere')} />
+            )}
+            <p className="welcome__note">{t('welcome.agents.restart')}</p>
+          </div>
+        )}
+
+        {step === 'try' && (
+          <div className="welcome__body">
+            <h1 className="welcome__title">{t('welcome.try.title')}</h1>
+            <p className="welcome__lead">{t('welcome.try.lead')}</p>
+            <div className="copy welcome__copy">
+              <code className="copy__text">{tryText}</code>
+              <button className="btn btn--small" onClick={copy}>{copied ? t('setup.copied') : t('setup.copy')}</button>
+            </div>
+            <ol className="welcome__how">
+              <li>{t('welcome.try.s1')}</li>
+              <li>{t('welcome.try.s2')}</li>
+              <li>{t('welcome.try.s3')}</li>
+            </ol>
+            <div className="welcome__watch" data-done={first !== null || undefined}>
+              <span className="welcome__pulse" />
+              {first !== null ? t('welcome.try.got') : t('welcome.try.waiting')}
+            </div>
+          </div>
+        )}
+
+        {step === 'more' && (
+          <div className="welcome__body">
+            <h1 className="welcome__title">{t('welcome.more.title')}</h1>
+            <ul className="welcome__points">
+              <li><b>{t('welcome.more.feed')}</b>{t('welcome.more.feedSub')}</li>
+              <li><b>{t('welcome.more.side')}</b>{t('welcome.more.sideSub')}</li>
+              <li><b>{t('welcome.more.review')}</b>{t('welcome.more.reviewSub')}</li>
+              <li>
+                <b>{t('welcome.more.peers')}</b>
+                {t('welcome.more.peersSub')}{' '}
+                <button className="welcome__link" onClick={() => onSettings('peers')}>{t('welcome.more.peersGo')}</button>
+              </li>
+            </ul>
+          </div>
+        )}
+
+        {msg && <div className="notice" onClick={() => setMsg(null)}>{msg}</div>}
+        <div className="welcome__foot">
+          {at > 0 && <button className="btn btn--ghost" onClick={back}>{t('welcome.back')}</button>}
+          <span className="bar__spacer" />
+          <button className="btn btn--primary" onClick={next}>{at === 0 ? t('welcome.start') : at === WELCOME_STEPS.length - 1 ? t('welcome.finish') : t('welcome.next')}</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---- Shell ----
 
 const NAV: { key: Screen; label: 'nav.feed' | 'nav.agents' | 'nav.compose' | 'nav.settings'; icon: 'feed' | 'agents' | 'compose' | 'settings' }[] = [
@@ -2251,6 +2482,21 @@ export function App() {
   const [queued, setQueued] = useState(0)
   const [pick, setPick] = useState<string | null>(null)
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [welcome, setWelcome] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab | undefined>(undefined)
+  // the guide comes up by itself once, for someone who has not set anything up or sent anything yet
+  useEffect(() => {
+    api.setupStatus().then(async (st) => {
+      if (st.onboarded) return
+      const fresh = !st.binary || (await api.feed(1).then((f) => f.dispatches.length === 0).catch(() => true))
+      if (fresh) setWelcome(true)
+      else api.setOnboarded(true).catch(() => {})
+    }).catch(() => {})
+  }, [])
+  const closeWelcome = () => {
+    setWelcome(false)
+    api.setOnboarded(true).catch(() => {})
+  }
   const openPage = (id: string) => {
     setSessionId(id)
     setScreen('session')
@@ -2333,8 +2579,9 @@ export function App() {
         {screen === 'agents' && <Agents onCompose={compose} onOpenPage={openPage} />}
         {screen === 'session' && sessionId && <SessionPage id={sessionId} groups={groups} onFiled={tick} onCompose={compose} onFeedPick={feedPick} onBack={() => setScreen('agents')} />}
         {screen === 'compose' && <Compose presetTo={composeTo} onSent={() => setScreen('feed')} />}
-        {screen === 'settings' && <Settings />}
+        {screen === 'settings' && <Settings tab0={settingsTab} onWelcome={() => setWelcome(true)} />}
       </main>
+      {welcome && <Welcome onDone={closeWelcome} onSettings={(tab) => { closeWelcome(); setSettingsTab(tab); setScreen('settings') }} />}
     </div>
   )
 }

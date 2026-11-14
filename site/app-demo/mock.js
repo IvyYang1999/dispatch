@@ -632,6 +632,7 @@
           store_root: '/Users/you/Library/Application Support/Dispatch',
           claude_plugin: true,
           claude_cli: '/usr/local/bin/claude',
+          onboarded: true,
           setup_done: settings.setupDone || (settings.setupDone = ['grok_computer', 'grok_skill']),
           notify: settings.notify,
           theme: settings.theme,
@@ -654,6 +655,13 @@
         return L('This is a demo: nothing was installed.', '这里是演示，没有真的安装任何东西。')
       case 'update_check':
         return { available: false, current: version }
+      case 'update_status':
+        return { mode: settings.updates || 'download', current: version, checked_at: Date.now() - 40 * MIN, error: null, available: null, ready: null, installed: null }
+      case 'set_update_mode':
+        settings.updates = args.mode
+        return args.mode
+      case 'set_onboarded':
+        return args.done
       case 'update_install':
         return null
       case 'peers_overview':

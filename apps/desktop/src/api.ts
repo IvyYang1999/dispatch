@@ -149,6 +149,8 @@ export interface SetupStatus {
   claude_cli?: string | null
   /** Setup steps the user ticked by hand: Dispatch cannot see them. */
   setup_done?: string[]
+  /** The first-run guide was seen. */
+  onboarded?: boolean
   notify: boolean
   theme: 'system' | 'light' | 'dark'
   /** Claude Code's crossSessionInbound in the user's settings: accept / hold / refuse, or null. */
@@ -164,6 +166,19 @@ export interface SetupStatus {
   wake: 'auto' | 'ask' | 'off'
   version: string
   cli_sync_error: string | null
+}
+export type UpdateMode = 'manual' | 'notify' | 'download' | 'install'
+/** Where updates stand: what the app found in the background, and what it did with it. */
+export interface UpdateStatus {
+  mode: UpdateMode
+  current: string
+  checked_at: number | null
+  error: string | null
+  available: { version: string; notes: string | null } | null
+  /** Downloaded, waiting to be installed. */
+  ready: string | null
+  /** Installed; takes effect when Dispatch restarts. */
+  installed: string | null
 }
 export interface UpdateCheck {
   available: boolean
@@ -352,9 +367,12 @@ export const api = {
   installCli: () => invoke<string>('install_cli'),
   installPlugin: (harness: 'claude' | 'codex') => invoke<string>('install_plugin', { harness }),
   setGrokSections: (mode: 'start' | 'follow' | 'off') => invoke<string>('set_grok_sections', { mode }),
+  setOnboarded: (done: boolean) => invoke<boolean>('set_onboarded', { done }),
   setupMark: (key: string, done: boolean) => invoke<string[]>('setup_mark', { key, done }),
   updateCheck: () => invoke<UpdateCheck>('update_check'),
   updateInstall: () => invoke<void>('update_install'),
+  updateStatus: () => invoke<UpdateStatus>('update_status'),
+  setUpdateMode: (mode: UpdateMode) => invoke<string>('set_update_mode', { mode }),
   getLang: () => invoke<string>('get_lang'),
   setLang: (lang: string) => invoke<string>('set_lang', { lang }),
   setNotify: (on: boolean) => invoke<boolean>('set_notify', { on }),

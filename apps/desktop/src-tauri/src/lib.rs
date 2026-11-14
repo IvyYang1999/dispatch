@@ -49,6 +49,7 @@ struct Reviews {
     dismissed: Mutex<HashSet<String>>,
 }
 
+const MAIN_WINDOW: &str = "main";
 const REVIEW_WINDOW: &str = "review";
 
 /// Messages waiting for their session to be opened: what the reminder shows now, what the user
@@ -730,6 +731,7 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "review": review::mode(),
             "wake": wake::mode(),
             "review_trusted": review::trusted_count(&Store::open()),
+            "onboarded": settings::get("onboarded").and_then(|v| v.as_bool()).unwrap_or(false),
             "version": env!("CARGO_PKG_VERSION"),
         }))
     })
@@ -947,6 +949,13 @@ async fn project_dismiss(app: AppHandle, key: String) -> Result<(), String> {
     r
 }
 
+/// The first-run guide was seen (finished or skipped): it does not come up by itself again.
+#[tauri::command]
+async fn set_onboarded(done: bool) -> Result<bool, String> {
+    settings::set("onboarded", json!(done)).map_err(|e| e.to_string())?;
+    Ok(done)
+}
+
 /// How Grok Bot's own sidebar sections file its bots here: start, follow or off.
 #[tauri::command]
 async fn set_grok_sections(app: AppHandle, mode: String) -> Result<String, String> {
@@ -1005,13 +1014,192 @@ async fn update_check(app: tauri::AppHandle) -> Result<Value, String> {
     }
 }
 
+/// Install now and restart: what was downloaded already, else whatever is newest.
 #[tauri::command]
 async fn update_install(app: tauri::AppHandle) -> Result<(), String> {
-    let Some(u) = updater(&app)?.check().await.map_err(|e| e.to_string())? else {
-        return Err(t("app.no_update").into());
-    };
-    u.download_and_install(|_, _| {}, || {}).await.map_err(|e| t("app.update_failed").replace("{e}", &e.to_string()))?;
+    let ready = app.state::<Updates>().0.lock().ok().and_then(|s| s.ready.clone());
+    let installed = app.state::<Updates>().0.lock().ok().and_then(|s| s.installed.clone());
+    if let Some((u, bytes)) = ready {
+        u.install(bytes.as_slice()).map_err(|e| t("app.update_failed").replace("{e}", &e.to_string()))?;
+    } else if installed.is_none() {
+        let Some(u) = updater(&app)?.check().await.map_err(|e| e.to_string())? else {
+            return Err(t("app.no_update").into());
+        };
+        u.download_and_install(|_, _| {}, || {}).await.map_err(|e| t("app.update_failed").replace("{e}", &e.to_string()))?;
+    }
     app.restart();
+}
+
+// ---- updates in the background ----
+
+/// How updates come in (settings key `updates`): `manual` (only when the user checks),
+/// `notify` (check now and then, and say when one is out), `download` (the default: download
+/// it, install when the user restarts or quits), `install` (download, install, and restart
+/// when nobody is looking).
+fn update_mode() -> &'static str {
+    match settings::get("updates").as_ref().and_then(|v| v.as_str()) {
+        Some("manual") => "manual",
+        Some("notify") => "notify",
+        Some("install") => "install",
+        _ => "download",
+    }
+}
+
+#[derive(Default)]
+struct UpdateState {
+    /// When it last looked (ms since 1970), and what went wrong then, if anything.
+    checked_at: Option<i64>,
+    error: Option<String>,
+    /// The newer version that is out, with its notes.
+    available: Option<(String, Option<String>)>,
+    /// Downloaded and verified, waiting to be installed.
+    ready: Option<(tauri_plugin_updater::Update, std::sync::Arc<Vec<u8>>)>,
+    /// Installed on disk; this process is still the old one until it restarts.
+    installed: Option<String>,
+    /// The version the user was last told about, so each is said once.
+    told: Option<String>,
+}
+
+#[derive(Default)]
+struct Updates(Mutex<UpdateState>);
+
+/// One round: look for a newer version and, as the mode says, tell, download or install it.
+async fn update_round(app: &AppHandle) {
+    let mode = update_mode();
+    if mode == "manual" {
+        return;
+    }
+    let found = match updater(app) {
+        Ok(u) => u.check().await.map_err(|e| e.to_string()),
+        Err(e) => Err(e),
+    };
+    let now = model::now_ms();
+    let u = match found {
+        Ok(Some(u)) => u,
+        Ok(None) => {
+            if let Ok(mut s) = app.state::<Updates>().0.lock() {
+                (s.checked_at, s.error, s.available) = (Some(now), None, None);
+            }
+            return;
+        }
+        Err(e) => {
+            if let Ok(mut s) = app.state::<Updates>().0.lock() {
+                (s.checked_at, s.error) = (Some(now), Some(e));
+            }
+            return;
+        }
+    };
+    let version = u.version.clone();
+    let (have, done) = app.state::<Updates>().0.lock().map(|mut s| {
+        (s.checked_at, s.error, s.available) = (Some(now), None, Some((version.clone(), u.body.clone())));
+        (s.ready.as_ref().map(|(r, _)| r.version == version).unwrap_or(false), s.installed.as_deref() == Some(version.as_str()))
+    }).unwrap_or((false, false));
+    if done {
+        return;
+    }
+    let mut said = None;
+    if mode == "notify" {
+        said = Some(t("update.out").replace("{v}", &version));
+    } else if !have {
+        match u.download(|_, _| {}, || {}).await {
+            Ok(bytes) => {
+                if mode == "install" {
+                    match u.install(&bytes) {
+                        Ok(()) => {
+                            if let Ok(mut s) = app.state::<Updates>().0.lock() {
+                                (s.installed, s.ready) = (Some(version.clone()), None);
+                            }
+                            said = Some(t("update.installed").replace("{v}", &version));
+                        }
+                        Err(e) => {
+                            if let Ok(mut s) = app.state::<Updates>().0.lock() {
+                                s.error = Some(e.to_string());
+                            }
+                        }
+                    }
+                } else {
+                    if let Ok(mut s) = app.state::<Updates>().0.lock() {
+                        s.ready = Some((u.clone(), std::sync::Arc::new(bytes)));
+                    }
+                    said = Some(t("update.ready").replace("{v}", &version));
+                }
+            }
+            Err(e) => {
+                if let Ok(mut s) = app.state::<Updates>().0.lock() {
+                    s.error = Some(e.to_string());
+                }
+            }
+        }
+    }
+    // each version is said once, and only when notifications are on
+    if let Some(body) = said {
+        let first = app.state::<Updates>().0.lock().map(|mut s| {
+            let first = s.told.as_deref() != Some(body.as_str());
+            s.told = Some(body.clone());
+            first
+        }).unwrap_or(false);
+        if first && settings::notify_enabled() {
+            let _ = app.notification().builder().title("Dispatch").body(body).show();
+        }
+        let _ = app.emit("update:changed", ());
+    }
+}
+
+/// Whether any of the app's windows is in front of the user.
+fn anything_shown(app: &AppHandle) -> bool {
+    [MAIN_WINDOW, REVIEW_WINDOW, WAIT_WINDOW].iter().any(|l| app.get_webview_window(l).map(|w| w.is_visible().unwrap_or(false)).unwrap_or(false))
+}
+
+/// A minute after launch and then every six hours, look for an update. An update installed in
+/// the background takes effect with a restart, done when no window of the app is open.
+fn start_update_watcher(app: AppHandle) {
+    std::thread::Builder::new()
+        .name("dispatch-updates".into())
+        .spawn(move || {
+            std::thread::sleep(Duration::from_secs(60));
+            let mut last: Option<Instant> = None;
+            loop {
+                if last.map(|t| t.elapsed() >= Duration::from_secs(6 * 3600)).unwrap_or(true) {
+                    tauri::async_runtime::block_on(update_round(&app));
+                    last = Some(Instant::now());
+                }
+                let installed = app.state::<Updates>().0.lock().ok().and_then(|s| s.installed.clone());
+                if installed.is_some() && update_mode() == "install" && !anything_shown(&app) && review::queued(&Store::open()).is_empty() {
+                    app.restart();
+                }
+                std::thread::sleep(Duration::from_secs(600));
+            }
+        })
+        .expect("spawn the update watcher");
+}
+
+/// Where updates stand, for Settings.
+#[tauri::command]
+async fn update_status(app: AppHandle) -> Result<Value, String> {
+    let s = app.state::<Updates>();
+    let s = s.0.lock().map_err(|e| e.to_string())?;
+    Ok(json!({
+        "mode": update_mode(),
+        "current": app.package_info().version.to_string(),
+        "checked_at": s.checked_at,
+        "error": s.error,
+        "available": s.available.as_ref().map(|(v, notes)| json!({ "version": v, "notes": notes })),
+        "ready": s.ready.as_ref().map(|(u, _)| u.version.clone()),
+        "installed": s.installed,
+    }))
+}
+
+#[tauri::command]
+async fn set_update_mode(app: AppHandle, mode: String) -> Result<String, String> {
+    let mode = match mode.as_str() {
+        "manual" | "notify" | "download" | "install" => mode,
+        other => return Err(format!("unknown mode: {other}")),
+    };
+    settings::set("updates", json!(mode)).map_err(|e| e.to_string())?;
+    // a more eager choice acts now rather than in six hours
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move { update_round(&handle).await });
+    Ok(mode)
 }
 
 // ---- the window, the menu bar item, the watcher ----
@@ -1351,9 +1539,10 @@ pub fn run() {
         .manage(Cache::default())
         .manage(Reviews::default())
         .manage(Waits::default())
+        .manage(Updates::default())
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
-            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, setup_mark, set_grok_sections, project_move, project_folder, project_merge, project_order, project_release, project_rename, project_dissolve, project_dismiss, update_check, update_install, get_lang, set_lang, set_notify, set_theme, retry, cancel,
+            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, setup_mark, set_onboarded, set_grok_sections, project_move, project_folder, project_merge, project_order, project_release, project_rename, project_dissolve, project_dismiss, update_check, update_install, update_status, set_update_mode, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget,
             wait_list, wait_open, wait_dismiss, set_wake, share_set
@@ -1369,6 +1558,7 @@ pub fn run() {
             start_watcher(app.handle().clone());
             start_review_watcher(app.handle().clone());
             start_wake_watcher(app.handle().clone());
+            start_update_watcher(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1389,14 +1579,17 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Dispatch");
     app.run(|app, event| {
+        // An update downloaded and waiting goes in as the app quits, so the next start is the new one.
+        if let tauri::RunEvent::Exit = event {
+            let ready = app.state::<Updates>().0.lock().ok().and_then(|mut s| s.ready.take());
+            if let Some((u, bytes)) = ready {
+                let _ = u.install(bytes.as_slice());
+            }
+        }
         // The Dock icon: bring the window back, whether it was hidden, minimized or just behind.
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = event {
             show_main(app);
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = (app, event);
         }
     });
 }
