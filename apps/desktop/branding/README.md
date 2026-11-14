@@ -13,11 +13,10 @@ The mark: a heavy D whose bowl becomes two crossing arrows, black and white only
 - `icon-dark.svg`: the icon as a picture, white mark on a black tile to the edges (README).
 - `logo-light-framed.svg`: the mark inside a gapped rounded frame, for light backgrounds.
 
-Geometry (1024 box, y down): stroke 100, round caps and joins. The two stems are mirror images
-about y = 512: from the D's top and bottom bars, through the bowl, crossing at its rightmost
-point, and out to the right, coming in at 30 degrees under heads that point 8 degrees off the
-horizontal (as in the sketch and the shuffle sign), their tips level with the D's bars. The
-heads are rounded triangles, 160 long and 200 wide.
+Geometry (1024 box, y down): stroke 100, round caps and joins; the two arrow paths are mirror
+images about y = 512, so their tails match; the arrowheads are triangles whose tips sit on the
+D's top and bottom lines. (A redrawing with rounded heads pointing nearly right went out in
+0.1.17 and was taken back in 0.1.18.)
 
 The Mac icon follows Apple's grid: an 824 tile centred in the 1024 canvas, transparent around it,
 with a soft shadow. macOS 11 to 15 show an icon as drawn, so a tile to the edges looks a size

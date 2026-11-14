@@ -12,41 +12,28 @@ import Foundation
 let out = URL(fileURLWithPath: CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : ".")
 
 // ---- geometry, in a 1024 box, y down ----
+// The original mark (2026-11-04), kept as drawn: the D's bars run through the bowl, cross at
+// its rightmost point and sweep out to the right; the heads are plain triangles whose tips sit
+// on the D's top and bottom lines. A redrawing with rounded heads pointing nearly right was tried
+// in 0.1.17 and taken back: the original reads better.
 let W: CGFloat = 100            // stroke
-let angle: CGFloat = 8 * .pi / 180    // the heads point this far off the horizontal
-let stemAngle: CGFloat = 30 * .pi / 180  // the stems come into the heads at this angle
-let tail = CGPoint(x: 748, y: 700)    // where the lower stem ends (the upper one is mirrored)
-let headLen: CGFloat = 160      // from the stem's end to the tip
-let headHalf: CGFloat = 100     // half the head's width at its base
-let headBack: CGFloat = 26      // the base sits this far behind the stem's end, covering its cap
-let headRound: CGFloat = 20     // the head's corners are rounded by this much
-let shiftX: CGFloat = -44       // centres the mark (the D is narrower on the left than the arrows on the right)
+let shiftX: CGFloat = -50       // centres the mark (the D is narrower on the left than the arrows on the right)
 
 func lowerStem() -> CGMutablePath {
     let p = CGMutablePath()
-    let dir = CGPoint(x: cos(stemAngle), y: sin(stemAngle))
     p.move(to: CGPoint(x: 270, y: 734))
     p.addLine(to: CGPoint(x: 270, y: 290))
     p.addLine(to: CGPoint(x: 380, y: 290))
     p.addCurve(to: CGPoint(x: 610, y: 512), control1: CGPoint(x: 530, y: 290), control2: CGPoint(x: 575, y: 420))
-    // through the crossing, then bending out along `angle`
-    p.addCurve(to: tail, control1: CGPoint(x: 638, y: 585), control2: CGPoint(x: tail.x - 80 * dir.x, y: tail.y - 80 * dir.y))
+    p.addCurve(to: CGPoint(x: 780, y: 664), control1: CGPoint(x: 625, y: 549), control2: CGPoint(x: 728, y: 634))
     return p
 }
 
 func lowerHead() -> CGMutablePath {
-    let d = CGPoint(x: cos(angle), y: sin(angle))
-    let n = CGPoint(x: -d.y, y: d.x)
-    let base = CGPoint(x: tail.x - headBack * d.x, y: tail.y - headBack * d.y)
-    let tip = CGPoint(x: tail.x + headLen * d.x, y: tail.y + headLen * d.y)
-    let a = CGPoint(x: base.x + headHalf * n.x, y: base.y + headHalf * n.y)
-    let b = CGPoint(x: base.x - headHalf * n.x, y: base.y - headHalf * n.y)
     let p = CGMutablePath()
-    // a triangle with rounded corners: arcs between the edges
-    p.move(to: CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2))
-    p.addArc(tangent1End: a, tangent2End: tip, radius: headRound)
-    p.addArc(tangent1End: tip, tangent2End: b, radius: headRound * 0.7)
-    p.addArc(tangent1End: b, tangent2End: a, radius: headRound)
+    p.move(to: CGPoint(x: 840, y: 560))
+    p.addLine(to: CGPoint(x: 901, y: 734))
+    p.addLine(to: CGPoint(x: 720, y: 768))
     p.closeSubpath()
     return p
 }
@@ -124,13 +111,7 @@ func fullIcon(_ size: Int) -> CGContext {
     ctx.addPath(tile(CGRect(x: 0, y: 0, width: 1024, height: 1024), radius: 230))
     ctx.setFillColor(black)
     ctx.fillPath()
-    // the mark a little smaller than on the bare canvas, so it keeps a margin inside the tile
-    ctx.saveGState()
-    ctx.translateBy(x: 512, y: 512)
-    ctx.scaleBy(x: 0.94, y: 0.94)
-    ctx.translateBy(x: -512, y: -512)
     drawMark(ctx, color: white)
-    ctx.restoreGState()
     return ctx
 }
 

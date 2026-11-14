@@ -3,14 +3,14 @@
   <rect width="1280" height="640" fill="#111111"/>
   <!-- the mark, 300 px tall, bbox at (120,170) -->
   <g transform="translate(-9 20) scale(0.586)">
-    <g transform="translate(-44 0)">
+    <g transform="translate(-50 0)">
       <g fill="none" stroke="#ffffff" stroke-width="100" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M 270 734 V 290 H 380 C 530 290, 575 420, 610 512 C 638 585, 678.7 660, 748 700"/>
-        <path d="M 270 290 V 734 H 380 C 530 734, 575 604, 610 512 C 638 439, 678.7 364, 748 324"/>
+        <path d="M 270 734 V 290 H 380 C 530 290, 575 420, 610 512 C 625 549, 728 634, 780 664"/>
+        <path d="M 270 734 H 380 C 530 734, 575 604, 610 512 C 625 475, 728 390, 780 360"/>
       </g>
       <g fill="#ffffff">
-        <path d="M 739.7 783.8 L 882 731.3 A 14 14 0 0 0 885.4 706.9 L 763.1 617.1 A 20 20 0 0 0 731.5 630.5 L 713 762.3 A 20 20 0 0 0 739.7 783.8 Z"/>
-        <path d="M 739.7 240.2 L 882 292.7 A 14 14 0 0 1 885.4 317.1 L 763.1 406.9 A 20 20 0 0 1 731.5 393.5 L 713 261.7 A 20 20 0 0 1 739.7 240.2 Z"/>
+        <path d="M 840 560 L 901 734 L 720 768 Z"/>
+        <path d="M 840 464 L 901 290 L 720 256 Z"/>
       </g>
     </g>
   </g>
