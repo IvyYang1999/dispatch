@@ -5,6 +5,7 @@
   "type": "module",
   "description": "The Dispatch landing page: a static site built with Vite and React.",
   "scripts": {
+    "test": "node --test tests/*.test.mjs",
     "app": "node scripts/build-app.mjs",
     "dev": "node scripts/build-app.mjs && vite",
     "build": "node scripts/build-app.mjs && tsc --noEmit && vite build",
