@@ -1,30 +1,41 @@
 # Website analytics
 
-Production hostname: `dispatch.yytyyf.com`. GA4 property: `553546602`; web stream:
-`16339723053`; public measurement ID: `G-XC1FV10BG9`.
+Production: `https://dispatch.yytyyf.com`. Vercel project: `dispatch`, team:
+`ivyyang1999-7110s-projects`. Read traffic in the project's **Analytics** tab.
 
-The tag runs only on the production HTTPS site. It sends one `page_view` per page
-load and `file_download` when a visitor clicks a version-matched signed Mac zip.
-The GitHub release-list link sends `release_page_open` instead. Both download
-buttons carry a `placement` parameter (`hero` or `getting_started`). Enhanced
-measurement is disabled in GA4 to avoid duplicate and unrelated automatic events.
+- Page views: one per landing-page load; changing language does not add another.
+- `download_click`: version-matched signed Mac zip; two properties, `target`
+  (`macos_arm64`) and `placement` (`hero` / `getting_started`).
+- `release_page_open`: GitHub release page, including Windows/Linux and the
+  fallback when the latest Mac asset cannot be resolved. This is not a file download.
 
-`file_download` measures intent, not transfer completion or successful installation.
-GitHub release asset `download_count` is a separate aggregate, including direct
-downloads and repeat requests. Neither metric is a count of installed users.
+Clicks measure intent, not transfer completion or installation. GitHub release
+asset `download_count` is separate and includes direct downloads and repeats.
+Neither is a count of installed users. Acceptance clicks also enter the totals.
 
-All four consent-mode values stay denied. No banner is added, no consent is
-invented, and existing refusal, DNT and GPC prevent the tag from loading. No
-persistent visitor ID is created. Queries/fragments are stripped; referrers are
-reduced to their origin. Preview/local hosts do not send events. The public
-`/privacy.html` page explains that basic pings still reach Google and that unique
-and returning visitor counts are limited. This covers the website only.
+The existing Pro plan supports these custom events without Plus. Usage is
+metered at the current plan rate; the per-page bound is not a billing cap.
 
-Dark Console's Dispatch product points to this hostname, the same GA4 property,
-and `IvyYang1999/dispatch` for GitHub download data. Its reports may lag and must
-not treat a newly connected stream as an established zero-traffic baseline.
+Privacy: no consent prompt and no fabricated consent. No analytics cookies or
+advertising configuration. DNT, GPC, a legacy saved refusal, unreadable privacy
+preferences, non-production hosts and iframes block SDK loading. `beforeSend`
+rechecks these gates and fixes the event URL to the public root (no query/hash).
+The SDK does not expose referrer redaction: when the incoming referrer contains
+more than its origin, the page is not counted. A strict-origin referrer policy
+also keeps outgoing request headers free of page paths/queries. Click properties
+are allowlisted, at most 99 per page; SDK failures never block download links.
+The static privacy page has no tracker. This integration covers only the website.
 
-Verification: `npm test`, `npx tsc --noEmit`, `npm run build`; then inspect the
-production page and confirm real events in the new stream. A DOM fixture proves
-the event/filter contract, not Google ingestion. Never put service-account keys
-or Measurement Protocol secrets into the site.
+GA4 remains configured: property `553546602`, stream `16339723053`, measurement
+ID `G-XC1FV10BG9`, enhanced measurement off. The site does **not** load Google or
+send GA4 events. All-denied consent pings cannot guarantee usable GA4 reports
+without sufficient eligible traffic for modeling; they are not our visit counter.
+
+Dark Console has the Dispatch product, URL and GitHub repository binding. Its
+current collectors do not read Vercel traffic. Source registration / a Vercel
+adapter are separate work; configuration alone does not prove collection.
+
+Verification: `npm test`, `npx tsc --noEmit`, `npm run build`; inspect the real
+production page and read back page views / custom events using Vercel Analytics
+or `vercel metrics`. Unit fixtures do not prove server ingestion. Never embed
+Vercel credentials, GA service-account keys or Measurement Protocol secrets.
