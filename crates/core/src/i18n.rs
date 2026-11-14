@@ -114,6 +114,7 @@ pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
         "reach.unknown_later" => ("没读到它的权限模式（记录里找不到），保守起见等它下次说话时由 hook 递；设置里开「立即收信」就不用等", "Its permission mode could not be read from its record, so the hook hands it over at its next turn to be safe; immediate delivery in Settings skips the wait"),
         "reach.refuse_later" => ("它拒收其他会话的消息（crossSessionInbound = refuse）；等它下次说话时由 hook 递", "It refuses messages from other sessions (crossSessionInbound = refuse); the hook hands it over at its next turn"),
         "reach.bypass_none" => ("收不到：它跳过了权限确认，又没装 hook", "Unreachable: bypasses permissions, no hook"),
+        "reach.checking" => ("正在确认客户端状态，稍后会更新", "Checking client status; this will update shortly"),
         "reach.codex_nocli" => ("收不到：本机没找到 codex 命令", "Unreachable: no codex command"),
         "reach.codex_nodaemon" => ("待接通：Codex 的 app-server daemon 没开", "Waiting: Codex daemon not running"),
         "reach.codex_queue" => ("进 Codex 的队列：它在 Codex 里开着且空闲时十秒左右接收，没开着的等你打开它", "Into Codex's queue: taken within about ten seconds while it is open and idle in Codex; one that is not open waits until you open it"),

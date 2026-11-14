@@ -91,18 +91,47 @@ impl State {
     }
 }
 
-static STATE: Mutex<Option<State>> = Mutex::new(None);
-const STATE_TTL_MS: i64 = 60_000;
+#[derive(Clone)]
+struct CachedState {
+    state: State,
+    auth: Option<(std::time::SystemTime, u64)>,
+}
 
-pub fn state() -> State {
-    if let Some(s) = STATE.lock().unwrap().as_ref() {
-        if now_ms() - s.at < STATE_TTL_MS {
-            return s.clone();
+static STATE: crate::snapshot::Snapshot<CachedState> = crate::snapshot::Snapshot::new();
+const STATE_TTL: Duration = Duration::from_secs(60);
+
+// Metadata only: never read the credential's contents or retain bots across a changed login.
+fn auth_stamp() -> Option<(std::time::SystemTime, u64)> {
+    let m = std::fs::metadata(data_dir().join("sand-secrets.json")).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+fn refresh(previous: Option<CachedState>) -> CachedState {
+    let before = auth_stamp();
+    let state = state_now();
+    let after = auth_stamp();
+    retain_bots(CachedState { state, auth: after.filter(|_| before == after) }, previous)
+}
+
+fn retain_bots(mut next: CachedState, previous: Option<CachedState>) -> CachedState {
+    if next.state.app && next.state.signed_in && next.state.cli.is_some() && next.state.error.is_some() && next.auth.is_some() {
+        if let Some(old) = previous.filter(|p| p.auth == next.auth) {
+            next.state.bots = old.state.bots;
         }
     }
-    let s = state_now();
-    *STATE.lock().unwrap() = Some(s.clone());
-    s
+    next
+}
+
+pub fn state() -> State {
+    STATE.get(state_ttl(), refresh).state
+}
+
+pub(crate) fn state_snapshot() -> Option<State> {
+    STATE.read(state_ttl(), refresh).filter(|s| s.auth == auth_stamp()).map(|s| s.state)
+}
+
+fn state_ttl() -> Duration {
+    if STATE.peek().map(|s| s.auth != auth_stamp()).unwrap_or(false) { Duration::ZERO } else { STATE_TTL }
 }
 
 pub fn state_now() -> State {
@@ -318,8 +347,8 @@ pub fn section_of(sections: &[Section], bot_id: &str) -> Option<String> {
 /// A bot's face as the app draws it (`{ bot_shape, bot_color }`), when it has one. From the
 /// list already in memory: this never asks the gateway.
 pub fn look(bot_id: &str) -> Option<Value> {
-    let st = STATE.lock().unwrap();
-    let b = st.as_ref()?.bots.iter().find(|b| b.id.eq_ignore_ascii_case(bot_id))?;
+    let st = STATE.peek().filter(|s| s.auth == auth_stamp())?;
+    let b = st.state.bots.iter().find(|b| b.id.eq_ignore_ascii_case(bot_id))?;
     let shape = b.avatar_shape.clone().filter(|s| !s.is_empty())?;
     Some(serde_json::json!({ "bot_shape": shape, "bot_color": b.avatar_color.clone().filter(|c| !c.is_empty()) }))
 }
@@ -433,6 +462,27 @@ pub fn receipt(target: &str, message_id: Option<&str>, marker: &str) -> Receipt 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_refresh_keeps_bots_only_for_the_same_login_and_keeps_the_error() {
+        let stamp = (std::time::UNIX_EPOCH, 1);
+        let bot = Bot { id: "fixture".into(), name: "Fixture".into(), description: String::new(), is_group: false, avatar_color: None, avatar_shape: None };
+        let previous = CachedState { auth: Some(stamp), state: State { cli: Some("gbot".into()), app: true, signed_in: true, bots: vec![bot.clone()], error: None, at: 0 } };
+        let failed = CachedState { auth: Some(stamp), state: State { bots: vec![], error: Some("test timeout".into()), ..previous.state.clone() } };
+        let retained = retain_bots(failed.clone(), Some(previous.clone()));
+        assert_eq!(retained.state.bots, vec![bot]);
+        assert_eq!(retained.state.error.as_deref(), Some("test timeout"));
+        assert!(!retained.state.ready());
+        let mut changed = failed.clone();
+        changed.auth = Some((std::time::UNIX_EPOCH, 2));
+        assert!(retain_bots(changed, Some(previous.clone())).state.bots.is_empty());
+        let mut logged_out = failed.clone();
+        logged_out.state.signed_in = false;
+        logged_out.auth = None;
+        assert!(retain_bots(logged_out, Some(previous.clone())).state.bots.is_empty());
+        let empty_success = CachedState { state: State { error: None, ..failed.state }, ..failed };
+        assert!(retain_bots(empty_success, Some(previous)).state.bots.is_empty(), "an authoritative empty list replaces old bots");
+    }
     use serde_json::json;
 
     #[test]
