@@ -118,17 +118,21 @@ fn unescape(s: &str) -> Option<String> {
 
 /// Compaction, resume and harness boilerplate says nothing about the session.
 pub fn clean_title(s: &str) -> Option<String> {
+    // These patterns are shared by every database row and transcript head. Compiling
+    // them per title made the first scan of a large history block peer responses.
+    static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^<[^>]+>\s*").unwrap());
+    static NOISE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(This session is being continued|<system-reminder>|Caveat:|<local-command|<command-|\[Image|MemoraX|Base directory|You are|#{1,6} |\{|Filesystem sandboxing|<environment_context>|<user_instructions>|<permissions|Auto mode lets Claude|Any earlier instruction|Here is a list of plugins|(Added )?[Dd]eferred tool namespaces|<INSTRUCTIONS>|<skills_instructions>|<apps_instructions>)").unwrap());
+    static IDENTIFIER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^[a-z0-9_-]{6,}$").unwrap());
     let t = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let t = Regex::new(r"^<[^>]+>\s*").ok()?.replace(&t, "").trim().to_string();
+    let t = TAG.replace(&t, "").trim().to_string();
     if t.is_empty() {
         return None;
     }
-    let noise = Regex::new(r"(?i)^(This session is being continued|<system-reminder>|Caveat:|<local-command|<command-|\[Image|MemoraX|Base directory|You are|#{1,6} |\{|Filesystem sandboxing|<environment_context>|<user_instructions>|<permissions|Auto mode lets Claude|Any earlier instruction|Here is a list of plugins|(Added )?[Dd]eferred tool namespaces|<INSTRUCTIONS>|<skills_instructions>|<apps_instructions>)").ok()?;
     // a log that cut the message short (Codex writes "…119 tokens truncated…")
-    if noise.is_match(&t) || t.contains("tokens truncated") {
+    if NOISE.is_match(&t) || t.contains("tokens truncated") {
         return None;
     }
-    if Regex::new(r"(?i)^[a-z0-9_-]{6,}$").ok()?.is_match(&t) {
+    if IDENTIFIER.is_match(&t) {
         return None;
     }
     let chars: Vec<char> = t.chars().collect();
@@ -136,16 +140,16 @@ pub fn clean_title(s: &str) -> Option<String> {
 }
 
 fn parse_head(text: &str) -> (Option<String>, Option<String>) {
-    let cwd = Regex::new(r#""cwd":"((?:[^"\\]|\\.)*)""#).ok().and_then(|re| re.captures(text).and_then(|c| unescape(&c[1]).or_else(|| Some(c[1].to_string()))));
+    static CWD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""cwd":"((?:[^"\\]|\\.)*)""#).unwrap());
+    static TEXT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""(?:text|content)":"((?:[^"\\]|\\.){2,400})"#).unwrap());
+    let cwd = CWD.captures(text).and_then(|c| unescape(&c[1]).or_else(|| Some(c[1].to_string())));
     let mut title = None;
     // No closing quote required: a first message longer than the cap still yields its opening words.
-    if let Ok(re) = Regex::new(r#""(?:text|content)":"((?:[^"\\]|\\.){2,400})"#) {
-        for c in re.captures_iter(text) {
-            if let Some(raw) = unescape(&c[1]) {
-                if let Some(t) = clean_title(&raw) {
-                    title = Some(t);
-                    break;
-                }
+    for c in TEXT.captures_iter(text) {
+        if let Some(raw) = unescape(&c[1]) {
+            if let Some(t) = clean_title(&raw) {
+                title = Some(t);
+                break;
             }
         }
     }
@@ -239,19 +243,16 @@ fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>, state: Op
         if !is_loaded && max_age.map(|m| now - mtime > m).unwrap_or(false) {
             continue;
         }
-        if codex_helper(path.as_path()) {
-            continue;
-        }
-        let (cwd, title) = head_of(path.as_path(), mtime);
-        let running = is_loaded || (codex_running && now - mtime < CODEX_RUNNING_WINDOW_MS);
         let thread = threads.get(&id);
+        let Some((cwd, title)) = codex_details(&path, mtime, thread) else { continue };
+        let running = is_loaded || (codex_running && now - mtime < CODEX_RUNNING_WINDOW_MS);
         out.push(Session {
             harness: Harness::Codex,
             short_id: short_id(&id),
             name: thread.and_then(|t| t.name.clone()),
             cwd,
             // the title Codex shows in its sidebar, else the first message
-            title: thread.and_then(|t| t.title.clone()).or(title),
+            title,
             id,
             last_active: mtime,
             running,
@@ -274,6 +275,23 @@ struct CodexThread {
     name: Option<String>,
     title: Option<String>,
     project: Option<String>,
+    cwd: Option<String>,
+    helper: Option<bool>,
+}
+
+/// Codex already indexes these facts. Avoid decompressing every old rollout just to
+/// recover them again. Missing/unknown metadata still uses the original file path.
+fn codex_details(path: &Path, mtime: i64, thread: Option<&CodexThread>) -> Option<(Option<String>, Option<String>)> {
+    if thread.and_then(|t| t.helper).unwrap_or_else(|| codex_helper(path)) {
+        return None;
+    }
+    let cwd = thread.and_then(|t| t.cwd.clone());
+    let title = thread.and_then(|t| t.title.clone());
+    if cwd.is_some() && title.is_some() {
+        return Some((cwd, title));
+    }
+    let (file_cwd, file_title) = head_of(path, mtime);
+    Some((cwd.or(file_cwd), title.or(file_title)))
 }
 
 /// The newest `state_<n>.sqlite` in Codex's home.
@@ -310,11 +328,22 @@ fn codex_threads() -> HashMap<String, CodexThread> {
 
 fn read_codex_threads(db: &Path) -> HashMap<String, CodexThread> {
     let sqlite = if Path::new("/usr/bin/sqlite3").exists() { "/usr/bin/sqlite3" } else { "sqlite3" };
+    // Optional columns vary across Codex versions. Keep all three existing query
+    // fallbacks (including projects) and add only columns that actually exist.
+    let columns: Vec<serde_json::Value> = std::process::Command::new(sqlite)
+        .args(["-readonly", "-json"]).arg(db).arg("pragma table_info(threads)")
+        .stderr(std::process::Stdio::null()).output().ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| serde_json::from_slice(&out.stdout).ok()).unwrap_or_default();
+    let extra: Vec<&str> = ["cwd", "source", "thread_source"].into_iter()
+        .filter(|name| columns.iter().any(|c| c["name"].as_str() == Some(name))).collect();
+    let qualified = extra.iter().map(|name| format!(", t.{name} as {name}")).collect::<String>();
+    let plain = extra.iter().map(|name| format!(", {name}")).collect::<String>();
     // newer Codex files threads under projects; older databases have neither column nor table
     let queries = [
-        "select t.id as id, t.name as name, t.title as title, p.name as project from threads t left join projects p on p.id = t.project_id",
-        "select id, name, title from threads",
-        "select id, title from threads",
+        format!("select t.id as id, t.name as name, t.title as title, p.name as project{qualified} from threads t left join projects p on p.id = t.project_id"),
+        format!("select id, name, title{plain} from threads"),
+        format!("select id, title{plain} from threads"),
     ];
     for q in queries {
         let Ok(out) = std::process::Command::new(sqlite).arg("-readonly").arg("-json").arg(db).arg(q).stderr(std::process::Stdio::null()).output() else { return HashMap::new() };
@@ -331,7 +360,20 @@ fn parse_codex_threads(json: &str) -> HashMap<String, CodexThread> {
     rows.iter()
         .filter_map(|r| {
             let id = r.get("id")?.as_str()?.to_lowercase();
-            Some((id, CodexThread { name: text(r, "name"), title: text(r, "title").and_then(|t| clean_title(&t)), project: text(r, "project") }))
+            let source = r.get("source").map(|v| v.as_str().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()).unwrap_or_else(|| v.clone()));
+            let kind = r.get("thread_source").and_then(|v| v.as_str());
+            let helper = if source.as_ref().and_then(|v| v.get("subagent")).is_some()
+                || matches!(kind, Some("guardian_review" | "subagent")) {
+                Some(true)
+            } else if matches!(kind, Some("user"))
+                || matches!(source.as_ref().and_then(|v| v.as_str()), Some("cli" | "vscode" | "exec" | "appServer")) {
+                Some(false)
+            } else { None };
+            Some((id, CodexThread {
+                name: text(r, "name"), title: text(r, "title").and_then(|t| clean_title(&t)), project: text(r, "project"),
+                // A directory is not prose: preserve repeated spaces in its path.
+                cwd: r.get("cwd").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string), helper,
+            }))
         })
         .collect()
 }
@@ -611,9 +653,10 @@ fn lookup_files_raw(id: &str, clients: Option<&ClientStates>) -> Option<Session>
             });
         }
         // a helper thread of Codex's own is no session, even asked for by its id
-        if let Some(p) = codex_rollout(&id).filter(|p| !codex_helper(p)) {
+        if let Some(p) = codex_rollout(&id) {
             let mtime = mtime_ms(&p).unwrap_or(0);
-            let (cwd, title) = head_of(&p, mtime);
+            let threads = codex_threads();
+            let (cwd, title) = codex_details(&p, mtime, threads.get(&id))?;
             let loaded = match clients {
                 Some(c) => c.codex.as_ref().map(|s| s.loaded.contains(&id)).unwrap_or(false),
                 None => crate::codex::state().loaded.contains(&id),
@@ -737,6 +780,66 @@ mod tests {
         assert_eq!(a.project.as_deref(), Some("OpenTrends"));
         assert_eq!(m["0199bbbb-1111-4222-8333-444455556666"], CodexThread::default());
         assert!(parse_codex_threads("").is_empty(), "no rows prints nothing");
+    }
+
+    #[test]
+    fn codex_metadata_filters_helpers_and_preserves_fallbacks() {
+        let rows = r#"[
+            {"id":"indexed","cwd":"/work/two  spaces","title":"Indexed title","source":"vscode"},
+            {"id":"helper","source":"{\"subagent\":{\"other\":\"guardian\"}}","thread_source":"user"},
+            {"id":"kind-only","thread_source":"guardian_review"},
+            {"id":"unknown","source":"future-client"},
+            {"id":"legacy","title":"Legacy title"}
+        ]"#;
+        let threads = parse_codex_threads(rows);
+        assert_eq!(threads["indexed"].cwd.as_deref(), Some("/work/two  spaces"));
+        assert_eq!(threads["indexed"].helper, Some(false));
+        assert_eq!(threads["helper"].helper, Some(true), "a helper source overrides user kind");
+        assert_eq!(threads["kind-only"].helper, Some(true));
+        assert_eq!(threads["unknown"].helper, None);
+        assert_eq!(threads["legacy"].helper, None);
+
+        let dir = std::env::temp_dir().join(format!("dispatch-metadata-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let user = dir.join("user.jsonl.zst");
+        let text = concat!(
+            r#"{"type":"session_meta","payload":{"cwd":"/work/fallback","source":"vscode"}}"#, "\n",
+            r#"{"text":"Fallback title"}"#, "\n",
+        );
+        fs::write(&user, ruzstd::encoding::compress_to_vec(text.as_bytes(), ruzstd::encoding::CompressionLevel::Fastest)).unwrap();
+        assert_eq!(codex_details(&user, 0, Some(&threads["indexed"])), Some((Some("/work/two  spaces".into()), Some("Indexed title".into()))));
+        assert_eq!(codex_details(&user, 0, Some(&threads["legacy"])), Some((Some("/work/fallback".into()), Some("Legacy title".into()))));
+        assert_eq!(codex_details(&user, 0, Some(&threads["unknown"])), Some((Some("/work/fallback".into()), Some("Fallback title".into()))));
+        assert_eq!(codex_details(&user, 0, Some(&threads["helper"])), None);
+        let helper = dir.join("helper.jsonl.zst");
+        let text = r#"{"type":"session_meta","payload":{"source":{"subagent":{}},"cwd":"/work"}}"#;
+        fs::write(&helper, ruzstd::encoding::compress_to_vec(text.as_bytes(), ruzstd::encoding::CompressionLevel::Fastest)).unwrap();
+        assert_eq!(codex_details(&helper, 0, Some(&threads["unknown"])), None, "unknown metadata must still check the rollout");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn codex_database_columns_remain_backward_compatible() {
+        let sqlite = if Path::new("/usr/bin/sqlite3").exists() { "/usr/bin/sqlite3" } else { "sqlite3" };
+        if std::process::Command::new(sqlite).arg("-version").output().is_err() { return; }
+        let dir = std::env::temp_dir().join(format!("dispatch-db-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let cases = [
+            ("modern", "create table threads(id,name,title,project_id,cwd,source,thread_source); create table projects(id,name); insert into projects values(1,'A project'); insert into threads values('a','A name','A title',1,'/work/two  spaces','vscode','user');", true, true),
+            ("projects", "create table threads(id,name,title,project_id); create table projects(id,name); insert into projects values(1,'A project'); insert into threads values('a','A name','A title',1);", true, false),
+            ("oldest", "create table threads(id,title); insert into threads values('a','A title');", false, false),
+        ];
+        for (name, sql, project, metadata) in cases {
+            let db = dir.join(format!("{name}.sqlite"));
+            assert!(std::process::Command::new(sqlite).arg(&db).arg(sql).status().unwrap().success());
+            let rows = read_codex_threads(&db);
+            let row = &rows["a"];
+            assert_eq!(row.title.as_deref(), Some("A title"));
+            assert_eq!(row.project.as_deref(), project.then_some("A project"));
+            assert_eq!(row.cwd.as_deref(), metadata.then_some("/work/two  spaces"));
+            assert_eq!(row.helper, metadata.then_some(false));
+        }
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
