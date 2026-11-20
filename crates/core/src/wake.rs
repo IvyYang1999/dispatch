@@ -1,14 +1,16 @@
 //! A message that waits for its session to be opened. A Claude Code session that is not
 //! running takes nothing until it runs again; a Codex thread takes what is in its queue only
 //! while some Codex window (or terminal) has it open. On the machine where the session lives,
-//! the app opens such a session itself, at once: in its own app when it has one (the Codex
-//! app, the Claude app), else in a Terminal window behind the user's windows. It asks the user
-//! only when it cannot: the setting says remind only, opening failed, or the session was opened
-//! and still has not taken the message.
+//! the app takes care of it itself, at once. A Codex thread nobody has open is run in the
+//! background by a Codex of the app's own (`codex::run_unopened`), which takes its queue as
+//! opening it would, with no window. Any other session is opened in its own app when it has one
+//! (the Claude app), else in a Terminal window behind the user's windows. It asks the user only
+//! when it cannot: the setting says remind only, opening failed, or the session was opened and
+//! still has not taken the message.
 //!
-//! Opening never starts a second copy of a session: a Claude Code session counts only when no
-//! process runs it, and a Codex thread whose log changed in the last two minutes is being run
-//! somewhere and is left alone (it takes the message when its turn ends).
+//! Neither ever starts a second copy of a session: a Claude Code session counts only when no
+//! process runs it, and a Codex thread that some Codex holds (its lock says so) is left to it:
+//! it takes the message when its turn ends.
 
 use crate::model::{short_id, Harness, Session};
 use crate::store::{self, Letter, Run, Store};
@@ -65,8 +67,12 @@ fn woken_at(runs: &[Run]) -> Option<&str> {
     runs.iter().rev().find(|r| r.action == "wake" && r.result == "opened").map(|r| r.at.as_str())
 }
 
-/// Whether some Codex process is running this thread now: its log changed in the last two minutes.
+/// Whether some Codex process has this thread now: it holds the thread's lock (when that can be
+/// told), else its log changed in the last two minutes.
 pub fn codex_busy(thread_id: &str) -> bool {
+    if let Some(open) = crate::codex::thread_open(thread_id) {
+        return open;
+    }
     crate::codex::rollout_path(thread_id)
         .and_then(|p| std::fs::metadata(p).ok())
         .and_then(|m| m.modified().ok())

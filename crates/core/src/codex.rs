@@ -76,19 +76,31 @@ pub fn daemon_socket() -> PathBuf {
 enum Transport {
     #[cfg(unix)]
     Shared(WebSocket<UnixStream>),
-    Private { child: Child, stdin: ChildStdin, incoming: mpsc::Receiver<String> },
+    Private { child: Child, stdin: Option<ChildStdin>, incoming: mpsc::Receiver<String> },
 }
 
 pub struct Server {
     transport: Transport,
     next_id: u64,
     pub shared: bool,
+    /// What the server said of its own while we waited for an answer: requests it needs
+    /// answered and turn and status news. Kept (a few) for whoever follows the thread.
+    backlog: std::collections::VecDeque<Value>,
 }
 
 impl Drop for Server {
     #[allow(irrefutable_let_patterns)]
     fn drop(&mut self) {
-        if let Transport::Private { child, .. } = &mut self.transport {
+        if let Transport::Private { child, stdin, .. } = &mut self.transport {
+            // closing its input lets the server finish writing and leave; killed if it does not
+            drop(stdin.take());
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                if let Ok(Some(_)) = child.try_wait() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -97,7 +109,7 @@ impl Drop for Server {
 
 impl Server {
     fn initialize(transport: Transport, shared: bool) -> Result<Server> {
-        let mut s = Server { transport, next_id: 1, shared };
+        let mut s = Server { transport, next_id: 1, shared, backlog: Default::default() };
         s.call("initialize", json!({ "clientInfo": { "name": "dispatch", "version": env!("CARGO_PKG_VERSION"), "title": "Dispatch" }, "capabilities": { "experimentalApi": true } }), Duration::from_secs(10))?;
         s.write(json!({ "method": "initialized", "params": {} }), Duration::from_secs(2))?;
         Ok(s)
@@ -122,6 +134,11 @@ impl Server {
     /// Never disguise an unreachable shared daemon as an empty private server.
     pub fn connect() -> Result<Server> {
         if daemon_socket().exists() { return Self::shared(); }
+        Self::private()
+    }
+
+    /// An app-server of our own over stdio, gone when this is dropped.
+    fn private() -> Result<Server> {
         let mut child = command().arg("app-server")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
             .spawn().context("codex not found on PATH")?;
@@ -139,7 +156,7 @@ impl Server {
                 }
             }
         });
-        Self::initialize(Transport::Private { child, stdin, incoming }, false)
+        Self::initialize(Transport::Private { child, stdin: Some(stdin), incoming }, false)
     }
 
     #[cfg_attr(windows, allow(unused_variables))]
@@ -151,6 +168,7 @@ impl Server {
                 ws.send(Message::Text(value.to_string().into()))?;
             }
             Transport::Private { stdin, .. } => {
+                let stdin = stdin.as_mut().context("the Codex server's input is closed")?;
                 writeln!(stdin, "{value}")?;
                 stdin.flush()?;
             }
@@ -166,25 +184,60 @@ impl Server {
         loop {
             let remaining = deadline.checked_duration_since(Instant::now())
                 .filter(|d| !d.is_zero()).ok_or_else(|| anyhow!("{method}: no answer within {timeout:?}"))?;
-            let text = match &mut self.transport {
-                #[cfg(unix)]
-                Transport::Shared(ws) => {
-                    ws.get_ref().set_read_timeout(Some(remaining))?;
-                    match ws.read()? {
-                        Message::Text(text) => text.to_string(),
-                        Message::Close(_) => return Err(anyhow!("{method}: server closed connection")),
-                        _ => continue,
-                    }
-                }
-                Transport::Private { incoming, .. } => incoming.recv_timeout(remaining).context("Codex response timeout or closed connection")?,
-            };
+            let Some(text) = self.read_text(remaining).with_context(|| format!("{method}: no answer"))? else { continue };
             let Ok(msg) = serde_json::from_str::<Value>(&text) else { continue };
-            if msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
+            if msg.get("method").is_none() && msg.get("id").and_then(|v| v.as_u64()) == Some(id) {
                 if let Some(e) = msg.get("error") { return Err(anyhow!("{method}: {e}")); }
                 return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
             }
-            // Notifications are not needed for metadata queries; do not retain an unbounded stream.
+            // Most notifications do not matter to a question; what someone following the thread
+            // needs is kept, a few of them.
+            if worth_keeping(&msg) && self.backlog.len() < 64 {
+                self.backlog.push_back(msg);
+            }
         }
+    }
+
+    /// One message from the server; None when nothing came within `timeout` (or a frame that is
+    /// not a message did). Errors only when the server is gone.
+    fn read_text(&mut self, timeout: Duration) -> Result<Option<String>> {
+        Ok(match &mut self.transport {
+            #[cfg(unix)]
+            Transport::Shared(ws) => {
+                ws.get_ref().set_read_timeout(Some(timeout))?;
+                match ws.read() {
+                    Ok(Message::Text(text)) => Some(text.to_string()),
+                    Ok(Message::Close(_)) => return Err(anyhow!("the Codex server closed the connection")),
+                    Ok(_) => None,
+                    Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => None,
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            Transport::Private { incoming, .. } => match incoming.recv_timeout(timeout) {
+                Ok(text) => Some(text),
+                Err(mpsc::RecvTimeoutError::Timeout) => None,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(anyhow!("the Codex server is gone")),
+            },
+        })
+    }
+
+    /// The next thing the server says of its own (a notification, or a request it needs
+    /// answered), or None when it says nothing for `timeout`. Errors when it is gone.
+    fn next(&mut self, timeout: Duration) -> Result<Option<Value>> {
+        if let Some(m) = self.backlog.pop_front() {
+            return Ok(Some(m));
+        }
+        let text = self.read_text(timeout)?;
+        Ok(text.and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|m| m.get("method").is_some()))
+    }
+
+    /// Answer a request the server made.
+    fn respond(&mut self, id: Value, result: Value) -> Result<()> {
+        self.write(json!({ "id": id, "result": result }), Duration::from_secs(5))
+    }
+
+    fn respond_error(&mut self, id: Value, message: &str) -> Result<()> {
+        self.write(json!({ "id": id, "error": { "code": -32000, "message": message } }), Duration::from_secs(5))
     }
 
     /// Thread ids the server has loaded (the only ones a message can reach through it).
@@ -231,6 +284,173 @@ fn collect_ids(v: &Value, out: &mut HashSet<String>) {
 
 fn looks_like_thread_id(s: &str) -> bool {
     crate::model::is_uuid(s)
+}
+
+/// What a server says while we wait on something else that someone following a thread needs:
+/// its requests (they wait for an answer) and turn and status news.
+fn worth_keeping(msg: &Value) -> bool {
+    let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    msg.get("id").is_some() || method.starts_with("turn/") || method == "thread/status/changed"
+}
+
+/// Codex's home: `$CODEX_HOME` when set, else `~/.codex`.
+fn codex_home() -> PathBuf {
+    std::env::var_os("CODEX_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home_dir().join(".codex"))
+}
+
+/// Whether some Codex process (the app, a terminal, the daemon) has this thread open now.
+/// Every Codex process that loads a thread holds a lock on `thread-writer-locks/<id>.lock`
+/// for as long as it has it, so that no two of them write one thread. The probe takes Codex's
+/// coordination lock first, as Codex does before it publishes a thread: a Codex opening the
+/// thread at that moment waits a few milliseconds instead of failing. None: cannot tell.
+pub fn thread_open(thread_id: &str) -> Option<bool> {
+    thread_open_in(&codex_home(), thread_id)
+}
+
+#[cfg(unix)]
+fn thread_open_in(home: &Path, thread_id: &str) -> Option<bool> {
+    use std::fs::{OpenOptions, TryLockError};
+    if !looks_like_thread_id(thread_id) {
+        return None;
+    }
+    let dir = home.join("thread-writer-locks");
+    // never create anything in Codex's home: no coordination file means no Codex locked a thread here
+    let coordination = match OpenOptions::new().read(true).write(true).open(dir.join(".coordination.lock")) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Some(false),
+        Err(_) => return None,
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match coordination.try_lock() {
+            Ok(()) => break,
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Err(_) => return None,
+        }
+    }
+    let open = match OpenOptions::new().read(true).write(true).open(dir.join(format!("{}.lock", thread_id.to_lowercase()))) {
+        Ok(f) => match f.try_lock() {
+            Ok(()) => Some(false),
+            Err(TryLockError::WouldBlock) => Some(true),
+            Err(_) => None,
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(false),
+        Err(_) => None,
+    };
+    // the thread's lock goes with its file handle, then coordination
+    drop(coordination);
+    open
+}
+
+#[cfg(not(unix))]
+fn thread_open_in(_home: &Path, _thread_id: &str) -> Option<bool> {
+    None
+}
+
+/// What came of running a thread nobody had open.
+#[derive(Debug, Default)]
+pub struct RunOutcome {
+    /// Turns that started while we had the thread.
+    pub turns: u32,
+    /// Requests for approval or input declined, nobody being there to answer them.
+    pub declined: u32,
+    /// Still running when the time was up: stopped.
+    pub interrupted: bool,
+}
+
+/// Why something was declined, as the agent reads it.
+const NOBODY_THERE: &str = "Dispatch is running this thread in the background because a message arrived while nobody had it open. Nobody is there to approve this. Carry on without it, and say in your answer what still needs the user's approval.";
+
+/// The answer to a request the server makes of its client, when nobody is there: approvals are
+/// declined (the agent carries on and says what it could not do), the time is told, anything
+/// else is refused.
+fn unattended_answer(method: &str) -> Option<Value> {
+    match method {
+        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => Some(json!({ "decision": "decline" })),
+        "execCommandApproval" | "applyPatchApproval" => Some(json!({ "decision": { "denied": { "rejection": NOBODY_THERE } } })),
+        "mcpServer/elicitation/request" => Some(json!({ "action": "decline", "content": null })),
+        "currentTime/read" => Some(json!({ "currentTimeAt": now_ms() / 1000 })),
+        _ => None,
+    }
+}
+
+/// Run a thread nobody has open, so what waits in its queue is taken now instead of when
+/// someone next opens it. An app-server of our own resumes the thread, and resuming starts
+/// what is queued, as opening the thread in the app does. The server stays until the thread
+/// is idle with nothing left in its queue (or `max` is up: the turn is stopped), then leaves,
+/// and the thread is free for the app again; what happened is in the thread's history.
+///
+/// Nobody is at the thread to approve anything: such a request is declined, and the agent
+/// carries on and says what it could not do. Only for a thread `thread_open` says nobody has:
+/// two processes writing one thread is what Codex's lock is there to stop.
+pub fn run_unopened(thread_id: &str, max: Duration) -> Result<RunOutcome> {
+    let mut srv = Server::private()?;
+    let deadline = Instant::now() + max;
+    srv.call("thread/resume", json!({ "threadId": thread_id, "excludeTurns": true }), Duration::from_secs(60))?;
+    let mut out = RunOutcome::default();
+    let mut turn: Option<String> = None;
+    // a resumed thread starts its queue at once; one whose queue someone else emptied meanwhile has nothing to do
+    let mut quiet_since = Instant::now();
+    loop {
+        if Instant::now() >= deadline {
+            if let Some(t) = turn.take() {
+                let _ = srv.call("turn/interrupt", json!({ "threadId": thread_id, "turnId": t }), Duration::from_secs(10));
+                out.interrupted = true;
+            }
+            return Ok(out);
+        }
+        let Some(msg) = srv.next(Duration::from_secs(5))? else {
+            if turn.is_none() && quiet_since.elapsed() >= Duration::from_secs(20) && queue_len(&mut srv, thread_id) == 0 {
+                return Ok(out);
+            }
+            continue;
+        };
+        let method = msg["method"].as_str().unwrap_or("").to_string();
+        if let Some(id) = msg.get("id").cloned() {
+            match unattended_answer(&method) {
+                Some(answer) => {
+                    if method != "currentTime/read" {
+                        out.declined += 1;
+                    }
+                    srv.respond(id, answer)?;
+                }
+                None => {
+                    out.declined += 1;
+                    srv.respond_error(id, NOBODY_THERE)?;
+                }
+            }
+            continue;
+        }
+        let params = &msg["params"];
+        if params["threadId"].as_str().map(|t| !t.eq_ignore_ascii_case(thread_id)).unwrap_or(false) {
+            continue;
+        }
+        match method.as_str() {
+            "turn/started" => {
+                out.turns += 1;
+                turn = params["turn"]["id"].as_str().map(str::to_string);
+            }
+            "turn/completed" => {
+                turn = None;
+                quiet_since = Instant::now();
+                // the next queued message starts by itself; leave when there is none
+                std::thread::sleep(Duration::from_millis(500));
+                // (a turn may have started from the queue while we asked: it is in the backlog then)
+                if queue_len(&mut srv, thread_id) == 0 && !srv.backlog.iter().any(|m| m["method"] == "turn/started") {
+                    return Ok(out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// How many messages wait in the thread's queue (0 when it cannot be read).
+fn queue_len(srv: &mut Server, thread_id: &str) -> usize {
+    srv.call("thread/queue/list", json!({ "threadId": thread_id }), Duration::from_secs(10))
+        .ok()
+        .and_then(|r| r["data"].as_array().map(|a| a.len()))
+        .unwrap_or(0)
 }
 
 /// What this machine's Codex can do right now, remembered for a few seconds.
@@ -600,6 +820,58 @@ fn receipt_in(events: &[Event], marker: &str) -> Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_thread_is_open_while_some_codex_holds_its_lock() {
+        let home = std::env::temp_dir().join(format!("dispatch-codex-{}", uuid::Uuid::new_v4()));
+        let id = "01a1f721-bdd7-7f63-8ac6-c71d709fa43c";
+        // no Codex ever locked a thread here
+        assert_eq!(thread_open_in(&home, id), Some(false));
+        let dir = home.join("thread-writer-locks");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".coordination.lock"), "").unwrap();
+        assert_eq!(thread_open_in(&home, id), Some(false), "no lock file: nobody has it");
+        let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join(format!("{id}.lock"))).unwrap();
+        lock.lock().unwrap();
+        assert_eq!(thread_open_in(&home, id), Some(true), "a Codex holds it");
+        assert_eq!(thread_open_in(&home, &id.to_uppercase()), Some(true));
+        lock.unlock().unwrap();
+        assert_eq!(thread_open_in(&home, id), Some(false), "left behind, not held: nobody has it");
+        // a Codex in the middle of opening a thread holds coordination: the probe waits, then says it cannot tell
+        let coordination = std::fs::OpenOptions::new().read(true).write(true).open(dir.join(".coordination.lock")).unwrap();
+        coordination.lock().unwrap();
+        assert_eq!(thread_open_in(&home, id), None);
+        drop(coordination);
+        assert_eq!(thread_open_in(&home, "not-a-thread"), None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Against a real Codex: `CODEX_HOME` with a thread nobody has open and a message in its
+    /// queue, the thread's id in `DISPATCH_PROBE_THREAD`.
+    #[test]
+    #[ignore]
+    fn probe_run_unopened() {
+        let id = std::env::var("DISPATCH_PROBE_THREAD").unwrap();
+        assert_eq!(thread_open(&id), Some(false));
+        let out = run_unopened(&id, Duration::from_secs(120)).unwrap();
+        eprintln!("{out:?}");
+        assert!(out.turns >= 1, "resuming started the queued message");
+        assert_eq!(thread_open(&id), Some(false), "left the thread free");
+        let mut srv = Server::private().unwrap();
+        assert_eq!(queue_len(&mut srv, &id), 0);
+    }
+
+    #[test]
+    fn nobody_there_declines_approvals_and_tells_the_time() {
+        assert_eq!(unattended_answer("item/commandExecution/requestApproval").unwrap()["decision"], "decline");
+        assert_eq!(unattended_answer("item/fileChange/requestApproval").unwrap()["decision"], "decline");
+        assert!(unattended_answer("execCommandApproval").unwrap()["decision"]["denied"]["rejection"].as_str().unwrap().contains("Dispatch"));
+        assert_eq!(unattended_answer("mcpServer/elicitation/request").unwrap()["action"], "decline");
+        assert!(unattended_answer("currentTime/read").unwrap()["currentTimeAt"].as_i64().unwrap() > 1_700_000_000);
+        assert!(unattended_answer("account/chatgptAuthTokens/refresh").is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn initialize_enables_experimental_queue_api() {
@@ -639,7 +911,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(150));
         });
         let (ws, _) = tungstenite::client("ws://localhost/", client).unwrap();
-        let mut server = Server { transport: Transport::Shared(ws), next_id: 1, shared: true };
+        let mut server = Server { transport: Transport::Shared(ws), next_id: 1, shared: true, backlog: Default::default() };
         assert!(server.loaded_ids().unwrap().is_empty());
         let start = Instant::now();
         assert!(server.call("stall", json!({}), Duration::from_millis(30)).is_err());
@@ -661,7 +933,7 @@ mod tests {
                 let _ = ws.read();
             });
             let (ws, _) = tungstenite::client("ws://localhost/", client).unwrap();
-            let mut srv = Server { transport: Transport::Shared(ws), next_id: 1, shared: true };
+            let mut srv = Server { transport: Transport::Shared(ws), next_id: 1, shared: true, backlog: Default::default() };
             let got = queue_add_on(&mut srv, "t-1", "hello", "letter-1");
             assert_eq!(got.is_ok(), ok, "{got:?}");
             if ok {

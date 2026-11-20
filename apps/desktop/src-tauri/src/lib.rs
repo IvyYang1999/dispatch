@@ -62,7 +62,12 @@ struct Waits {
     opened: Mutex<std::collections::HashMap<String, Instant>>,
     /// Sessions the app tried to open and could not.
     failed: Mutex<HashSet<String>>,
+    /// Codex threads the app is running in the background now.
+    running: std::sync::Arc<Mutex<HashSet<String>>>,
 }
+
+/// The longest the app runs a Codex thread in the background for one round of messages.
+const BACKGROUND_MAX: Duration = Duration::from_secs(60 * 60);
 
 const WAIT_WINDOW: &str = "waiting";
 /// Nobody typed or clicked for this long: a window that comes up now cannot catch a keystroke.
@@ -1318,6 +1323,44 @@ fn start_wake_watcher(app: AppHandle) {
                 if let Ok(mut c) = app.state::<Waits>().current.lock() {
                     *c = ids.clone();
                 }
+                // a Codex thread nobody has open: run it in the background, no window, so whether
+                // someone is typing does not matter
+                if mode == "auto" {
+                    for w in &list {
+                        let s = &w["session"];
+                        let (Some(sid), Some("Codex")) = (s["id"].as_str(), s["harness"].as_str()) else { continue };
+                        if w["woken"] == true || dispatch_core::codex::thread_open(sid) != Some(false) {
+                            continue;
+                        }
+                        let running = app.state::<Waits>().running.clone();
+                        if !running.lock().map(|mut r| r.insert(sid.to_string())).unwrap_or(false) {
+                            continue;
+                        }
+                        wake::opened(&store, sid, "auto, background");
+                        if settings::notify_enabled() {
+                            let name = s["name"].as_str().unwrap_or("");
+                            let _ = app.notification().builder().title(t("wake.background_title").replace("{name}", name)).body(t("wake.background")).show();
+                        }
+                        let (app2, sid) = (app.clone(), sid.to_string());
+                        let _ = std::thread::Builder::new().name("dispatch-codex-run".into()).spawn(move || {
+                            let result = dispatch_core::codex::run_unopened(&sid, BACKGROUND_MAX);
+                            if let Err(e) = &result {
+                                eprintln!("dispatch: running Codex thread {sid} in the background: {e:#}");
+                            }
+                            if let Ok(mut r) = running.lock() {
+                                r.remove(&sid);
+                            }
+                            forget_feed(&app2);
+                            let _ = app2.emit("dispatch:changed", ());
+                        });
+                        forget_feed(&app);
+                        let _ = app.emit("wait:changed", ());
+                        let _ = app.emit("dispatch:changed", ());
+                    }
+                }
+                // what runs in the background is taken care of: not opened, nobody reminded
+                let running_now = app.state::<Waits>().running.lock().map(|r| r.clone()).unwrap_or_default();
+                let list: Vec<Value> = list.into_iter().filter(|w| !running_now.contains(w["session"]["id"].as_str().unwrap_or(""))).collect();
                 // only while nobody is typing, so a window that comes up cannot take a keystroke
                 if mode == "auto" && idle_secs().map(|s| s >= QUIET_SECS).unwrap_or(true) {
                     let mut seen = HashSet::new();
