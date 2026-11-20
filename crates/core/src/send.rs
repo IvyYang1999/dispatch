@@ -326,6 +326,12 @@ fn deliver_grok(store: &Store, to: &Session, letter: &mut Letter, report: Report
             store.append_run(&letter.id, "grok", "sent", out.message_id.as_deref().unwrap_or(&out.detail))?;
             Ok(report("inbox", t("send.grok_sent").replace("{id}", out.message_id.as_deref().unwrap_or("?"))))
         }
+        // this app cannot reach that bot at all: not delivered, and not tried again until the
+        // app is updated (then a retry sends this same copy)
+        Err(e) if crate::grok::needs_app_update(&format!("{e:#}")) => {
+            store.append_run(&letter.id, "grok", "rejected", &format!("{e:#}"))?;
+            fail(store, letter, "grok", "Grok Bot app too old for this bot", t("send.grok_update").into(), report)
+        }
         Err(e) => {
             store.append_run(&letter.id, "grok", "failed", &format!("{e:#}"))?;
             Ok(report("stored", t("send.grok_failed").replace("{err}", &format!("{e:#}"))))

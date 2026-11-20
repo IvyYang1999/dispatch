@@ -599,6 +599,10 @@ fn run() -> Result<i32> {
             } else {
                 println!("↩ {} ({}): {}", v["to"]["name"].as_str().unwrap_or(""), model::short_id(v["to"]["id"].as_str().unwrap_or("")), v["detail"].as_str().unwrap_or(""));
             }
+            // the reply did not go: a script must not take it for an answer
+            if v["replied"] == false {
+                std::process::exit(1);
+            }
         }
         Cmd::Inbox { session, all, json } => {
             let target = send::resolve(&session)?;

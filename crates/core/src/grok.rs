@@ -372,6 +372,15 @@ pub fn parse_send(stdout: &str) -> SendOutcome {
     SendOutcome { message_id, detail }
 }
 
+/// Whether a failed send is one no retry can fix: the gateway refused it because this Grok Bot
+/// app cannot message the bot at all (a bot that runs on the server, and an app too old for it:
+/// `409 … Update the app and try again`). Only that answer: any other 409, a dropped connection
+/// or a timeout may pass, and is tried again.
+pub fn needs_app_update(err: &str) -> bool {
+    let e = err.to_lowercase().replace('’', "'");
+    e.contains("409") && (e.contains("update the app") || e.contains("can't message it") || e.contains("cannot message it"))
+}
+
 /// Send a message to a bot (by the name `gbot` resolves, or its id).
 pub fn send(target: &str, text: &str) -> Result<SendOutcome> {
     let (out, _) = run(&["send", target, text, "--json"], Duration::from_secs(45))?;
@@ -462,6 +471,17 @@ pub fn receipt(target: &str, message_id: Option<&str>, marker: &str) -> Receipt 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_an_app_too_old_for_the_bot_is_never_retried() {
+        // what gbot said for a bot that runs on the server (issue #10)
+        assert!(needs_app_update("gbot send QA hi --json failed (exit status: 1): sendPrompt failed: 409 This Bot runs on the server, and this version of the app can't message it. Update the app and try again."));
+        assert!(needs_app_update("409 This Bot runs on the server, and this version of the app can’t message it."));
+        // anything else passes and is tried again
+        assert!(!needs_app_update("sendPrompt failed: 409 Conflict: a prompt is already running"));
+        assert!(!needs_app_update("fetch failed"));
+        assert!(!needs_app_update("gbot send timed out after 45s"));
+    }
 
     #[test]
     fn a_failed_refresh_keeps_bots_only_for_the_same_login_and_keeps_the_error() {

@@ -440,9 +440,15 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
         },
     };
     let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false, deadline: None, review: false })?;
+    // a reply that could not go is no answer: the message stays as it was, and says so
+    if rep.route == "failed" {
+        store.append_run(&orig.id, "reply", "failed", &rep.letter_id)?;
+        return Ok(json!({ "replied_to": orig.id, "replied": false, "to": { "id": target.id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": format!("{} {}", t("reply.not_delivered"), rep.detail) }));
+    }
     store.set_status(&mut orig, store::REPLIED)?;
-    store.append_run(&orig.id, "reply", "sent", &rep.letter_id)?;
-    Ok(json!({ "replied_to": orig.id, "to": { "id": target.id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail }))
+    // "sent" when it reached the sender, "queued" when it waits to (the reply's own status says when it does)
+    store.append_run(&orig.id, "reply", if rep.route == "stored" { "queued" } else { "sent" }, &rep.letter_id)?;
+    Ok(json!({ "replied_to": orig.id, "replied": true, "to": { "id": target.id, "name": target.display_name() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail }))
 }
 
 /// A reply from the command line or MCP: as `reply`, except that a message written to the
