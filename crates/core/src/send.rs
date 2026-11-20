@@ -228,7 +228,13 @@ pub fn target_of(letter: &Letter) -> Session {
         let name = letter.to_host_name.clone().unwrap_or_else(|| crate::model::short_id(h));
         return peer::remote_target(h, &name, &letter.to, Some(letter.to_name.clone()), harness_of(letter.to_harness.as_deref()));
     }
-    if let Some(s) = discover::local().into_iter().find(|s| s.id.eq_ignore_ascii_case(&letter.to)) {
+    target_with_clients(letter, &discover::ClientStates::snapshot())
+}
+
+fn target_with_clients(letter: &Letter, clients: &discover::ClientStates) -> Session {
+    // Resolving an already-addressed copy must not wait for unrelated clients. The
+    // selected harness performs its own live checks when the letter is delivered.
+    if let Some(s) = discover::for_peer(None, clients).into_iter().find(|s| s.id.eq_ignore_ascii_case(&letter.to)) {
         return s;
     }
     bare_session(harness_of(letter.to_harness.as_deref()), &letter.to, Some(letter.to_name.clone()))
@@ -537,6 +543,29 @@ pub fn redeliver(store: &Store, letter: &mut Letter) -> Result<Report> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stored_recipient_does_not_wait_for_unrelated_client_probes() {
+        let _g = crate::i18n::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("dispatch-target-{}", uuid::Uuid::new_v4()));
+        store::set_thread_root(Some(root.clone()));
+        struct Reset(std::path::PathBuf);
+        impl Drop for Reset {
+            fn drop(&mut self) { store::set_thread_root(None); let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let _reset = Reset(root);
+        let letter: Letter = serde_json::from_value(serde_json::json!({
+            "id":"fixture", "dispatch_id":"fixture", "from":"cli", "from_name":"test",
+            "to":"33333333-4444-4555-8666-777777777777", "to_name":"stored recipient",
+            "to_harness":"claude", "urgency":"normal", "wake":true, "status":"unread",
+            "created":"2026-01-01 00:00", "body":"fixture"
+        })).unwrap();
+        let clients = discover::ClientStates { codex: None, grok: None };
+        let target = crate::snapshot::without_blocking_probes(|| target_with_clients(&letter, &clients));
+        assert_eq!(target.id, letter.to);
+        assert_eq!(target.harness, Harness::Claude);
+        assert_eq!(target.display_name(), letter.to_name);
+    }
 
     fn bot(id: &str, name: &str) -> Session {
         Session { harness: Harness::Grok, id: id.into(), short_id: id.into(), name: Some(name.into()), cwd: None, title: None, last_active: 1, running: true, desktop: true, host_session_id: None, status: None, transcript: None, host: None, project: None, app_name: None }
