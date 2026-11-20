@@ -1157,6 +1157,27 @@ fn anything_shown(app: &AppHandle) -> bool {
 
 /// A minute after launch and then every six hours, look for an update. An update installed in
 /// the background takes effect with a restart, done when no window of the app is open.
+/// The first start of each version: tell macOS to read this app again. An update replaces the
+/// app in place, and macOS kept showing the old version's icon in the Dock (0.1.17's arrows
+/// under 0.1.18) until the app was registered again by hand. Once per version.
+fn refresh_icon_once() {
+    #[cfg(target_os = "macos")]
+    {
+        let version = env!("CARGO_PKG_VERSION");
+        if settings::get("icon_registered").and_then(|v| v.as_str().map(str::to_string)).as_deref() == Some(version) {
+            return;
+        }
+        // …/Dispatch.app/Contents/MacOS/dispatch-desktop → …/Dispatch.app
+        let Some(bundle) = std::env::current_exe().ok().and_then(|p| p.ancestors().nth(3).map(|b| b.to_path_buf())).filter(|b| b.extension().map(|e| e == "app").unwrap_or(false)) else { return };
+        let _ = std::process::Command::new("/usr/bin/touch").arg(&bundle).status();
+        let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
+        let ok = std::process::Command::new(lsregister).arg("-f").arg(&bundle).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map(|s| s.success()).unwrap_or(false);
+        if ok {
+            let _ = settings::set("icon_registered", json!(version));
+        }
+    }
+}
+
 fn start_update_watcher(app: AppHandle) {
     std::thread::Builder::new()
         .name("dispatch-updates".into())
@@ -1595,6 +1616,7 @@ pub fn run() {
             tauri::async_runtime::spawn_blocking(move || {
                 handle.state::<cli_sync::State>().ensure(bundled_cli().as_deref(), &installed_cli());
             });
+            std::thread::spawn(refresh_icon_once);
             apply_theme(app.handle());
             build_tray(app.handle())?;
             start_listener();
