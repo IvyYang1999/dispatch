@@ -26,6 +26,7 @@ iroh = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "macros", "time", "sync"] }
 base64 = "0.22"
 url = "2"
+ruzstd = "0.9.1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -86,11 +86,30 @@ fn is_helper_meta(first_line: &str) -> bool {
         && (SUBAGENT.is_match(first_line) || SOURCE.captures(first_line).map(|c| matches!(&c[1], "guardian_review" | "subagent")).unwrap_or(false))
 }
 
+/// The first `bytes` of a transcript. Codex compresses the rollouts of threads left alone
+/// (`.jsonl.zst`): those are read through the decompressor.
 fn read_head(p: &Path, bytes: usize) -> String {
-    let Ok(mut f) = fs::File::open(p) else { return String::new() };
-    let mut buf = vec![0u8; bytes];
-    let n = f.read(&mut buf).unwrap_or(0);
-    String::from_utf8_lossy(&buf[..n]).to_string()
+    let Ok(f) = fs::File::open(p) else { return String::new() };
+    let mut reader: Box<dyn Read> = if is_compressed(p) {
+        match ruzstd::decoding::StreamingDecoder::new(f) {
+            Ok(d) => Box::new(d),
+            Err(_) => return String::new(),
+        }
+    } else {
+        Box::new(f)
+    };
+    let mut buf = Vec::with_capacity(bytes.min(1 << 20));
+    let _ = reader.by_ref().take(bytes as u64).read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).to_string()
+}
+
+fn is_compressed(p: &Path) -> bool {
+    p.to_string_lossy().ends_with(".zst")
+}
+
+/// A Codex rollout file: `rollout-….jsonl`, or the same compressed (`.jsonl.zst`).
+fn is_rollout_name(name: &str) -> bool {
+    name.ends_with(".jsonl") || name.ends_with(".jsonl.zst")
 }
 
 fn unescape(s: &str) -> Option<String> {
@@ -199,23 +218,31 @@ fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>, state: Op
     // Threads the shared daemon has loaded are running whatever the file times say.
     let loaded = |id: &str| state.map(|s| s.loaded.contains(id)).unwrap_or(false);
     let threads = codex_threads();
-    let mut out = vec![];
+    // a thread Codex is decompressing has both files for a moment: the plain one is the one
+    let mut files: HashMap<String, PathBuf> = HashMap::new();
     for e in WalkDir::new(&root).max_depth(5).into_iter().flatten() {
-        if !e.file_type().is_file() || !e.file_name().to_string_lossy().ends_with(".jsonl") {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !e.file_type().is_file() || !is_rollout_name(&name) {
             continue;
         }
-        let name = e.file_name().to_string_lossy().to_string();
         let Some(m) = uuid_re.find(&name) else { continue };
         let id = m.as_str().to_lowercase();
-        let Some(mtime) = mtime_ms(e.path()) else { continue };
+        let plain = !is_compressed(e.path());
+        if plain || !files.contains_key(&id) {
+            files.insert(id, e.path().to_path_buf());
+        }
+    }
+    let mut out = vec![];
+    for (id, path) in files {
+        let Some(mtime) = mtime_ms(path.as_path()) else { continue };
         let is_loaded = loaded(&id);
         if !is_loaded && max_age.map(|m| now - mtime > m).unwrap_or(false) {
             continue;
         }
-        if codex_helper(e.path()) {
+        if codex_helper(path.as_path()) {
             continue;
         }
-        let (cwd, title) = head_of(e.path(), mtime);
+        let (cwd, title) = head_of(path.as_path(), mtime);
         let running = is_loaded || (codex_running && now - mtime < CODEX_RUNNING_WINDOW_MS);
         let thread = threads.get(&id);
         out.push(Session {
@@ -231,7 +258,7 @@ fn discover_codex(codex_running: bool, now: i64, max_age: Option<i64>, state: Op
             status: if is_loaded { Some("loaded".into()) } else { None },
             desktop: false,
             host_session_id: None,
-            transcript: Some(e.path().to_string_lossy().to_string()),
+            transcript: Some(path.as_path().to_string_lossy().to_string()),
             host: None,
             project: thread.and_then(|t| t.project.clone()),
             app_name: None,
@@ -614,15 +641,22 @@ fn lookup_files_raw(id: &str, clients: Option<&ClientStates>) -> Option<Session>
     discover_grok(now_ms(), st.as_ref()).into_iter().find(|s| s.id.eq_ignore_ascii_case(&id))
 }
 
-/// The rollout file of a Codex thread, by its id, at any age.
+/// The rollout file of a Codex thread, by its id, at any age: the plain one when there is one,
+/// else the compressed one Codex keeps for a thread left alone.
 fn codex_rollout(id: &str) -> Option<PathBuf> {
     let root = home_dir().join(".codex").join("sessions");
-    WalkDir::new(&root)
-        .max_depth(5)
-        .into_iter()
-        .flatten()
-        .find(|e| e.file_type().is_file() && e.file_name().to_string_lossy().to_lowercase().contains(id))
-        .map(|e| e.path().to_path_buf())
+    let mut compressed = None;
+    for e in WalkDir::new(&root).max_depth(5).into_iter().flatten() {
+        let name = e.file_name().to_string_lossy().to_lowercase();
+        if !e.file_type().is_file() || !is_rollout_name(&name) || !name.contains(id) {
+            continue;
+        }
+        if !is_compressed(e.path()) {
+            return Some(e.path().to_path_buf());
+        }
+        compressed.get_or_insert_with(|| e.path().to_path_buf());
+    }
+    compressed
 }
 
 #[cfg(test)]
@@ -631,6 +665,29 @@ mod tests {
 
     fn session(id: &str, name: Option<&str>, cwd: &str, title: &str) -> Session {
         Session { harness: Harness::Codex, id: id.into(), short_id: short_id(id), name: name.map(str::to_string), cwd: Some(cwd.into()), title: Some(title.into()), last_active: 1, running: false, desktop: false, host_session_id: None, status: None, transcript: None, host: None, project: None, app_name: None }
+    }
+
+    /// Codex compresses the rollout of a thread left alone: it is still a thread, read the same.
+    #[test]
+    fn a_compressed_rollout_is_read_like_a_plain_one() {
+        let dir = std::env::temp_dir().join(format!("dispatch-zst-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let text = concat!(
+            r#"{"type":"session_meta","payload":{"id":"01a069a5-0000-7000-8000-000000000000","cwd":"/Users/y/developer/keykeeper","source":"vscode"}}"#, "\n",
+            r#"{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"设计应用 Logo"}]}}"#, "\n",
+        );
+        let plain = dir.join("rollout-2026-11-10T10-00-00-01a069a5-0000-7000-8000-000000000000.jsonl");
+        let packed = dir.join("rollout-2026-11-10T10-00-00-01a069a5-0000-7000-8000-000000000000.jsonl.zst");
+        fs::write(&plain, text).unwrap();
+        fs::write(&packed, ruzstd::encoding::compress_to_vec(text.as_bytes(), ruzstd::encoding::CompressionLevel::Fastest)).unwrap();
+        assert!(is_rollout_name(&packed.file_name().unwrap().to_string_lossy()));
+        assert_eq!(read_head(&packed, 1 << 20), text);
+        assert_eq!(read_head(&packed, 10), &text[..10]);
+        let (cwd, title) = parse_head(&read_head(&packed, 1 << 20));
+        assert_eq!(cwd.as_deref(), Some("/Users/y/developer/keykeeper"));
+        assert_eq!(title.as_deref(), Some("设计应用 Logo"));
+        assert!(!codex_helper(&packed));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
