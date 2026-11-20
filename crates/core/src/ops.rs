@@ -416,10 +416,9 @@ pub fn inbox(store: &Store, session: Option<&str>, all: bool) -> Result<Value> {
     };
     // a message still held for the user's review has not been sent: its recipient does not see it
     let letters: Vec<store::Letter> = store.list(Some(&sid), !all)?.into_iter().filter(|l| l.status != store::REVIEW).collect();
-    let known: Vec<String> = discover::sessions().into_iter().filter(|s| s.harness == crate::model::Harness::Grok).map(|s| s.id).collect();
     let rows: Vec<Value> = letters
         .iter()
-        .map(|l| json!({ "id": l.id, "short_id": short_id(&l.id), "dispatch_id": l.dispatch_id, "from": l.from, "from_name": l.from_name, "from_host_name": l.from_host_name, "status": l.status, "created": l.created, "urgency": l.urgency, "body": l.body, "path": l.path, "can_reply": is_uuid(&l.from) || l.from_host.is_some() || send::is_person(&l.from) || known.iter().any(|k| k.eq_ignore_ascii_case(&l.from)) }))
+        .map(|l| json!({ "id": l.id, "short_id": short_id(&l.id), "dispatch_id": l.dispatch_id, "from": l.from, "from_name": l.from_name, "from_host_name": l.from_host_name, "status": l.status, "created": l.created, "urgency": l.urgency, "body": l.body, "path": l.path, "can_reply": send::can_reply(l) }))
         .collect();
     Ok(json!({ "session_id": sid, "unread_only": !all, "count": rows.len(), "messages": rows }))
 }
@@ -434,10 +433,7 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
             let harness = if send::is_person(&orig.from) { crate::model::Harness::Human } else { send::harness_of(orig.from_harness.as_deref()) };
             crate::peer::remote_target(h, orig.from_host_name.as_deref().unwrap_or(""), &orig.from, Some(orig.from_name.clone()), harness)
         }
-        None => match send::resolve(&orig.from) {
-            Ok(s) if is_uuid(&orig.from) || matches!(s.harness, crate::model::Harness::Grok | crate::model::Harness::Human) => s,
-            _ => return Err(anyhow!("the sender \"{}\" is not a session, so it cannot be replied to", orig.from)),
-        },
+        None => send::reply_target(&orig.from)?,
     };
     let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false, deadline: None, review: false })?;
     // a reply that could not go is no answer: the message stays as it was, and says so

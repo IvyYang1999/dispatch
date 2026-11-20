@@ -243,9 +243,47 @@ pub fn sender_text(l: &Letter) -> String {
     }
 }
 
-/// The text the session sees: who sent it, when, the body, and how to answer.
+/// Who a reply to a sender on this machine goes to. A session or bot id, or the person, as
+/// before. A name is what a sender wrote in under (a Grok bot runs the command line with
+/// `--from "<its name>"`): it is answered only when exactly one of this account's Grok bots
+/// here goes by that name, never a guess between several and never a session whose title
+/// happens to match. The user approved the message it answers, and a bot of their own account
+/// is all a reply can reach.
+pub fn reply_target(from: &str) -> Result<Session> {
+    if is_person(from) || is_uuid(from) {
+        return match resolve(from) {
+            Ok(s) if is_uuid(from) || matches!(s.harness, Harness::Grok | Harness::Human) => Ok(s),
+            _ => Err(anyhow!("{}", t("reply.not_a_session").replace("{from}", from))),
+        };
+    }
+    bot_called(from, discover::local())
+}
+
+/// The one Grok bot among `sessions` whose id or name is exactly `from` (any case).
+fn bot_called(from: &str, sessions: Vec<Session>) -> Result<Session> {
+    let want = from.trim().to_lowercase();
+    let bots: Vec<Session> = sessions
+        .into_iter()
+        .filter(|s| s.harness == Harness::Grok)
+        .filter(|s| s.id.to_lowercase() == want || s.name.as_deref().map(|n| n.trim().to_lowercase() == want).unwrap_or(false) || s.display_name().trim().to_lowercase() == want)
+        .collect();
+    match bots.len() {
+        1 => Ok(bots.into_iter().next().unwrap()),
+        0 => Err(anyhow!("{}", t("reply.not_a_session").replace("{from}", from))),
+        n => Err(anyhow!("{}", t("reply.several_bots").replace("{from}", from).replace("{n}", &n.to_string()))),
+    }
+}
+
+/// Whether a reply to this copy can go anywhere.
+pub fn can_reply(l: &Letter) -> bool {
+    l.from_host.is_some() || reply_target(&l.from).is_ok()
+}
+
+/// The text the session sees: who sent it, when, the body, and how to answer (or that it cannot
+/// be answered: no reply instruction that is bound to fail).
 pub fn envelope(l: &Letter) -> String {
-    t("send.envelope")
+    let key = if can_reply(l) { "send.envelope" } else { "send.envelope_noreply" };
+    t(key)
         .replace("{from}", &sender_text(l))
         .replace("{created}", &l.created)
         .replace("{id}", &crate::model::short_id(&l.id))
@@ -494,4 +532,31 @@ pub fn redeliver(store: &Store, letter: &mut Letter) -> Result<Report> {
     store.append_run(&letter.id, "retry", "started", "")?;
     let to = target_of(letter);
     deliver(store, &to, letter, true, false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bot(id: &str, name: &str) -> Session {
+        Session { harness: Harness::Grok, id: id.into(), short_id: id.into(), name: Some(name.into()), cwd: None, title: None, last_active: 1, running: true, desktop: true, host_session_id: None, status: None, transcript: None, host: None, project: None, app_name: None }
+    }
+
+    fn claude(id: &str, title: &str) -> Session {
+        Session { harness: Harness::Claude, title: Some(title.into()), name: None, ..bot(id, "") }
+    }
+
+    /// A Grok bot that wrote in under its name is answered by that name (issue #12), and only
+    /// when the name picks out one bot: never a session whose title matches, never a guess.
+    #[test]
+    fn a_bot_that_wrote_under_its_name_is_answered_by_it() {
+        let here = vec![claude("0199aaaa-1111-4222-8333-444455556666", "OpenTrends QA"), bot("bot-qa", "OpenTrends QA"), bot("bot-dev", "OpenTrends Dev")];
+        assert_eq!(bot_called("OpenTrends QA", here.clone()).unwrap().id, "bot-qa");
+        assert_eq!(bot_called("opentrends qa ", here.clone()).unwrap().id, "bot-qa");
+        assert_eq!(bot_called("bot-dev", here.clone()).unwrap().id, "bot-dev");
+        assert!(bot_called("OpenTrends", here.clone()).is_err(), "part of a name is no name");
+        assert!(bot_called("Someone", here.clone()).is_err());
+        let twins = vec![bot("bot-a", "QA"), bot("bot-b", "QA")];
+        assert!(bot_called("QA", twins).unwrap_err().to_string().contains('2'));
+    }
 }
