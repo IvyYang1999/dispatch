@@ -287,7 +287,7 @@ fn claims_a_session(f: &str) -> bool {
     if model::is_uuid(f) {
         return true;
     }
-    matches!(send::resolve_how(f), Ok((s, m)) if m != send::Match::Fragment && matches!(s.harness, model::Harness::Claude | model::Harness::Codex))
+    matches!(send::resolve_how(f), Ok((s, m)) if m != send::Match::Fragment && matches!(s.harness, model::Harness::Claude | model::Harness::Codex | model::Harness::Antigravity))
 }
 
 fn run() -> Result<i32> {

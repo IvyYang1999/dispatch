@@ -208,6 +208,7 @@ fn harness_code(h: Harness) -> &'static str {
         Harness::Claude => "claude",
         Harness::Codex => "codex",
         Harness::Grok => "grok",
+        Harness::Antigravity => "antigravity",
         Harness::Human => "human",
     }
 }
@@ -216,6 +217,7 @@ pub(crate) fn harness_of(code: Option<&str>) -> Harness {
     match code {
         Some("codex") => Harness::Codex,
         Some("grok") => Harness::Grok,
+        Some("antigravity") => Harness::Antigravity,
         Some("human") => Harness::Human,
         _ => Harness::Claude,
     }
@@ -383,6 +385,45 @@ fn deliver_grok(store: &Store, to: &Session, letter: &mut Letter, report: Report
     }
 }
 
+/// The Antigravity branch: the app's own `agentapi` hands the message to the conversation, as a
+/// system message that starts a turn (or waits for the running one to end). The app has to be
+/// open; until it is, the copy waits in the store and the sweep sends it. `agentapi` accepts
+/// any id, so the conversation's record is what confirms arrival.
+fn deliver_antigravity(store: &Store, to: &Session, letter: &mut Letter, report: Reporter) -> Result<Report> {
+    if crate::antigravity::agentapi().is_none() {
+        return fail(store, letter, "antigravity", "no Antigravity app", t("send.failed_antigravity").into(), report);
+    }
+    if crate::antigravity::hub().is_none() {
+        store.append_run(&letter.id, "antigravity", "skipped", "app not open")?;
+        return Ok(report("stored", t("send.antigravity_closed").into()));
+    }
+    let marker = format!("id {}", crate::model::short_id(&letter.id));
+    match crate::antigravity::send(&to.id, &envelope(letter)) {
+        Ok(()) => {
+            // the app takes anything: look for it in the record before calling it delivered
+            let deadline = std::time::Instant::now() + Duration::from_secs(8);
+            let mut seen = crate::antigravity::receipt(&to.id, &marker);
+            while seen == crate::antigravity::Receipt::NotFound && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(250));
+                seen = crate::antigravity::receipt(&to.id, &marker);
+            }
+            store.set_status(letter, DELIVERED_INBOX)?;
+            if seen == crate::antigravity::Receipt::NotFound {
+                // a conversation in the middle of a turn takes it when the turn ends
+                store.append_run(&letter.id, "antigravity", "sent", "not in the record yet")?;
+                Ok(report("inbox", t("send.antigravity_queued").into()))
+            } else {
+                store.append_run(&letter.id, "antigravity", "sent", "in the record")?;
+                Ok(report("inbox", t("send.antigravity_sent").into()))
+            }
+        }
+        Err(e) => {
+            store.append_run(&letter.id, "antigravity", "failed", &format!("{e:#}"))?;
+            Ok(report("stored", t("send.antigravity_failed").replace("{err}", &format!("{e:#}"))))
+        }
+    }
+}
+
 /// The Claude Code branch: the socket when the session takes it; the store and the hook when it
 /// does not; not delivered when there is no hook to fall back on.
 fn deliver_claude(store: &Store, to: &Session, letter: &mut Letter, wait: bool, report: Reporter) -> Result<Report> {
@@ -478,6 +519,7 @@ pub fn deliver(store: &Store, to: &Session, letter: &mut Letter, wait: bool, all
     match to.harness {
         Harness::Codex => deliver_codex(store, to, letter, allow_resume, &report),
         Harness::Grok => deliver_grok(store, to, letter, &report),
+        Harness::Antigravity => deliver_antigravity(store, to, letter, &report),
         Harness::Human => {
             store.set_status(letter, DELIVERED_FEED)?;
             store.append_run(&letter.id, "feed", "shown", "")?;

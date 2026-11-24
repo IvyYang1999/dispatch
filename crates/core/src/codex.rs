@@ -128,6 +128,7 @@ fn tool_path_in(program: Option<&Path>, home: &Path, current: Option<std::ffi::O
 }
 
 /// Whether `name` can be started with this `PATH`.
+#[cfg(test)]
 pub(crate) fn on_path(name: &str, path: &std::ffi::OsStr) -> bool {
     std::env::split_paths(path).any(|d| command_names(name).iter().any(|n| is_executable(&d.join(n))))
 }

@@ -560,7 +560,7 @@ pub fn sessions_of(p: &PeerInfo) -> Option<Vec<Session>> {
             return Some(r.sessions.clone());
         }
     }
-    match ask(p, &Request::Sessions { query: None }) {
+    match ask(p, &Request::Sessions { query: None, knows: wire::KNOWS.iter().map(|k| k.to_string()).collect() }) {
         Ok(Response::Sessions { sessions, .. }) => {
             let mut list = vec![];
             let mut reach = HashMap::new();
@@ -621,7 +621,7 @@ pub fn remote_find(query: &str, only: Option<&PeerInfo>) -> Vec<Session> {
     let mut out = vec![];
     for p in &peers {
         let mut list = vec![];
-        match ask(p, &Request::Sessions { query: Some(query.trim().to_string()) }) {
+        match ask(p, &Request::Sessions { query: Some(query.trim().to_string()), knows: wire::KNOWS.iter().map(|k| k.to_string()).collect() }) {
             Ok(Response::Sessions { sessions, .. }) => {
                 let mut found = FOUND.lock().unwrap();
                 if found.len() > 5000 {

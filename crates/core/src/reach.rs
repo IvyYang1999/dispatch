@@ -41,7 +41,7 @@ const KEYS: &[&str] = &[
     "reach.off_later", "reach.off_none", "reach.noinbox_later", "reach.noinbox_none", "reach.now_desktop", "reach.now_terminal",
     "reach.bypass_busy", "reach.bypass_idle", "reach.unknown_later", "reach.refuse_later", "reach.bypass_none", "reach.codex_nocli",
     "reach.codex_nodaemon", "reach.codex_queue", "reach.codex_now", "reach.codex_notloaded", "reach.grok_noapp", "reach.grok_nologin",
-    "reach.grok_nocli", "reach.grok_now", "reach.nosocket_later", "reach.nosocket_none", "reach.human", "reach.peer_offline", "reach.checking",
+    "reach.grok_nocli", "reach.grok_now", "reach.antigravity_now", "reach.antigravity_closed", "reach.antigravity_noapp", "reach.nosocket_later", "reach.nosocket_none", "reach.human", "reach.peer_offline", "reach.checking",
 ];
 
 /// A reach another machine worked out, its text in this machine's language when it is one of
@@ -87,7 +87,7 @@ pub fn plain(s: &Session, r: &Reach) -> Plain {
     let auto = crate::wake::mode() == "auto";
     let key = key_of(r);
     match key {
-        Some("reach.now_desktop" | "reach.now_terminal" | "reach.codex_now" | "reach.grok_now") => plain_of("now", "plain.now_title", t("plain.now").into(), None),
+        Some("reach.now_desktop" | "reach.now_terminal" | "reach.codex_now" | "reach.grok_now" | "reach.antigravity_now") => plain_of("now", "plain.now_title", t("plain.now").into(), None),
         Some("reach.human") => plain_of("now", "plain.now_title", r.text.clone(), None),
         Some("reach.codex_queue" | "reach.codex_nodaemon" | "reach.codex_notloaded") => {
             if auto {
@@ -242,6 +242,16 @@ fn decide_here(s: &Session, hook_installed: bool, clients: Option<&crate::discov
                 Reach { level: Level::None, text: t("reach.grok_offline").replace("{e}", e), fix: Some("online".into()), mode: None, client: None }
             } else {
                 Reach { level: Level::Now, text: t("reach.grok_now").into(), fix: None, mode: None, client: None }
+            }
+        }
+        Harness::Antigravity => {
+            if crate::antigravity::agentapi().is_none() {
+                Reach { level: Level::None, text: t("reach.antigravity_noapp").into(), fix: Some("install".into()), mode: None, client: None }
+            } else if crate::antigravity::hub().is_none() {
+                // kept in the store and sent as soon as the app is open
+                Reach { level: Level::Later, text: t("reach.antigravity_closed").into(), fix: None, mode: None, client: None }
+            } else {
+                Reach { level: Level::Now, text: t("reach.antigravity_now").into(), fix: None, mode: None, client: None }
             }
         }
         Harness::Human => Reach { level: Level::Now, text: t("reach.human").into(), fix: None, mode: None, client: None },

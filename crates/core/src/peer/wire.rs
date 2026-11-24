@@ -54,6 +54,11 @@ pub enum Request {
     Sessions {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         query: Option<String>,
+        /// The kinds of session I can read beyond the first ones (`antigravity`): a machine
+        /// that predates a kind cannot read a list with one in it, so it is only sent the
+        /// kinds it names.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        knows: Vec<String>,
     },
     /// A letter for a session on your machine, with my signature over it; store it and run
     /// your ladder.
@@ -106,6 +111,10 @@ pub enum Response {
     Ok,
     Error { message: String },
 }
+
+/// The kinds of session added after the first ones, which this build reads: what it names
+/// when it asks another machine for its sessions.
+pub const KNOWS: &[&str] = &["antigravity"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemoteSession {
@@ -276,12 +285,13 @@ mod tests {
             Hello,
             Sessions,
         }
-        let asked = serde_json::to_string(&Request::Sessions { query: Some("opentrends codex".into()) }).unwrap();
+        let asked = serde_json::to_string(&Request::Sessions { query: Some("opentrends codex".into()), knows: vec![] }).unwrap();
         assert!(matches!(serde_json::from_str::<Before>(&asked).unwrap(), Before::Sessions));
         assert!(matches!(serde_json::from_str::<Before>(r#"{"type":"hello"}"#).unwrap(), Before::Hello));
         // and an older machine's plain request asks for the recent list here
-        assert!(matches!(serde_json::from_str::<Request>(r#"{"type":"sessions"}"#).unwrap(), Request::Sessions { query: None }));
-        assert_eq!(serde_json::to_string(&Request::Sessions { query: None }).unwrap(), r#"{"type":"sessions"}"#);
+        assert!(matches!(serde_json::from_str::<Request>(r#"{"type":"sessions"}"#).unwrap(), Request::Sessions { query: None, knows } if knows.is_empty()));
+        assert_eq!(serde_json::to_string(&Request::Sessions { query: None, knows: KNOWS.iter().map(|k| k.to_string()).collect() }).unwrap(), r#"{"type":"sessions","knows":["antigravity"]}"#);
+        assert_eq!(serde_json::to_string(&Request::Sessions { query: None, knows: vec![] }).unwrap(), r#"{"type":"sessions"}"#);
     }
 
     #[test]
@@ -295,7 +305,7 @@ mod tests {
             let (s, _) = listener.accept().unwrap();
             let mut c = respond(s, &b_priv).unwrap();
             let req: Request = c.recv().unwrap();
-            assert!(matches!(req, Request::Sessions { query: None }));
+            assert!(matches!(req, Request::Sessions { query: None, .. }));
             // a response bigger than one frame, to exercise chunking
             let big = Response::Error { message: "x".repeat(150_000) };
             c.send(&big).unwrap();
@@ -303,7 +313,7 @@ mod tests {
         });
         let mut c = initiate(TcpStream::connect(addr).unwrap(), &a.private).unwrap();
         assert_eq!(c.remote_key, b.public);
-        c.send(&Request::Sessions { query: None }).unwrap();
+        c.send(&Request::Sessions { query: None, knows: vec![] }).unwrap();
         let resp: Response = c.recv().unwrap();
         assert!(matches!(resp, Response::Error { message } if message.len() == 150_000));
         let (seen_key, server_hash) = server.join().unwrap();

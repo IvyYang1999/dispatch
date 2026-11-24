@@ -1,6 +1,7 @@
 //! dispatch-core: find an agent session on this machine and deliver a message into it.
 //!
 //! - `discover`: the sessions on this machine (Claude Code, Codex), live or recent.
+//! - `antigravity`: the Antigravity App's conversations, through the app's own `agentapi`.
 //! - `claude`: a running Claude Code session's inbox socket, its transcript, receipts.
 //! - `store`: the message store (one Markdown file per recipient, a run log per message).
 //! - `reach`: how a message reaches a session right now (at once, later, not at all).
@@ -14,6 +15,7 @@
 //! - `transcript`: the last turns of a session's own record, for the session page.
 
 mod snapshot;
+pub mod antigravity;
 pub mod claude;
 pub mod codex;
 pub mod contacts;

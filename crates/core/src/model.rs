@@ -7,6 +7,7 @@ pub enum Harness {
     Claude,
     Codex,
     Grok,
+    Antigravity,
     Human,
 }
 
@@ -16,6 +17,7 @@ impl Harness {
             Harness::Claude => "Claude",
             Harness::Codex => "Codex",
             Harness::Grok => "Grok Bot",
+            Harness::Antigravity => "Antigravity",
             Harness::Human => crate::i18n::t("harness.human"),
         }
     }

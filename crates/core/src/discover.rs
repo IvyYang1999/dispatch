@@ -475,7 +475,7 @@ fn gather_with(max_age: Option<i64>, clients: &ClientStates) -> Vec<Session> {
     let codex_running = Regex::new(r"\bcodex\b").map(|re| re.is_match(&procs)).unwrap_or(false);
 
     let mut by_id: HashMap<String, Session> = HashMap::new();
-    for s in discover_claude(&running_ids, now, max_age).into_iter().chain(discover_codex(codex_running, now, max_age, clients.codex.as_ref())).chain(discover_grok(now, clients.grok.as_ref())) {
+    for s in discover_claude(&running_ids, now, max_age).into_iter().chain(discover_codex(codex_running, now, max_age, clients.codex.as_ref())).chain(discover_grok(now, clients.grok.as_ref())).chain(crate::antigravity::sessions(max_age, now)) {
         match by_id.get_mut(&s.id) {
             Some(prev) => {
                 // a session can appear under several project slugs after a cwd change
@@ -679,6 +679,9 @@ fn lookup_files_raw(id: &str, clients: Option<&ClientStates>) -> Option<Session>
                 app_name: None,
             });
         }
+    }
+    if let Some(s) = crate::antigravity::sessions(None, now_ms()).into_iter().find(|s| s.id.eq_ignore_ascii_case(&id)) {
+        return Some(s);
     }
     let st = clients.map(|c| c.grok.clone()).unwrap_or_else(|| Some(crate::grok::state()));
     discover_grok(now_ms(), st.as_ref()).into_iter().find(|s| s.id.eq_ignore_ascii_case(&id))

@@ -124,8 +124,8 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
             };
             let store = Store::open();
             match other {
-                Request::Sessions { query } => {
-                    sessions_response(query.as_deref(), &discover::ClientStates::snapshot())
+                Request::Sessions { query, knows } => {
+                    sessions_response(query.as_deref(), &knows, &discover::ClientStates::snapshot())
                 }
                 Request::Keys { iroh, iroh_addr } => match super::pin_keys(&peer.id, iroh, iroh_addr) {
                     Ok(()) => Response::Keys { iroh: net::my_id(), iroh_addr: net::my_addr() },
@@ -183,11 +183,19 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
 /// At most this many sessions answer a search from another machine.
 const SEARCH_MAX: usize = 200;
 
-fn sessions_response(query: Option<&str>, clients: &discover::ClientStates) -> Response {
+/// Whether a machine that named `knows` can read this kind of session.
+fn readable(harness: crate::model::Harness, knows: &[String]) -> bool {
+    match harness {
+        crate::model::Harness::Antigravity => knows.iter().any(|k| k == "antigravity"),
+        _ => true,
+    }
+}
+
+fn sessions_response(query: Option<&str>, knows: &[String], clients: &discover::ClientStates) -> Response {
     let hook_on = hook::installed();
     let query = query.map(str::trim).filter(|q| !q.is_empty());
     let limit = if query.is_some() { SEARCH_MAX } else { usize::MAX };
-    let sessions = discover::for_peer(query, clients).into_iter().take(limit)
+    let sessions = discover::for_peer(query, clients).into_iter().filter(|s| readable(s.harness, knows)).take(limit)
         .map(|s| RemoteSession { reach: reach::decide_with(&s, hook_on, Some(clients)), session: s }).collect();
     Response::Sessions { hook_installed: hook_on, sessions }
 }
@@ -235,7 +243,7 @@ mod snapshot_tests {
         let clients = ClientStates { codex, grok };
         for query in [None, Some("snapshot")] {
             let start = Instant::now();
-            let response = crate::snapshot::without_blocking_probes(|| sessions_response(query, &clients));
+            let response = crate::snapshot::without_blocking_probes(|| sessions_response(query, &[], &clients));
             assert!(start.elapsed() < IO_TIMEOUT, "client probes blocked the peer response");
             let Response::Sessions { sessions, .. } = response else { panic!("expected sessions") };
             for name in names {

@@ -86,7 +86,15 @@ pub fn caller() -> Option<Caller> {
         let name = i.name.clone().unwrap_or_else(|| short_id(&i.session_id));
         return Some(Caller { id: i.session_id.to_lowercase(), name, harness: crate::model::Harness::Claude, cwd: i.cwd.clone(), desktop: i.desktop });
     }
-    std::env::var("CODEX_THREAD_ID").ok().filter(|i| is_uuid(i)).map(|id| codex_caller(&id.to_lowercase()))
+    if let Some(c) = std::env::var("CODEX_THREAD_ID").ok().filter(|i| is_uuid(i)).map(|id| codex_caller(&id.to_lowercase())) {
+        return Some(c);
+    }
+    // the Antigravity App names the conversation on every command its agent runs
+    crate::antigravity::caller_conversation().map(|id| {
+        let s = discover::lookup(&id);
+        let name = crate::contacts::for_session(&id, None).map(|c| c.name).or_else(|| s.as_ref().and_then(|s| s.name.clone().or_else(|| s.title.clone()))).unwrap_or_else(|| short_id(&id));
+        Caller { name, harness: crate::model::Harness::Antigravity, cwd: s.as_ref().and_then(|s| s.cwd.clone()), desktop: true, id }
+    })
 }
 
 /// A Codex thread as a sender: its address-book name, else the title Codex shows, else its id.
@@ -370,7 +378,7 @@ pub fn retry(store: &Store, id: &str) -> Result<Value> {
 
 /// A delivery attempt that reached the session (so a retry could duplicate it).
 fn was_handed(runs: &[store::Run]) -> bool {
-    runs.iter().any(|r| matches!((r.action.as_str(), r.result.as_str()), ("inbox", "written") | ("codex", "queued") | ("grok", "sent") | ("hook", "handed") | ("peer", "inbox")))
+    runs.iter().any(|r| matches!((r.action.as_str(), r.result.as_str()), ("inbox", "written") | ("codex", "queued") | ("grok", "sent") | ("antigravity", "sent") | ("hook", "handed") | ("peer", "inbox")))
 }
 
 fn last_run_age_secs(runs: &[store::Run]) -> i64 {
@@ -466,6 +474,7 @@ fn harness_label(code: Option<&str>) -> Option<&'static str> {
             "claude" => Harness::Claude,
             "codex" => Harness::Codex,
             "grok" => Harness::Grok,
+            "antigravity" => Harness::Antigravity,
             "human" => Harness::Human,
             _ => return None,
         }
@@ -562,6 +571,7 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
     let delivered_inbox = runs.iter().any(|r| r.action == "inbox" && r.result == "written");
     let queued_codex = runs.iter().any(|r| r.action == "codex" && r.result == "queued");
     let sent_grok = runs.iter().find(|r| r.action == "grok" && r.result == "sent");
+    let sent_antigravity = runs.iter().any(|r| r.action == "antigravity" && r.result == "sent");
     // a turn seen finished stays finished: it is written down once and never looked up again
     let finished = runs.iter().any(|r| r.action == "receipt" && r.result == "completed");
     let receipt = if finished {
@@ -574,6 +584,14 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
             crate::codex::Receipt::Started => claude::Receipt::Started,
             crate::codex::Receipt::Queued => claude::Receipt::Queued,
             crate::codex::Receipt::NotFound => claude::Receipt::NotFound,
+        })
+    } else if sent_antigravity {
+        Some(match crate::antigravity::receipt(&c.to, &format!("id {}", short_id(&c.id))) {
+            crate::antigravity::Receipt::Answered => claude::Receipt::Completed { turn_id: String::new() },
+            crate::antigravity::Receipt::Working => claude::Receipt::Started,
+            // handed to the app while a turn was running: it is next in line
+            crate::antigravity::Receipt::NotFound => claude::Receipt::Queued,
+            crate::antigravity::Receipt::Delivered => claude::Receipt::NotFound,
         })
     } else if let Some(run) = sent_grok {
         let message_id = Some(run.detail.as_str()).filter(|d| !d.is_empty() && !d.starts_with('{'));
@@ -977,6 +995,7 @@ pub fn open_session(session_id: &str) -> Result<Value> {
             }
         }
         crate::model::Harness::Codex => Ok(json!({ "kind": "url", "url": format!("codex://threads/{}", s.id), "exact": true })),
+        crate::model::Harness::Antigravity => Ok(json!({ "kind": "app", "app": "Antigravity", "exact": false, "note": t("open.antigravity_note").replace("{name}", &s.display_name()) })),
         crate::model::Harness::Grok => Ok(json!({ "kind": "app", "app": "Grok Bot", "exact": false, "note": t("open.grok_note").replace("{name}", &s.display_name()) })),
         _ => Err(anyhow!("{}", t("open.unknown"))),
     }
