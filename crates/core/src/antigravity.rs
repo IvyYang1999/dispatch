@@ -422,13 +422,18 @@ mod tests {
         let data = std::env::temp_dir().join(format!("dispatch-agy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(data.join("daemon")).unwrap();
         assert!(hub_in(&data).is_none(), "no file: the app is not open");
+        // left behind by an app that quit: a port nobody listens on. (Port 1, not one this
+        // test had open and closed: another test running beside it may be given that one.)
+        std::fs::write(data.join("daemon").join("hub_1.json"), r#"{"pid":1,"httpsPort":1,"httpPort":1,"csrfToken":"old"}"#).unwrap();
+        assert!(hub_in(&data).is_none(), "nobody answers on its port");
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         std::fs::write(data.join("daemon").join(format!("hub_{port}.json")), format!(r#"{{"pid":1,"httpsPort":1,"httpPort":{port},"csrfToken":"secret"}}"#)).unwrap();
+        // the one that answers, whichever file is newer
         let hub = hub_in(&data).expect("the port answers");
         assert_eq!(hub.address, format!("127.0.0.1:{port}"));
+        assert_eq!(hub.token, "secret");
         drop(listener);
-        assert!(hub_in(&data).is_none(), "left behind by an app that quit");
         let _ = std::fs::remove_dir_all(data);
     }
 
