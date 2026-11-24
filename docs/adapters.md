@@ -7,7 +7,7 @@ message would reach one right now, and deliver. Each kind has an adapter in `cra
 |---|---|---|---|---|
 | Claude Code | `~/.claude/projects/*/<id>.jsonl` (recent transcripts) + `~/.claude/sessions/<pid>.json` (live records) + the process list | running with an inbox that accepts → **now**; running in bypass-permissions mode (unless `crossSessionInbound` is `accept`) or closed → **later** through the hook, when its turn ends or at its next turn; no hook → **none** | write the envelope to the session's Unix socket (`claude.rs`), wait up to 10 s for the transcript to show it queued; otherwise leave it for the hook | the transcript: queued → started → turn finished |
 | Codex | the rollout files under `~/.codex/sessions` plus the shared daemon's loaded-thread list | thread loaded on the shared daemon → **now**; otherwise **later**: Codex's queue, taken by whichever Codex process has the thread open (the desktop app included) when it is idle, about every ten seconds | `codex queue --thread <id>` for a daemon-loaded thread; `thread/queue/add` (shared daemon, else a private app-server) for any other, which loads nothing (`codex.rs`); `--allow-resume` lets the daemon load the thread first | the thread's rollout file: queued → started → completed |
-| Grok Bot | `gbot bots list` through the desktop app's gateway (`grok.rs`), cached a minute | app installed, signed in, `gbot` present, gateway answering → **now** | `gbot send <bot> <envelope>`: a direct message, which may redirect the bot's current turn | `gbot thread`: our message in the transcript → delivered; a bot entry after it → answered |
+| Grok Bot | `ListGrokBotAgents` on the backend the desktop app uses, with the app's sign-in (`grok.rs`), cached a minute | app installed, signed in, backend answering → **now** | `SendGrokBotUserMessage`: a direct message, which may redirect the bot's current turn | `GetGrokBotSendStatus`: accepted → delivered. The bot's conversation is not read; answered = the bot replied through Dispatch |
 | Another machine | the paired machine's own list, asked over the wire (`peer/`), cached 20 s; each session carries its `host` | whatever that machine said when it listed the session; **later** ("machine offline") when it does not answer | push the letter to the machine, which stores it and runs its own ladder; its answer becomes the copy's status | mirrored from that machine when the feed or `status` is read |
 
 Claude Code decides what to do with a socket message by permission-mode class: a session that
@@ -31,7 +31,7 @@ feed: such a copy is marked `已送达（派发页）` and nothing is handed ove
    session's next turn, and the postman (`ops::sweep`, every 30 s in the app, `dispatch sweep`
    by hand) retries queued copies whose route has opened.
 3. When nothing could deliver it as things stand (closed session and no hook, no `codex`
-   command, no Grok Bot app or sign-in or `gbot`), the copy is marked `没送到` at once, with the
+   command, no Grok Bot app or sign-in), the copy is marked `没送到` at once, with the
    fix in the report. Past its deadline a queued copy is marked `没送到` too.
 
 `dispatch retry` runs the ladder again with a fresh deadline; `dispatch cancel` withdraws a

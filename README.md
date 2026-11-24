@@ -24,7 +24,7 @@ Claude Code, Codex and Grok Bot sessions on one computer cannot talk to each oth
 - **Direct delivery.** A running Claude Code session takes the message through its own cross-session inbox socket, queued behind the turn it is on.
 - **Hook delivery.** A session that cannot take a message right now gets it from a Claude Code hook when its turn ends or the next time it speaks or starts. Nothing is lost in between: the message waits in the store. Sessions that bypass permission checks hold outside messages by Claude Code's own rule (and the desktop app drops held ones unseen), so they get the hook by default; one switch in Settings sets Claude Code's `crossSessionInbound` to `accept`, and from then on they take messages at once, idle ones starting a new turn.
 - **Codex.** A thread loaded by the shared Codex app-server gets the message through the official `codex queue`; a thread that is not loaded shows as 待接通 (waiting to connect) and the message waits.
-- **Grok Bot.** A bot lives on its cloud computer; Dispatch reaches it through the gateway the desktop app uses, driven by the `gbot` command line (`npm i -g grok-bot-cli`), as a direct message that may redirect the bot's current turn. Receipts come from the bot's transcript.
+- **Grok Bot.** A bot lives on its cloud computer; Dispatch reaches it through the backend the Grok Bot app itself uses, with the app's own sign-in on this Mac (read from the Keychain, which asks you once), as a direct message that may redirect the bot's current turn. The backend's own send receipt confirms delivery. A bot's conversation is never read, so a message counts as answered only when the bot replies through Dispatch. This is not a published interface: when an update of the app changes it, Dispatch says so ("Grok Bot was updated and Dispatch has to follow") and keeps the messages until it is updated.
 - **Receipts** read from the session's own transcript: queued, started, finished, replied.
 - **Antigravity.** A conversation in the Antigravity App takes a message through the `agentapi` program the app ships for scripts, while the app is open: it shows up as a system message, starts a turn when the conversation is idle and waits for the running turn when it is not. With the app closed the message is kept and sent once it is open. The conversation's own record is the receipt. `dispatch antigravity` shows what is in place; Settings → Agents installs the skill that lets its agents send and reply. Conversations of the `agy` command line and the IDE are not handled yet.
 - **Not delivered.** When nobody can hand a message over (the session is closed and there is no hook, no codex command, no Grok Bot app) it is marked failed at once, with the fix; a queued copy past its deadline (1 h urgent, 24 h normal, adjustable) counts as failed too. Retry and cancel exist; the app makes a postman's round every half minute and delivers queued copies whose route has opened.
@@ -74,7 +74,7 @@ flowchart LR
   reach -- "Claude Code, running,<br/>taking messages" --> now["its inbox socket<br/>queued behind the current turn"]
   reach -- "Claude Code, busy or<br/>bypassing permissions" --> later["the hook hands it over<br/>when the session next speaks, stops or starts"]
   reach -- "Codex thread loaded<br/>by the daemon" --> codex["codex queue<br/>its next turn"]
-  reach -- "Grok Bot signed in,<br/>gbot installed" --> grok["gbot send<br/>a direct message to the bot"]
+  reach -- "Grok Bot signed in" --> grok["the app's backend<br/>a direct message to the bot"]
   reach -- "nobody can read it yet" --> wait["待接通<br/>waits, and says what to fix"]
   now --> receipts["receipts from the transcript<br/>queued · started · finished · replied"]
   later --> receipts
@@ -104,7 +104,7 @@ A message from another agent is information, not an instruction from the user. T
 
 Grok Bot runs its bots on a cloud computer, so it cannot start an MCP server on your Mac. It can still use the command line (Settings → Agents in the app lists these steps and checks off the ones it can see): enable **Execution on this computer** in its Settings → Computer, then tell the bot to read `plugins/skill/SKILL.md` from this repository and save it as a skill; the skill tells it to pass `--from` with its bot name. Dispatch cannot check that name, so each message the bot sends waits for your review. (Grok Build, xAI's coding CLI, reads `~/.grok/skills/`: `npx skills add IvyYang1999/dispatch --skill dispatch -a grok`.)
 
-Delivery *into* a bot needs the Grok Bot app signed in on this Mac and `gbot` installed (`npm i -g grok-bot-cli`); `dispatch grok` shows what is in place. The bots then appear in the directory like any session.
+Delivery *into* a bot needs only the Grok Bot app signed in on this Mac (macOS for now); `dispatch grok` shows what is in place. The bots then appear in the directory like any session.
 
 ## From the command line
 
@@ -185,7 +185,7 @@ More: [the message format](docs/message-format.md) (files, status words, the run
 
 ## Status
 
-0.1.x: macOS on Apple Silicon, with unsigned Linux and Windows bundles; Claude Code, Codex, and Grok Bot through `gbot`; machines on one network paired directly. Next on the list: native Grok gateway calls (no Node), Agent Comments calling Dispatch, pushing replies to a sender that is not listening, Linux and Windows on real machines.
+0.1.x: macOS on Apple Silicon, with unsigned Linux and Windows bundles; Claude Code, Codex, Antigravity, and Grok Bot; machines on one network paired directly. Next on the list: Agent Comments calling Dispatch, pushing replies to a sender that is not listening, Linux and Windows on real machines.
 
 ## License
 

@@ -123,7 +123,7 @@ enum Cmd {
     Whoami,
     /// What this machine's Codex can do right now: CLI, daemon, loaded threads
     Codex,
-    /// What this machine's Grok Bot can do right now: app, sign-in, gbot, the bots
+    /// What this machine's Grok Bot can do right now: app, sign-in, the bots
     Grok,
     /// What this machine's Antigravity App can do right now: app, whether it is open, the
     /// conversations, the Dispatch skill
@@ -353,7 +353,6 @@ fn run() -> Result<i32> {
             let s = dispatch_core::grok::state_now();
             println!("{}", t("cli.grok_app").replace("{v}", if s.app { t("cli.yes") } else { t("cli.no") }));
             println!("{}", t("cli.grok_login").replace("{v}", if s.signed_in { t("cli.yes") } else { t("cli.no") }));
-            println!("{}", t("cli.grok_cli").replace("{v}", &s.cli.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| t("cli.no").to_string())));
             if let Some(e) = &s.error {
                 println!("{}", t("cli.grok_error").replace("{e}", e));
             }

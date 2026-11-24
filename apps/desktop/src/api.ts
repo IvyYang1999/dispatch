@@ -139,7 +139,8 @@ export interface SetupStatus {
   codex_loaded: number
   grok_app: boolean
   grok_signed_in: boolean
-  gbot: string | null
+  /** The Grok Bot app version whose update changed the interface Dispatch uses, when that is why the bots cannot be reached. */
+  grok_changed?: string | null
   grok_bots: number
   grok_error: string | null
   /** How Grok Bot's own sidebar sections file its bots here. */

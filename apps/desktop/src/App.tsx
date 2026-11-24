@@ -1745,10 +1745,10 @@ function Settings({ tab0, onWelcome }: { tab0?: SettingsTab; onWelcome: () => vo
   const claudeLeft = [st?.hook_installed, st?.claude_plugin].filter((x) => !x).length
   // Codex
   const codexLeft = [st?.codex_mcp].filter((x) => !x).length
-  // Grok Bot: receiving needs the app, its sign-in and gbot; sending needs two things only the user can see
-  const grokIn = !!st?.grok_app && !!st?.grok_signed_in && !!st?.gbot
+  // Grok Bot: receiving needs the app and its sign-in; sending needs two things only the user can see
+  const grokIn = !!st?.grok_app && !!st?.grok_signed_in
   const grokOutLeft = [ticked('grok_computer'), ticked('grok_skill')].filter((x) => !x).length
-  const grokLeft = [st?.grok_signed_in, !!st?.gbot].filter((x) => !x).length + grokOutLeft
+  const grokLeft = [st?.grok_signed_in].filter((x) => !x).length + grokOutLeft
   // everything is installed and yet the bots cannot be reached: say that, not "receives"
   const grokDown = grokIn && !!st?.grok_error
   return (
@@ -1852,13 +1852,11 @@ function Settings({ tab0, onWelcome }: { tab0?: SettingsTab; onWelcome: () => vo
               <SetupCard harness="Grok Bot" name="Grok Bot" tone={grokLeft === 0 && !grokDown ? 'ok' : 'todo'} state={grokDown ? t('setup.grokDown') : grokLeft === 0 ? t('setup.ready') : grokIn ? t('setup.grokHalf', { n: grokOutLeft }) : left(grokLeft)}>
                 <div className="setup__part">{t('setup.grokIn')}{grokIn && !st.grok_error && <span className="step__note">{t('setup.grokBots', { n: st.grok_bots })}</span>}</div>
                 <Step n={1} done={st.grok_signed_in} title={t('setup.grokApp')} sub={t('settings.grokSignIn')} />
-                <Step n={2} done={!!st.gbot} title={t('setup.grokGbot')} sub={t('setup.inTerminal')}>
-                  <Cmd text="npm i -g grok-bot-cli" />
-                </Step>
+                <div className="step"><div className="step__body"><div className="step__sub">{t('setup.grokDirect')}</div></div></div>
                 {grokIn && st.grok_error && <div className="step"><div className="step__body"><div className="step__sub step__sub--warn">{t('settings.grokOffline', { e: st.grok_error })}</div></div></div>}
                 <div className="setup__part">{t('setup.grokOut')}</div>
-                <Step n={3} done={ticked('grok_computer')} onTick={tick('grok_computer')} title={t('setup.grokComputer')} sub={t('setup.grokComputerSub')} />
-                <Step n={4} done={ticked('grok_skill')} onTick={tick('grok_skill')} title={t('setup.grokSkill')} sub={t('setup.grokSkillSub')}>
+                <Step n={2} done={ticked('grok_computer')} onTick={tick('grok_computer')} title={t('setup.grokComputer')} sub={t('setup.grokComputerSub')} />
+                <Step n={3} done={ticked('grok_skill')} onTick={tick('grok_skill')} title={t('setup.grokSkill')} sub={t('setup.grokSkillSub')}>
                   <Cmd text={t('settings.grokCmd')} />
                 </Step>
                 <div className="step step--pref">
@@ -2376,7 +2374,7 @@ function Welcome({ onDone, onSettings }: { onDone: () => void; onSettings: (tab:
   const cliDone = !!st?.binary && !!st?.hook_installed
   const claudeDone = !!st?.hook_installed && !!st?.claude_plugin
   const codexDone = !!st?.codex_mcp
-  const grokDone = !!st?.grok_signed_in && !!st?.gbot
+  const grokDone = !!st?.grok_signed_in
   const tryText = t('welcome.tryText')
   const copy = async () => {
     try {

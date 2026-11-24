@@ -236,8 +236,6 @@ fn decide_here(s: &Session, hook_installed: bool, clients: Option<&crate::discov
                 Reach { level: Level::None, text: t("reach.grok_noapp").into(), fix: Some("install".into()), mode: None, client: None }
             } else if !st.signed_in {
                 Reach { level: Level::None, text: t("reach.grok_nologin").into(), fix: Some("login".into()), mode: None, client: None }
-            } else if st.cli.is_none() {
-                Reach { level: Level::None, text: t("reach.grok_nocli").into(), fix: Some("gbot".into()), mode: None, client: None }
             } else if let Some(e) = &st.error {
                 Reach { level: Level::None, text: t("reach.grok_offline").replace("{e}", e), fix: Some("online".into()), mode: None, client: None }
             } else {

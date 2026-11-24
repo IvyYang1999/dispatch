@@ -247,7 +247,7 @@ mod snapshot_tests {
             (current, release, done)
         }
         let (codex, release_codex, done_codex) = blocked(crate::codex::State { cli: true, daemon: true, loaded: Default::default(), at: 0 });
-        let (grok, release_grok, done_grok) = blocked(crate::grok::State { cli: Some("gbot".into()), app: true, signed_in: true, bots: vec![], error: None, at: 0 });
+        let (grok, release_grok, done_grok) = blocked(crate::grok::State { app: true, signed_in: true, bots: vec![], error: None, changed: None, at: 0 });
         let clients = ClientStates { codex, grok };
         for query in [None, Some("snapshot")] {
             let start = Instant::now();

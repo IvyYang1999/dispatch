@@ -347,40 +347,37 @@ fn deliver_codex(store: &Store, to: &Session, letter: &mut Letter, allow_resume:
     }
 }
 
-/// The Grok Bot branch: a direct message through the app's gateway, driven by `gbot`. There is
-/// no hook to fall back on: missing app, sign-in or gbot means not delivered; a gateway error
-/// keeps it queued for the sweep to retry.
+/// The Grok Bot branch: a direct message through the backend the Grok Bot app itself uses, with
+/// the app's sign-in. There is no hook to fall back on: no app or no sign-in means not delivered.
+/// A bot that will not take the message means not delivered too. Anything else that goes wrong
+/// (the network, an expired sign-in, an interface that changed with an app update) keeps the
+/// copy queued for the sweep, with the reason in the user's words. The backend's own receipt is
+/// what confirms arrival: a bot's conversation is never read.
 fn deliver_grok(store: &Store, to: &Session, letter: &mut Letter, report: Reporter) -> Result<Report> {
-    let st = crate::grok::state();
-    let blocked = if !st.app {
+    let blocked = if crate::grok::app_dir().is_none() {
         Some(("no Grok Bot app", t("reach.grok_noapp")))
-    } else if !st.signed_in {
+    } else if !crate::grok::signed_in() {
         Some(("Grok Bot not signed in", t("reach.grok_nologin")))
-    } else if st.cli.is_none() {
-        Some(("gbot not installed", t("reach.grok_nocli")))
     } else {
         None
     };
     if let Some((why, text)) = blocked {
         return fail(store, letter, "grok", why, t("send.failed_grok").replace("{why}", text), report);
     }
-    let target = st.bot(&to.id).map(|b| b.name.clone()).unwrap_or_else(|| to.display_name());
-    let text = envelope(letter);
-    match crate::grok::send(&target, &text) {
+    match crate::grok::send(&to.id, &envelope(letter)) {
         Ok(out) => {
             store.set_status(letter, store::DELIVERED_GROK)?;
-            store.append_run(&letter.id, "grok", "sent", out.message_id.as_deref().unwrap_or(&out.detail))?;
-            Ok(report("inbox", t("send.grok_sent").replace("{id}", out.message_id.as_deref().unwrap_or("?"))))
+            store.append_run(&letter.id, "grok", "sent", &format!("{} {}", out.message_id, if out.accepted { "accepted" } else { "not confirmed yet" }))?;
+            Ok(report("inbox", t(if out.accepted { "send.grok_sent" } else { "send.grok_taken" }).into()))
         }
-        // this app cannot reach that bot at all: not delivered, and not tried again until the
-        // app is updated (then a retry sends this same copy)
-        Err(e) if crate::grok::needs_app_update(&format!("{e:#}")) => {
-            store.append_run(&letter.id, "grok", "rejected", &format!("{e:#}"))?;
-            fail(store, letter, "grok", "Grok Bot app too old for this bot", t("send.grok_update").into(), report)
+        // the backend answered and did not take it for this bot: trying again changes nothing
+        Err(crate::grok::Fault::Refused { status: 200, message }) => {
+            store.append_run(&letter.id, "grok", "rejected", &message)?;
+            fail(store, letter, "grok", "the bot did not take the message", t("send.grok_refused").replace("{err}", &message), report)
         }
         Err(e) => {
-            store.append_run(&letter.id, "grok", "failed", &format!("{e:#}"))?;
-            Ok(report("stored", t("send.grok_failed").replace("{err}", &format!("{e:#}"))))
+            store.append_run(&letter.id, "grok", "failed", &e.to_string())?;
+            Ok(report("stored", t("send.grok_failed").replace("{err}", &e.to_string())))
         }
     }
 }

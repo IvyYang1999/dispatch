@@ -585,7 +585,8 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
     let runs = store.runs(&c.id);
     let delivered_inbox = runs.iter().any(|r| r.action == "inbox" && r.result == "written");
     let queued_codex = runs.iter().any(|r| r.action == "codex" && r.result == "queued");
-    let sent_grok = runs.iter().find(|r| r.action == "grok" && r.result == "sent");
+    // a message to a Grok bot stands as delivered until the bot replies through Dispatch: its
+    // conversation is the user's private record and is not read to see whether it answered
     let sent_antigravity = runs.iter().any(|r| r.action == "antigravity" && r.result == "sent");
     // a turn seen finished stays finished: it is written down once and never looked up again
     let finished = runs.iter().any(|r| r.action == "receipt" && r.result == "completed");
@@ -607,13 +608,6 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
             // handed to the app while a turn was running: it is next in line
             crate::antigravity::Receipt::NotFound => claude::Receipt::Queued,
             crate::antigravity::Receipt::Delivered => claude::Receipt::NotFound,
-        })
-    } else if let Some(run) = sent_grok {
-        let message_id = Some(run.detail.as_str()).filter(|d| !d.is_empty() && !d.starts_with('{'));
-        // A direct message to a bot is not queued behind a turn: delivered, then answered or not.
-        Some(match crate::grok::receipt(&c.to, message_id, &short_id(&c.id)) {
-            crate::grok::Receipt::Answered => claude::Receipt::Completed { turn_id: String::new() },
-            crate::grok::Receipt::Delivered | crate::grok::Receipt::NotFound => claude::Receipt::NotFound,
         })
     } else {
         None

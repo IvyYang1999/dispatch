@@ -728,8 +728,8 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "codex_plugin": codex_plugin,
             "grok_app": grok.app,
             "grok_signed_in": grok.signed_in,
-            "gbot": grok.cli.map(|p| p.to_string_lossy().to_string()),
-            "grok_bots": grok.bots.len(),
+            "grok_changed": grok.changed,
+            "grok_bots": grok.bots.iter().filter(|b| !b.is_group).count(),
             "grok_error": grok.error,
             "grok_sections": dispatch_core::grok::sections_mode(),
             "grok_section_count": dispatch_core::grok::sections().iter().filter(|s| !s.name.is_empty()).count(),
@@ -1342,6 +1342,19 @@ fn open_url_behind(url: &str) -> bool {
 /// session at once (the setting allowing), in its own app or else a Terminal window, once per
 /// message, note it on the messages and say so in a notification; bring up the reminder only for
 /// what needs the user.
+/// Say once, for each version of the Grok Bot app that does it, that an update of that app
+/// changed its interface and Dispatch cannot reach the bots until it is updated too.
+fn grok_changed_notice(app: &AppHandle) {
+    let Some(version) = dispatch_core::grok::changed_version() else { return };
+    if settings::get("grok_changed_notified").and_then(|v| v.as_str().map(str::to_string)).as_deref() == Some(version.as_str()) {
+        return;
+    }
+    let _ = settings::set("grok_changed_notified", json!(version));
+    if settings::notify_enabled() {
+        let _ = app.notification().builder().title(t("grok.changed_title")).body(t("grok.changed").replace("{v}", &version)).show();
+    }
+}
+
 fn start_wake_watcher(app: AppHandle) {
     std::thread::Builder::new()
         .name("dispatch-wake".into())
@@ -1349,6 +1362,7 @@ fn start_wake_watcher(app: AppHandle) {
             let mut last: Vec<String> = vec![];
             loop {
                 std::thread::sleep(Duration::from_secs(5));
+                grok_changed_notice(&app);
                 let mode = wake::mode();
                 let store = Store::open();
                 let list = if mode == "off" { vec![] } else { wake::waiting(&store) };
