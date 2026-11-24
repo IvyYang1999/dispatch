@@ -71,9 +71,10 @@ fn user_line(l: &str, harness: crate::model::Harness) -> bool {
     }
 }
 
-/// The user's lines of a record, read backwards from its end until they hold `KEEP` questions
-/// (or the limit, or the start of the file): the lines, oldest first.
-fn user_lines(p: &std::path::Path, size: u64, harness: crate::model::Harness) -> Vec<String> {
+/// Read each candidate line once, newest first, and stop as soon as `KEEP` distinct questions
+/// are found. Returning parsed questions avoids reparsing the accumulated tail after every
+/// chunk and again at the call site.
+fn read_questions(p: &std::path::Path, size: u64, harness: crate::model::Harness) -> Vec<String> {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = std::fs::File::open(p) else { return vec![] };
     let mut newest_first: Vec<String> = vec![];
@@ -88,26 +89,30 @@ fn user_lines(p: &std::path::Path, size: u64, harness: crate::model::Harness) ->
         }
         data.extend_from_slice(&carry);
         // unless this piece starts the file, its first line began in the piece before it
-        let whole_from = if start == 0 { 0 } else { data.iter().position(|b| *b == b'\n').map(|i| i + 1).unwrap_or(data.len()) };
-        for raw in data[whole_from..].split(|b| *b == b'\n').rev() {
-            if raw.is_empty() {
-                continue;
-            }
-            let line = String::from_utf8_lossy(raw);
-            if user_line(&line, harness) {
-                newest_first.push(line.into_owned());
+        let text = String::from_utf8_lossy(&data);
+        let whole_from = if start == 0 { 0 } else { text.find('\n').map(|i| i + 1).unwrap_or(text.len()) };
+        for raw in text[whole_from..].rsplit('\n') {
+            if user_line(raw, harness) {
+                for question in asks_in(raw, harness).into_iter().rev() {
+                    if newest_first.last() != Some(&question) {
+                        newest_first.push(question);
+                    }
+                    if newest_first.len() == KEEP {
+                        newest_first.reverse();
+                        return newest_first;
+                    }
+                }
             }
         }
-        carry = data[..whole_from.saturating_sub(1).min(data.len())].to_vec();
-        if whole_from == data.len() && start > 0 {
-            // no line ended in this piece: all of it belongs to the line being carried
-            carry = data;
-        }
+        // Use the original bytes for a line split across chunks: the split may be inside
+        // a UTF-8 character, whose replacement in `text` must not change byte offsets.
+        carry = if start == 0 { vec![] } else {
+            match data.iter().position(|b| *b == b'\n') {
+                Some(i) => data[..i].to_vec(),
+                None => data,
+            }
+        };
         end = start;
-        let so_far: Vec<&str> = newest_first.iter().rev().map(String::as_str).collect();
-        if asks_in(&so_far.join("\n"), harness).len() >= KEEP {
-            break;
-        }
     }
     newest_first.reverse();
     newest_first
@@ -129,7 +134,7 @@ pub fn asks(s: &Session) -> Vec<String> {
             return lines.clone();
         }
     }
-    let lines = asks_in(&user_lines(p, meta.len(), s.harness).join("\n"), s.harness);
+    let lines = read_questions(p, meta.len(), s.harness);
     let mut cache = CACHE.lock().unwrap();
     if cache.len() > 2000 {
         cache.clear();
@@ -196,6 +201,45 @@ mod tests {
         let mut old = s.clone();
         old.last_active -= 30 * 24 * 60 * 60 * 1000;
         assert!(!readable(&old, crate::model::now_ms()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn backwards_questions_preserve_order_deduplication_and_dispatch_filtering() {
+        let dir = std::env::temp_dir().join(format!("dispatch-lately-order-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let mut text = String::new();
+        for i in 0..20 {
+            for question in [format!("question {i}"), format!("question   {i}")] {
+                text.push_str(&serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":question}}).to_string());
+                text.push('\n');
+            }
+            text.push_str(&serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"📨 From Codex release (via Dispatch, 2026-11-08 13:00, id abcd1234):\n\nbuilt\n\n(This is a message from another agent)"}}).to_string());
+            text.push('\n');
+            if i == 15 {
+                // Force a complete non-user line to cross multiple chunk boundaries.
+                text.push_str(&serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":"文".repeat(PIECE as usize)}}).to_string());
+                text.push('\n');
+            }
+        }
+        std::fs::write(&path, &text).unwrap();
+        let expected: Vec<String> = (8..20).map(|i| format!("question {i}")).collect();
+        assert_eq!(asks_in(&text, Harness::Codex), expected);
+        assert_eq!(read_questions(&path, text.len() as u64, Harness::Codex), expected);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_question_crossing_utf8_chunk_boundaries_is_not_lost() {
+        let dir = std::env::temp_dir().join(format!("dispatch-lately-utf8-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.jsonl");
+        let text = serde_json::json!({"type":"USER_INPUT","content":format!("<USER_REQUEST>{}</USER_REQUEST>", "问".repeat(2 * PIECE as usize / 3))}).to_string();
+        std::fs::write(&path, &text).unwrap();
+        assert!(text.len() as u64 > 2 * PIECE);
+        let expected = vec![format!("{}…", "问".repeat(CLIP))];
+        assert_eq!(read_questions(&path, text.len() as u64, Harness::Antigravity), expected);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
