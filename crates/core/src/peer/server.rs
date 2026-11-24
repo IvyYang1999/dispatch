@@ -195,8 +195,8 @@ fn sessions_response(query: Option<&str>, knows: &[String], clients: &discover::
     let hook_on = hook::installed();
     let query = query.map(str::trim).filter(|q| !q.is_empty());
     let limit = if query.is_some() { SEARCH_MAX } else { usize::MAX };
-    let sessions = discover::for_peer(query, clients).into_iter().filter(|s| readable(s.harness, knows)).take(limit)
-        .map(|s| RemoteSession { reach: reach::decide_with(&s, hook_on, Some(clients)), session: s }).collect();
+    let sessions = discover::for_peer(query, clients).into_iter().filter(|(s, _)| readable(s.harness, knows)).take(limit)
+        .map(|(s, why)| RemoteSession { reach: reach::decide_with(&s, hook_on, Some(clients)), session: s, reason: Some(why).filter(|w| *w == "asked").map(str::to_string) }).collect();
     Response::Sessions { hook_installed: hook_on, sessions }
 }
 

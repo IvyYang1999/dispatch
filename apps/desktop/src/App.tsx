@@ -1281,6 +1281,7 @@ function reasonText(c: Session): string {
   if (c.reason === 'name') return t('reason.name')
   if (c.reason === 'cwd') return t('reason.cwd', { cwd: c.cwd_short ?? '' })
   if (c.reason === 'id') return t('reason.id')
+  if (c.reason === 'asked') return t('reason.asked')
   return t('reason.title')
 }
 
@@ -1354,6 +1355,7 @@ function Compose({ presetTo, onSent }: { presetTo?: string; onSent: () => void }
                     <span className="cand__presence">{presence(c)}</span>
                   </div>
                   <span className="cand__reason">{reasonText(c)} · {c.reach.text}</span>
+                  {c.lately && c.lately.length > 0 && <span className="cand__lately" title={c.lately.join('\n')}>{t('picker.lately')}{c.lately[c.lately.length - 1]}</span>}
                 </div>
               </div>
             ))}
@@ -1948,6 +1950,20 @@ function Settings({ tab0, onWelcome }: { tab0?: SettingsTab; onWelcome: () => vo
                 <button data-active={(st?.review ?? 'new') === 'new' || undefined} onClick={() => run('review', async () => { await api.setReview('new') })}>{t('settings.reviewNew')}</button>
                 <button data-active={st?.review === 'all' || undefined} onClick={() => run('review', async () => { await api.setReview('all') })}>{t('settings.reviewAll')}</button>
                 <button data-active={st?.review === 'off' || undefined} onClick={() => run('review', async () => { await api.setReview('off') })}>{t('settings.reviewOff')}</button>
+              </span>
+            </div>
+            <div className="host">
+              <div className="host__who">
+                <span className="host__name">{t('settings.shareDefault')}</span>
+                <span className="host__found host__found--wrap">{t('settings.shareDefaultShort')}</span>
+                <More label={t('setup.details')}>
+                  <span className="host__found host__found--wrap">{t('settings.shareDefaultSub')}</span>
+                </More>
+              </div>
+              <span className="seg">
+                {(['none', 'basic', 'asks', 'rounds'] as const).map((l) => (
+                  <button key={l} data-active={(st?.share_default ?? 'basic') === l || undefined} title={t(`share.tip.${l}` as const)} onClick={() => run('share-default', async () => { await api.setShareDefault(l) })}>{t(`share.${l}` as const)}</button>
+                ))}
               </span>
             </div>
             <div className="host">

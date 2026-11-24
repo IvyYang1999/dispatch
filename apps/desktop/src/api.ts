@@ -79,6 +79,8 @@ export interface Session {
   provisional?: boolean
   reach: Reach
   reason?: string
+  /** The last things it was asked, newest last: a session on this machine with a recent record. */
+  lately?: string[]
 }
 export type Kind = 'review' | 'queued' | 'delivered' | 'working' | 'replied' | 'failed' | 'cancelled' | 'held'
 /** Where the user's review of a held copy stands, as the sender sees it too. */
@@ -170,6 +172,8 @@ export interface SetupStatus {
   codex_plugin?: boolean
   /** A message waiting for its session to be opened: auto (remind, open it when nobody is here), ask, off. */
   wake: 'auto' | 'ask' | 'off'
+  /** What a session here shares with other sessions when nothing was chosen for it. */
+  share_default?: ShareLevel
   version: string
   cli_sync_error: string | null
 }
@@ -415,6 +419,7 @@ export const api = {
   waitOpen: (id: string) => invoke<OpenResult>('wait_open', { id }),
   waitDismiss: () => invoke<void>('wait_dismiss'),
   setWake: (mode: 'auto' | 'ask' | 'off') => invoke<string>('set_wake', { mode }),
+  setShareDefault: (level: ShareLevel) => invoke<string>('set_share_default', { level }),
   shareSet: (id: string, level: ShareLevel) => invoke<string>('share_set', { id, level }),
   peerSetAddress: (name: string, address: string | null) => invoke<{ id: string; name: string; address: string | null }>('peer_set_address', { name, address }),
 }

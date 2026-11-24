@@ -357,6 +357,7 @@ pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
         "cli.inbound_refuse" => ("refuse：外来消息一律丢弃；Dispatch 走 hook", "refuse: outside messages are dropped; Dispatch uses the hook"),
         "cli.inbound_bad" => ("取值只能是 accept、hold、refuse 或 default", "The value must be accept, hold, refuse or default"),
         "cli.inbound_set" => ("已写入 ~/.claude/settings.json（原文件已备份）", "Written to ~/.claude/settings.json (the old file was backed up)"),
+        "cli.find_asked" => ("（它最近被问到过这些词）", "(it was asked about this lately)"),
         "cli.agy_app" => ("Antigravity App：{v}", "Antigravity app: {v}"),
         "cli.agy_open" => ("开着：{v}", "open: {v}"),
         "cli.agy_skill" => ("Dispatch skill：{v}", "Dispatch skill: {v}"),

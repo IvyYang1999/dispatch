@@ -216,7 +216,8 @@ pub fn find_sessions(query: &str) -> Vec<(Session, &'static str)> {
                 || book.iter().any(|c| c.name.to_lowercase() == ql && c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id))
     };
     let mut out = discover::matching(&q, pool);
-    out.sort_by(|(a, _), (b, _)| exact(b).cmp(&exact(a)).then(b.running.cmp(&a.running)).then(b.last_active.cmp(&a.last_active)));
+    // one found only by what it was asked comes after those found by what they are called or where they are
+    out.sort_by(|(a, ra), (b, rb)| exact(b).cmp(&exact(a)).then((*ra == "asked").cmp(&(*rb == "asked"))).then(b.running.cmp(&a.running)).then(b.last_active.cmp(&a.last_active)));
     out
 }
 
@@ -227,7 +228,7 @@ pub fn find(query: &str) -> Value {
     let all = find_sessions(query);
     let count = all.len();
     let out: Vec<Value> = all.iter().take(FIND_MAX).map(|(s, r)| with_reason(s, r, hook_on, &book)).collect();
-    let mut note = "Send only when exactly one candidate is the right one; otherwise ask the user or refine the query. Sessions of any age are searched; every word of the query must match.".to_string();
+    let mut note = "Send only when exactly one candidate is the right one; otherwise ask the user or refine the query. Sessions of any age are searched; every word of the query must match. A session is also found by what it was asked lately (reason `asked`), so words for the work itself are worth trying when a name is not known.".to_string();
     if count > out.len() {
         note = format!("{count} sessions matched; these are the {} most relevant. Add a word to narrow it down. {note}", out.len());
     }
@@ -238,13 +239,27 @@ pub fn find(query: &str) -> Value {
 pub fn search(query: &str) -> Value {
     let hook_on = hook::installed();
     let book = crate::contacts::list();
-    let out: Vec<Value> = find_sessions(query).iter().map(|(s, r)| with_reason(s, r, hook_on, &book)).collect();
+    // what each was asked lately, for the first screenful: enough to tell candidates apart
+    let out: Vec<Value> = find_sessions(query).iter().enumerate().map(|(i, (s, r))| if i < FIND_MAX { with_reason(s, r, hook_on, &book) } else { with_reason_only(s, r, hook_on, &book) }).collect();
     json!({ "query": query, "count": out.len(), "sessions": out })
 }
 
-fn with_reason(s: &Session, reason: &str, hook_on: bool, book: &[crate::contacts::Contact]) -> Value {
+fn with_reason_only(s: &Session, reason: &str, hook_on: bool, book: &[crate::contacts::Contact]) -> Value {
     let mut v = session_json_with(s, hook_on, book);
     v["reason"] = json!(reason);
+    v
+}
+
+/// A candidate: why it matched, and the last things it was asked (a session here with a
+/// recent record; what an agent sees of them is cut down by `share::for_agents`).
+fn with_reason(s: &Session, reason: &str, hook_on: bool, book: &[crate::contacts::Contact]) -> Value {
+    let mut v = with_reason_only(s, reason, hook_on, book);
+    if crate::lately::readable(s, crate::model::now_ms()) {
+        let lines = crate::lately::shown(s);
+        if !lines.is_empty() {
+            v["lately"] = json!(lines);
+        }
+    }
     v
 }
 

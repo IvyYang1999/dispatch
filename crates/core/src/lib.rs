@@ -8,6 +8,7 @@
 //! - `hook`: the Claude Code hook that hands waiting messages over.
 //! - `send`: the delivery ladder, tying the above together.
 //! - `i18n`: the language of everything a person reads (English, Chinese).
+//! - `lately`: what a session was asked lately, for finding the right one.
 //! - `settings`: the settings file the app writes and the CLI and hook read.
 //! - `watch`: what changed in the feed, for the menu bar item and notifications.
 //! - `peer`: other machines running Dispatch: pairing, the wire, remote sessions, mirroring.
@@ -23,6 +24,7 @@ pub mod discover;
 pub mod grok;
 pub mod hook;
 pub mod i18n;
+pub mod lately;
 pub mod mcp;
 pub mod model;
 pub mod ops;

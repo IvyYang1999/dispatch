@@ -8,7 +8,12 @@
 //! - `rounds`: also the latest rounds, question and answer.
 //!
 //! A session's title is usually its first prompt and its folder can say whom it works for, so
-//! neither goes out unless the user chose so.
+//! neither goes out unless the user chose so. The user can choose once for every session on
+//! this machine (`share_default` in the settings) and again for any one of them.
+//!
+//! A search looks in the title, the folder and what the session was asked lately whatever the
+//! level: it says that a session matched and in which of them, never what it found there. The
+//! lines themselves (`lately`) are in a list of candidates only from `asks` up.
 
 use crate::model::{short_cwd, short_id, Session};
 use anyhow::{anyhow, Result};
@@ -27,17 +32,39 @@ fn book() -> Map<String, Value> {
     crate::settings::get("share").and_then(|v| v.as_object().cloned()).unwrap_or_default()
 }
 
+/// What a session on this machine shares when the user chose nothing for it: `basic` unless
+/// they set another level for all of them.
+pub fn default_level() -> &'static str {
+    let v = crate::settings::get("share_default");
+    let v = v.as_ref().and_then(|v| v.as_str()).unwrap_or("basic");
+    LEVELS.iter().copied().find(|l| *l == v).unwrap_or("basic")
+}
+
+pub fn set_default_level(level: &str) -> Result<&'static str> {
+    let l = LEVELS.iter().copied().find(|l| *l == level).ok_or_else(|| anyhow!("share is none, basic, asks or rounds, not \"{level}\""))?;
+    crate::settings::set("share_default", json!(l))?;
+    Ok(l)
+}
+
+/// What a session shares when nothing was chosen for it: this machine's default for a session
+/// here, `basic` for one on another machine (its own machine's choice is not known here).
+fn unset(host: Option<&str>) -> &'static str {
+    if host.is_none() { default_level() } else { "basic" }
+}
+
 /// What this session shares with other sessions.
 pub fn level(id: &str, host: Option<&str>) -> &'static str {
     let b = book();
-    let v = b.get(&key(id, host)).and_then(|v| v.as_str()).unwrap_or("basic");
-    LEVELS.iter().copied().find(|l| *l == v).unwrap_or("basic")
+    match b.get(&key(id, host)).and_then(|v| v.as_str()) {
+        Some(v) => LEVELS.iter().copied().find(|l| *l == v).unwrap_or("basic"),
+        None => unset(host),
+    }
 }
 
 pub fn set_level(id: &str, host: Option<&str>, level: &str) -> Result<&'static str> {
     let l = LEVELS.iter().copied().find(|l| *l == level).ok_or_else(|| anyhow!("share is none, basic, asks or rounds, not \"{level}\""))?;
     let mut b = book();
-    if l == "basic" {
+    if l == unset(host) {
         b.remove(&key(id, host));
     } else {
         b.insert(key(id, host), json!(l));
@@ -102,13 +129,13 @@ pub fn for_agents(mut v: Value) -> Value {
     match lvl {
         "none" => {
             o.insert("name".into(), json!(name));
-            for k in ["about", "avatar", "app_name", "title", "project", "cwd", "cwd_short"] {
+            for k in ["about", "avatar", "app_name", "title", "project", "cwd", "cwd_short", "lately"] {
                 o.remove(k);
             }
         }
         "basic" => {
             o.insert("name".into(), json!(name));
-            for k in ["app_name", "title", "cwd", "cwd_short"] {
+            for k in ["app_name", "title", "cwd", "cwd_short", "lately"] {
                 o.remove(k);
             }
             o.insert("project".into(), json!(project));
@@ -217,6 +244,34 @@ mod tests {
                 }
             }
         }
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recent_questions_go_out_from_asks_up_and_the_default_is_the_users() {
+        let dir = std::env::temp_dir().join(format!("dispatch-share-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let s = unnamed_session();
+        let candidate = || {
+            let mut v = crate::ops::session_json(&s);
+            v["lately"] = json!(["ASKED_LATELY_SENTINEL"]);
+            v
+        };
+        // out of the box nothing changed: a candidate does not carry what it was asked
+        assert_eq!(default_level(), "basic");
+        assert!(!for_agents(candidate()).to_string().contains("ASKED_LATELY_SENTINEL"));
+        // the user's default for every session here; a session elsewhere is not theirs to open up
+        set_default_level("asks").unwrap();
+        assert_eq!((level(&s.id, None), level(&s.id, Some("peer-1"))), ("asks", "basic"));
+        assert_eq!(for_agents(candidate())["lately"][0], "ASKED_LATELY_SENTINEL");
+        // one session put back stays put, whatever the default
+        set_level(&s.id, None, "basic").unwrap();
+        assert_eq!(level(&s.id, None), "basic");
+        assert!(!for_agents(candidate()).to_string().contains("ASKED_LATELY_SENTINEL"));
+        set_level(&s.id, None, "none").unwrap();
+        assert!(!for_agents(candidate()).to_string().contains("ASKED_LATELY_SENTINEL"));
+        assert!(set_default_level("everything").is_err());
         crate::store::set_thread_root(None);
         let _ = std::fs::remove_dir_all(dir);
     }

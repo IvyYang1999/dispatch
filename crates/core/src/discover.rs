@@ -452,10 +452,10 @@ fn gather(max_age: Option<i64>) -> Vec<Session> {
 
 /// The peer route deliberately bypasses the foreground list caches: neither a cache miss nor
 /// a named old contact may fall back to a synchronous client probe.
-pub(crate) fn for_peer(query: Option<&str>, clients: &ClientStates) -> Vec<Session> {
+pub(crate) fn for_peer(query: Option<&str>, clients: &ClientStates) -> Vec<(Session, &'static str)> {
     match query.map(str::trim).filter(|q| !q.is_empty()) {
-        Some(q) => matching(q, gather_with(None, clients)).into_iter().map(|(s, _)| s).collect(),
-        None => gather_with(Some(MAX_AGE_MS), clients),
+        Some(q) => matching(q, gather_with(None, clients)),
+        None => gather_with(Some(MAX_AGE_MS), clients).into_iter().map(|s| (s, "all")).collect(),
     }
 }
 
@@ -546,9 +546,16 @@ pub fn words(query: &str) -> Vec<String> {
 /// Why a session matches when every word is found in one of its fields: the strongest field any
 /// word was found in. The fields, strongest first: id (a prefix of at least four characters),
 /// name (its own or the address book's), about (the address book's description), project,
-/// folder, title, kind (Claude, Codex), machine.
+/// folder, title, asked (what it was asked lately), kind (Claude, Codex), machine.
 pub fn reason(s: &Session, words: &[String], contact: Option<&crate::contacts::Contact>) -> Option<&'static str> {
-    const LABELS: [&str; 8] = ["id", "name", "about", "project", "cwd", "title", "kind", "host"];
+    reason_with(s, words, contact, &|| String::new())
+}
+
+/// `reason`, with what the session was asked lately as one more field. `asked` is only called
+/// when a word is in none of the other fields: reading a record costs more than they do.
+pub fn reason_with(s: &Session, words: &[String], contact: Option<&crate::contacts::Contact>, asked: &dyn Fn() -> String) -> Option<&'static str> {
+    const LABELS: [&str; 9] = ["id", "name", "about", "project", "cwd", "title", "asked", "kind", "host"];
+    const ASKED: usize = 5;
     if words.is_empty() {
         return Some("all");
     }
@@ -559,12 +566,27 @@ pub fn reason(s: &Session, words: &[String], contact: Option<&crate::contacts::C
         low(s.project.as_deref()),
         low(s.cwd.as_deref()),
         low(s.title.as_deref()),
+        String::new(),
         s.harness.label().to_lowercase(),
         low(s.host.as_ref().map(|h| h.name.as_str())),
     ];
+    let mut lately: Option<String> = None;
     let mut best = LABELS.len();
     for w in words {
-        let at = if w.chars().count() >= 4 && s.id.starts_with(w.as_str()) { 0 } else { 1 + fields.iter().position(|f| f.contains(w.as_str()))? };
+        let at = if w.chars().count() >= 4 && s.id.starts_with(w.as_str()) {
+            0
+        } else {
+            match fields.iter().position(|f| f.contains(w.as_str())) {
+                Some(i) => 1 + i,
+                None => {
+                    let text = lately.get_or_insert_with(|| asked().to_lowercase());
+                    if !text.contains(w.as_str()) {
+                        return None;
+                    }
+                    1 + ASKED
+                }
+            }
+        };
         best = best.min(at);
     }
     LABELS.get(best).copied()
@@ -574,12 +596,20 @@ pub fn reason(s: &Session, words: &[String], contact: Option<&crate::contacts::C
 pub fn matching(query: &str, sessions: Vec<Session>) -> Vec<(Session, &'static str)> {
     let words = words(query);
     let book = crate::contacts::list();
+    let now = now_ms();
     sessions
         .into_iter()
         .filter_map(|s| {
             let host_id = s.host.as_ref().map(|h| h.id.clone());
             let contact = book.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| &h.id) == host_id.as_ref());
-            reason(&s, &words, contact).map(|r| (s, r))
+            // here: the tail of its own record; on another machine: that machine looked, and
+            // said so when what it was asked is why it matched
+            let asked = || match &s.host {
+                Some(h) => crate::peer::asked_match(&h.id, &s.id).unwrap_or_default(),
+                None if crate::lately::readable(&s, now) => crate::lately::asks(&s).join("\n"),
+                None => String::new(),
+            };
+            reason_with(&s, &words, contact, &asked).map(|r| (s, r))
         })
         .collect()
 }
@@ -769,6 +799,30 @@ mod tests {
         assert!(!is_helper_meta(user));
         assert!(!is_helper_meta(exec));
         assert!(!is_helper_meta(message), "only the session's own first line counts");
+    }
+
+    #[test]
+    fn a_session_is_found_by_what_it_was_asked_lately() {
+        let s = session("01a1f721-bdd7-7f63-8ac6-c71d709fa43c", Some("shop"), "/code/shop", "set up the repo");
+        let w = |q: &str| words(q);
+        let reads = std::cell::Cell::new(0);
+        let asked = || {
+            reads.set(reads.get() + 1);
+            "Fix the Login page\nthen the signup form".to_string()
+        };
+        // its first message says nothing of the work it is on now
+        assert_eq!(reason(&s, &w("login page"), None), None);
+        assert_eq!(reason_with(&s, &w("login page"), None, &asked), Some("asked"));
+        // a word in a stronger field names the reason; the record is read once, not per word
+        reads.set(0);
+        assert_eq!(reason_with(&s, &w("shop login signup"), None, &asked), Some("name"));
+        assert_eq!(reads.get(), 1);
+        // every word still has to be somewhere
+        assert_eq!(reason_with(&s, &w("login checkout"), None, &asked), None);
+        // nothing is read when the other fields already answer
+        reads.set(0);
+        assert_eq!(reason_with(&s, &w("shop repo"), None, &asked), Some("name"));
+        assert_eq!(reads.get(), 0);
     }
 
     #[test]

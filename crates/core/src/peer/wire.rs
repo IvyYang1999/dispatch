@@ -120,6 +120,10 @@ pub const KNOWS: &[&str] = &["antigravity"];
 pub struct RemoteSession {
     pub session: Session,
     pub reach: Reach,
+    /// Set to `asked` when what the session was asked lately is why it answers a search: the
+    /// asking machine has no record to look in and would otherwise drop it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
