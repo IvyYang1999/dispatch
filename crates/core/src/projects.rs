@@ -112,6 +112,19 @@ fn folder_name(folder: &str) -> String {
     path.rsplit(['/', '\\']).find(|p| !p.is_empty()).unwrap_or(path).to_string()
 }
 
+/// Whether a folder key is a folder the Codex app made by itself for a chat started without a
+/// project: `…/Codex/<YYYY-MM-DD>/<a few letters of the first message>` (`bang-w`, `new-chat`),
+/// under Documents unless the user moved it. Nobody chose it or named it, so it is not a
+/// project; the user can still file it under one by hand.
+fn is_chat_folder(folder: &str) -> bool {
+    let path = folder.split_once('|').map(|(_, p)| p).unwrap_or(folder);
+    let mut parts = path.rsplit(['/', '\\']).filter(|p| !p.is_empty());
+    let (Some(_), Some(day), Some(root)) = (parts.next(), parts.next(), parts.next()) else { return false };
+    let d = day.as_bytes();
+    let is_day = d.len() == 10 && d.iter().enumerate().all(|(i, c)| if i == 4 || i == 7 { *c == b'-' } else { c.is_ascii_digit() });
+    is_day && root == "Codex"
+}
+
 impl Book {
     fn project(&self, id: &str) -> Option<&Project> {
         self.projects.iter().find(|p| p.id == id)
@@ -134,6 +147,8 @@ impl Book {
         match folder_key(s) {
             Some(f) => match self.projects.iter().find(|p| p.folders.contains(&f)) {
                 Some(p) => Group { id: p.id.clone(), name: p.name.clone(), auto: false },
+                // a folder Codex made for a chat that was given no project is not a project
+                None if is_chat_folder(&f) => Group { id: NONE.into(), name: String::new(), auto: true },
                 None => Group { name: folder_name(&f), id: format!("{FOLDER}{f}"), auto: true },
             },
             // a bot has no folder: it sits where the Grok Bot app's sidebar has it, else with the other bots
@@ -387,6 +402,29 @@ mod tests {
             project: None,
             app_name: None,
         }
+    }
+
+    #[test]
+    fn a_chat_codex_gave_its_own_folder_is_in_no_project() {
+        let mut book = Book::default();
+        let chat = session("a", Some("/Users/me/Documents/Codex/2026-08-30/bang-w"), None, Harness::Codex);
+        let win = session("w", Some("C:\\Users\\me\\Documents\\Codex\\2026-11-20\\ni-n\\"), Some("pc"), Harness::Codex);
+        assert_eq!(book.group_of(&chat).id, NONE, "not a project called bang-w");
+        assert_eq!(book.group_of(&win).id, NONE);
+        // a real folder that only looks a little like one keeps its name
+        for real in ["/code/Codex/notes", "/Users/me/Documents/Codex/2026-08-30", "/code/2026-08-30/shop", "/Users/me/Documents/Codex/2026-08-30/bang-w/src"] {
+            assert_eq!(book.group_of(&session("r", Some(real), None, Harness::Codex)).id, format!("{FOLDER}|{real}"), "{real}");
+        }
+        // nothing to merge it with, even when another folder has the same name
+        let same = session("b", Some("/code/bang-w"), None, Harness::Claude);
+        assert!(book.suggestions(&[chat.clone(), same]).is_empty());
+        // filed by hand, it stays where the user put it
+        let folder = folder_of(&chat).unwrap();
+        let id = book.move_session(&chat, "new", Some("Antigravity")).unwrap();
+        assert_eq!(book.group_of(&chat).name, "Antigravity");
+        book.move_folder(&folder, &id).unwrap();
+        let later = session("c", Some("/Users/me/Documents/Codex/2026-08-30/bang-w"), None, Harness::Codex);
+        assert_eq!(book.group_of(&later).id, id, "the whole folder was filed");
     }
 
     #[test]
