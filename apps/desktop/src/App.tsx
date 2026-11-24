@@ -1749,6 +1749,8 @@ function Settings({ tab0, onWelcome }: { tab0?: SettingsTab; onWelcome: () => vo
   const grokIn = !!st?.grok_app && !!st?.grok_signed_in && !!st?.gbot
   const grokOutLeft = [ticked('grok_computer'), ticked('grok_skill')].filter((x) => !x).length
   const grokLeft = [st?.grok_signed_in, !!st?.gbot].filter((x) => !x).length + grokOutLeft
+  // everything is installed and yet the bots cannot be reached: say that, not "receives"
+  const grokDown = grokIn && !!st?.grok_error
   return (
     <>
       <header className="bar bar--page" data-tauri-drag-region>
@@ -1847,7 +1849,7 @@ function Settings({ tab0, onWelcome }: { tab0?: SettingsTab; onWelcome: () => vo
             )}
 
             {st.grok_app ? (
-              <SetupCard harness="Grok Bot" name="Grok Bot" tone={grokLeft === 0 ? 'ok' : 'todo'} state={grokLeft === 0 ? t('setup.ready') : grokIn ? t('setup.grokHalf', { n: grokOutLeft }) : left(grokLeft)}>
+              <SetupCard harness="Grok Bot" name="Grok Bot" tone={grokLeft === 0 && !grokDown ? 'ok' : 'todo'} state={grokDown ? t('setup.grokDown') : grokLeft === 0 ? t('setup.ready') : grokIn ? t('setup.grokHalf', { n: grokOutLeft }) : left(grokLeft)}>
                 <div className="setup__part">{t('setup.grokIn')}{grokIn && !st.grok_error && <span className="step__note">{t('setup.grokBots', { n: st.grok_bots })}</span>}</div>
                 <Step n={1} done={st.grok_signed_in} title={t('setup.grokApp')} sub={t('settings.grokSignIn')} />
                 <Step n={2} done={!!st.gbot} title={t('setup.grokGbot')} sub={t('setup.inTerminal')}>
