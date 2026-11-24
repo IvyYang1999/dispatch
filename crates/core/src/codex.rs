@@ -64,7 +64,72 @@ pub fn executable() -> Option<PathBuf> {
 }
 
 pub fn command() -> Command {
-    Command::new(executable().unwrap_or_else(|| PathBuf::from("codex")))
+    let exe = executable();
+    let mut cmd = Command::new(exe.clone().unwrap_or_else(|| PathBuf::from("codex")));
+    if let Some(path) = tool_path(exe.as_deref()) {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
+/// The folders a version manager keeps its current `node` in, newest version first.
+fn node_dirs(home: &Path) -> Vec<PathBuf> {
+    fn version(p: &Path) -> Vec<u64> {
+        p.file_name().and_then(|n| n.to_str()).unwrap_or("").trim_start_matches('v').split('.').filter_map(|n| n.parse().ok()).collect()
+    }
+    let mut dirs = vec![];
+    for (root, bin) in [(home.join(".nvm/versions/node"), "bin"), (home.join(".local/share/fnm/node-versions"), "installation/bin"), (home.join("Library/Application Support/fnm/node-versions"), "installation/bin")] {
+        let mut versions: Vec<PathBuf> = std::fs::read_dir(&root).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+        versions.sort_by_key(|p| std::cmp::Reverse(version(p)));
+        dirs.extend(versions.into_iter().map(|v| v.join(bin)));
+    }
+    dirs
+}
+
+/// `PATH` for a program we start. The app is opened by Finder, the Dock or its own updater with
+/// the system's short PATH, and a command installed by npm is a script that asks `env` for
+/// `node`: found, it still cannot start. So the folder the program is in comes first (npm puts
+/// its commands beside `node`), then the PATH we have, then where Node usually lives. `None`
+/// when that adds nothing.
+pub(crate) fn tool_path(program: Option<&Path>) -> Option<std::ffi::OsString> {
+    tool_path_in(program, &home_dir(), std::env::var_os("PATH"))
+}
+
+fn tool_path_in(program: Option<&Path>, home: &Path, current: Option<std::ffi::OsString>) -> Option<std::ffi::OsString> {
+    let mut dirs: Vec<PathBuf> = vec![];
+    if let Some(p) = program {
+        dirs.extend(p.parent().map(Path::to_path_buf));
+        // `bin/gbot` is a link into `lib/node_modules/<package>/…`: `node` is in that prefix's bin
+        if let Ok(real) = std::fs::canonicalize(p) {
+            dirs.extend(real.parent().map(Path::to_path_buf));
+            dirs.extend(real.ancestors().find(|a| a.file_name().map(|n| n == "node_modules").unwrap_or(false)).and_then(|m| m.parent()).and_then(|lib| lib.parent()).map(|prefix| prefix.join("bin")));
+        }
+    }
+    let had: Vec<PathBuf> = current.as_ref().map(|c| std::env::split_paths(c).collect()).unwrap_or_default();
+    dirs.extend(had.iter().cloned());
+    dirs.extend([".local/bin", ".local/node/bin", ".npm-global/bin", ".volta/bin", ".asdf/shims", ".local/share/mise/shims"].map(|d| home.join(d)));
+    dirs.extend(node_dirs(home));
+    if cfg!(windows) {
+        dirs.extend(std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("npm")));
+        dirs.extend(std::env::var_os("ProgramFiles").map(|d| PathBuf::from(d).join("nodejs")));
+    } else {
+        dirs.extend(["/opt/homebrew/bin", "/usr/local/bin"].map(PathBuf::from));
+    }
+    let mut kept: Vec<PathBuf> = vec![];
+    for d in dirs {
+        if !d.as_os_str().is_empty() && !kept.contains(&d) && (had.contains(&d) || d.is_dir()) {
+            kept.push(d);
+        }
+    }
+    if kept == had {
+        return None;
+    }
+    std::env::join_paths(kept).ok()
+}
+
+/// Whether `name` can be started with this `PATH`.
+pub(crate) fn on_path(name: &str, path: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path).any(|d| command_names(name).iter().any(|n| is_executable(&d.join(n))))
 }
 
 pub fn daemon_socket() -> PathBuf {
@@ -820,6 +885,47 @@ fn receipt_in(events: &[Event], marker: &str) -> Receipt {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_node_script_is_given_a_path_with_its_node_on_it() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("dispatch-path-{}", uuid::Uuid::new_v4()));
+        let home = root.join("home");
+        // npm's layout under a version manager: bin/node, bin/gbot -> ../lib/node_modules/…
+        let prefix = home.join(".nvm/versions/node/v22.3.0");
+        let script = prefix.join("lib/node_modules/grok-bot-cli/bin/gbot.js");
+        std::fs::create_dir_all(script.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(prefix.join("bin")).unwrap();
+        std::fs::create_dir_all(home.join(".nvm/versions/node/v9.11.2/bin")).unwrap();
+        for file in [&script, &prefix.join("bin/node")] {
+            std::fs::write(file, "#!/usr/bin/env node\n").unwrap();
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // the command the app found is a link somewhere else entirely
+        let link = root.join("elsewhere/gbot");
+        std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&script, &link).unwrap();
+        let finder = std::ffi::OsString::from("/usr/bin:/bin");
+        assert!(!on_path("node", &finder) || is_executable(Path::new("/usr/bin/node")), "the test needs a PATH without node");
+
+        let path = tool_path_in(Some(&link), &home, Some(finder.clone())).expect("a wider PATH");
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        let real_bin = std::fs::canonicalize(prefix.join("bin")).unwrap();
+        assert!(dirs.contains(&real_bin), "node's folder is on it: {dirs:?}");
+        assert!(on_path("node", &path));
+        // what we had stays, in order, after the program's own folders
+        let usr = dirs.iter().position(|d| d == Path::new("/usr/bin")).unwrap();
+        assert!(dirs.iter().position(|d| d == &real_bin).unwrap() < usr);
+        assert_eq!(dirs[usr + 1], Path::new("/bin"));
+        // with no program, the newest installed Node is found before an old one
+        let path = tool_path_in(None, &home, Some(finder)).unwrap();
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        let new = dirs.iter().position(|d| d.ends_with("v22.3.0/bin")).unwrap();
+        let old = dirs.iter().position(|d| d.ends_with("v9.11.2/bin")).unwrap();
+        assert!(new < old, "v22 before v9: {dirs:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[cfg(unix)]
     #[test]

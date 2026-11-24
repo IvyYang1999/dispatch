@@ -149,7 +149,13 @@ pub fn state_now() -> State {
 /// Run `gbot` with a deadline; both streams captured.
 fn run(args: &[&str], timeout: Duration) -> Result<(String, String)> {
     let exe = executable().ok_or_else(|| anyhow!("gbot not found"))?;
-    let mut child = Command::new(&exe).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().with_context(|| format!("start {}", exe.display()))?;
+    let mut cmd = Command::new(&exe);
+    // `gbot` is a Node script: give it a PATH with `node` on it, which the app's own may lack
+    let path = crate::codex::tool_path(Some(&exe));
+    if let Some(path) = &path {
+        cmd.env("PATH", path);
+    }
+    let mut child = cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().with_context(|| format!("start {}", exe.display()))?;
     let stdout = child.stdout.take().context("no stdout")?;
     let stderr = child.stderr.take().context("no stderr")?;
     fn drain(stream: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
@@ -175,10 +181,20 @@ fn run(args: &[&str], timeout: Duration) -> Result<(String, String)> {
     let stdout = String::from_utf8_lossy(&out.join().unwrap_or_default()).into_owned();
     let stderr = String::from_utf8_lossy(&err.join().unwrap_or_default()).into_owned();
     let Some(exit) = exit else { return Err(anyhow!("gbot {} timed out after {timeout:?}", args.join(" "))) };
+    if !exit.success() && no_node(exit.code(), &stderr) {
+        return Err(anyhow!("{}", crate::i18n::t("grok.no_node")));
+    }
     if !exit.success() {
         return Err(anyhow!("gbot {} failed ({exit}): {}", args.join(" "), [stdout.trim(), stderr.trim()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")));
     }
     Ok((stdout, stderr))
+}
+
+/// `gbot` could not start because there is no Node.js to run it: what `env` and the shells say
+/// when the `node` its first line asks for is not on PATH.
+fn no_node(code: Option<i32>, stderr: &str) -> bool {
+    let e = stderr.to_lowercase();
+    (code == Some(127) && e.contains("node")) || e.contains("env: node:") || e.contains("'node' is not recognized")
 }
 
 /// The JSON `gbot` prints: the last JSON value on stdout (it may print a notice first).
@@ -504,6 +520,15 @@ mod tests {
         assert!(retain_bots(empty_success, Some(previous)).state.bots.is_empty(), "an authoritative empty list replaces old bots");
     }
     use serde_json::json;
+
+    #[test]
+    fn a_missing_node_is_told_apart_from_a_gateway_error() {
+        assert!(no_node(Some(127), "env: node: No such file or directory"));
+        assert!(no_node(Some(1), "'node' is not recognized as an internal or external command"));
+        // a gateway error whose stack mentions node is still a gateway error
+        assert!(!no_node(Some(1), "Error: bot not found\n    at node:internal/process/task_queues:95:5"));
+        assert!(!no_node(Some(127), "gbot: command not found"));
+    }
 
     #[test]
     fn bots_parse_from_array_or_object() {
