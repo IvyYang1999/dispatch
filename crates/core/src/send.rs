@@ -236,7 +236,7 @@ pub fn target_of(letter: &Letter) -> Session {
 fn target_with_clients(letter: &Letter, clients: &discover::ClientStates) -> Session {
     // Resolving an already-addressed copy must not wait for unrelated clients. The
     // selected harness performs its own live checks when the letter is delivered.
-    if let Some(s) = discover::for_peer(None, clients).into_iter().find(|s| s.id.eq_ignore_ascii_case(&letter.to)) {
+    if let Some(s) = discover::for_peer(None, clients).into_iter().map(|(s, _)| s).find(|s| s.id.eq_ignore_ascii_case(&letter.to)) {
         return s;
     }
     bare_session(harness_of(letter.to_harness.as_deref()), &letter.to, Some(letter.to_name.clone()))

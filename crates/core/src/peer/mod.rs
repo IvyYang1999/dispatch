@@ -632,6 +632,13 @@ pub fn remote_find(query: &str, only: Option<&PeerInfo>) -> Vec<Session> {
                     s.host = Some(Host { id: p.id.clone(), name: p.name.clone() });
                     s.transcript = None;
                     found.insert((p.id.clone(), s.id.clone()), rs.reach);
+                    if rs.reason.as_deref() == Some("asked") {
+                        let mut asked = ASKED.lock().unwrap();
+                        if asked.len() > 2000 {
+                            asked.clear();
+                        }
+                        asked.insert((p.id.clone(), s.id.to_lowercase()), query.trim().to_lowercase());
+                    }
                     list.push(s);
                 }
             }
@@ -642,6 +649,16 @@ pub fn remote_find(query: &str, only: Option<&PeerInfo>) -> Vec<Session> {
         out.extend(list);
     }
     out
+}
+
+/// The searches a session on another machine answered because of what it was asked lately, as
+/// that machine said: (machine, session) to the query.
+static ASKED: std::sync::LazyLock<Mutex<HashMap<(String, String), String>>> = std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The words a remote session was found by through what it was asked: its machine read the
+/// record, this one cannot. Stands in for the text when the same words are looked for here.
+pub fn asked_match(host_id: &str, session_id: &str) -> Option<String> {
+    ASKED.lock().unwrap().get(&(host_id.to_string(), session_id.to_lowercase())).cloned()
 }
 
 /// How a message reaches a remote session: what its machine said when it listed it, or when it

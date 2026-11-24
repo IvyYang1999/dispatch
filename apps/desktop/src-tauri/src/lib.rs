@@ -152,6 +152,13 @@ async fn share_set(id: String, level: String) -> Result<String, String> {
     blocking(move || dispatch_core::share::set_level(&id, None, &level).map(str::to_string).map_err(err)).await
 }
 
+/// What a session on this machine shares with other sessions when the user chose nothing for
+/// it: none, basic, asks or rounds.
+#[tauri::command]
+async fn set_share_default(level: String) -> Result<String, String> {
+    blocking(move || dispatch_core::share::set_default_level(&level).map(str::to_string).map_err(err)).await
+}
+
 /// `auto`, `ask` or `off`: what happens when a message waits for its session to be opened.
 #[tauri::command]
 async fn set_wake(mode: String) -> Result<String, String> {
@@ -739,6 +746,7 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "inbound": dispatch_core::claude::inbound_setting(),
             "review": review::mode(),
             "wake": wake::mode(),
+            "share_default": dispatch_core::share::default_level(),
             "review_trusted": review::trusted_count(&Store::open()),
             "onboarded": settings::get("onboarded").and_then(|v| v.as_bool()).unwrap_or(false),
             "version": env!("CARGO_PKG_VERSION"),
@@ -1619,7 +1627,7 @@ pub fn run() {
             sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, install_antigravity_skill, setup_mark, set_onboarded, set_grok_sections, project_move, project_folder, project_merge, project_order, project_release, project_rename, project_dissolve, project_dismiss, update_check, update_install, update_status, set_update_mode, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget,
-            wait_list, wait_open, wait_dismiss, set_wake, share_set
+            wait_list, wait_open, wait_dismiss, set_wake, set_share_default, share_set
         ])
         .setup(|app| {
             let handle = app.handle().clone();

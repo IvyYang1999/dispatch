@@ -97,6 +97,7 @@ pub fn parse(text: &str, harness: Harness, limit: usize) -> Vec<Turn> {
     for v in text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()) {
         let Some(t) = (match harness {
             Harness::Codex => codex_turn(&v),
+            Harness::Antigravity => antigravity_turn(&v),
             _ => claude_turn(&v),
         }) else {
             continue;
@@ -115,6 +116,19 @@ pub fn parse(text: &str, harness: Harness, limit: usize) -> Vec<Turn> {
 
 fn claude_turn(v: &Value) -> Option<Turn> {
     let role = v["type"].as_str()?;
+    // what the person typed while the agent was working is kept as an attachment, not a user entry
+    if role == "attachment" {
+        let a = &v["attachment"];
+        if a["type"] != "queued_command" || !(a["humanTurn"] == true || a["origin"]["kind"] == "human") {
+            return None;
+        }
+        let text = match &a["prompt"] {
+            Value::String(s) => s.clone(),
+            Value::Array(blocks) => blocks.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+            _ => return None,
+        };
+        return finish("user", &text, a["timestamp"].as_str().or_else(|| v["timestamp"].as_str()));
+    }
     if role != "user" && role != "assistant" {
         return None;
     }
@@ -140,6 +154,29 @@ fn codex_turn(v: &Value) -> Option<Turn> {
         return None;
     };
     finish(role, &text, v["timestamp"].as_str())
+}
+
+/// A step of an Antigravity conversation's record: what the user typed (inside the request
+/// block the app wraps it in), what the agent said, and a message handed over by Dispatch,
+/// which the app records as a system message.
+fn antigravity_turn(v: &Value) -> Option<Turn> {
+    let content = v["content"].as_str()?;
+    let at = v["created_at"].as_str();
+    match v["type"].as_str()? {
+        "USER_INPUT" => {
+            let said = match (content.find("<USER_REQUEST>"), content.find("</USER_REQUEST>")) {
+                (Some(a), Some(b)) if a < b => &content[a + "<USER_REQUEST>".len()..b],
+                _ => content,
+            };
+            finish("user", said, at)
+        }
+        "PLANNER_RESPONSE" => finish("assistant", content, at),
+        "SYSTEM_MESSAGE" => {
+            let envelope = &content[content.find("📨")?..];
+            finish("user", envelope.split("</SYSTEM_MESSAGE>").next().unwrap_or(envelope), at)
+        }
+        _ => None,
+    }
 }
 
 fn finish(role: &str, raw: &str, at: Option<&str>) -> Option<Turn> {
@@ -192,6 +229,36 @@ fn clip(t: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_was_typed_while_the_agent_worked_is_a_user_turn() {
+        let lines = [
+            r#"{"type":"attachment","timestamp":"2026-11-24T05:39:40Z","attachment":{"type":"queued_command","prompt":[{"type":"image","source":{"type":"base64","data":"iVBO"}},{"type":"text","text":"and what are bang-w and ni-n?"}],"origin":{"kind":"human"},"timestamp":"2026-11-24T05:39:39Z","humanTurn":true}}"#,
+            r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"a plain one","humanTurn":true}}"#,
+            r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"from a schedule","origin":{"kind":"task"}}}"#,
+            r#"{"type":"attachment","attachment":{"type":"file","prompt":"not a prompt"}}"#,
+        ];
+        let turns = parse(&lines.join("\n"), Harness::Claude, 10);
+        assert_eq!(turns.len(), 2, "{turns:?}");
+        assert_eq!((turns[0].role.as_str(), turns[0].text.as_str(), turns[0].at.as_deref()), ("user", "and what are bang-w and ni-n?", Some("2026-11-24T05:39:39Z")));
+        assert_eq!(turns[1].text, "a plain one");
+    }
+
+    #[test]
+    fn antigravity_steps_read_as_turns() {
+        let lines = [
+            r#"{"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","created_at":"2026-11-24T05:53:57Z","content":"<USER_REQUEST>\nfix the login page\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nThe current local time is: 2026-11-23T21:53:57-08:00.\n</ADDITIONAL_METADATA>"}"#,
+            r#"{"step_index":1,"source":"MODEL","type":"PLANNER_RESPONSE","status":"DONE","created_at":"2026-11-24T05:53:59Z","content":"done"}"#,
+            r#"{"step_index":2,"source":"MODEL","type":"RUN_COMMAND","status":"DONE","content":"ls"}"#,
+            r#"{"step_index":3,"source":"SYSTEM","type":"SYSTEM_MESSAGE","status":"DONE","content":"The following is a <SYSTEM_MESSAGE> not actually sent by the user.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-24T06:03:54Z sender=system priority=MESSAGE_PRIORITY_HIGH content=📨 From 🔀 dispach (via Dispatch, 2026-11-23 22:03, id bfe142a1):\n\nping\n\n(This is a message from another agent)\n</SYSTEM_MESSAGE>"}"#,
+        ];
+        let turns = parse(&lines.join("\n"), Harness::Antigravity, 10);
+        assert_eq!(turns.len(), 3, "{turns:?}");
+        assert_eq!((turns[0].role.as_str(), turns[0].text.as_str(), turns[0].via_dispatch), ("user", "fix the login page", false));
+        assert_eq!((turns[1].role.as_str(), turns[1].text.as_str()), ("assistant", "done"));
+        assert!(turns[2].via_dispatch && turns[2].text.starts_with("📨 From") && !turns[2].text.contains("SYSTEM_MESSAGE"));
+        assert_eq!(turns[2].from_agent.as_deref(), Some("🔀 dispach"));
+    }
 
     #[test]
     fn a_message_the_claude_app_wrapped_reads_as_the_envelope_inside() {

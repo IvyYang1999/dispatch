@@ -111,6 +111,7 @@ Delivery *into* a bot needs the Grok Bot app signed in on this Mac and `gbot` in
 ```
 dispatch sessions                                   # the directory, running sessions first
 dispatch find opentrends codex                      # any age, every machine; each word must match
+dispatch find login page                            # also looks in what each session was asked lately
 dispatch send --to transparent "the e2e is green, merge when you like"
 dispatch send --to shyposter --to keykeeper "PR #11 splits the check from the send; have a look"
 dispatch status <dispatch id>                       # every recipient's stage and delivery log

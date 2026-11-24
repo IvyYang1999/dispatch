@@ -35,7 +35,11 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
 2. Locate the recipient with `dispatch_find` (a few words: a name, a project
    or folder, a word from its title, `codex`; every word must match) or
    `dispatch_sessions`. `dispatch_find` searches sessions of any age on every
-   paired machine, so an old session is found too; without MCP, run
+   paired machine, so an old session is found too. It also looks in what each
+   session was asked lately: when you do not know a name, search for the work
+   itself ("login page", "release notes"). A candidate found that way says
+   `reason: asked`, and one that shares its questions lists them under
+   `lately`; check them against what you are about to send; without MCP, run
    `dispatch find <words>`. Send only when exactly one candidate is clearly
    right; if several match, show them to the user and ask. Each session shares
    what its user chose (`share`): by default its name, the line about it and its

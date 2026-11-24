@@ -571,9 +571,12 @@ fn run() -> Result<i32> {
                 if found.is_empty() {
                     println!("{}", t("cli.find_none").replace("{q}", &q));
                 }
-                for (s, _) in &found {
+                let now = model::now_ms();
+                for (i, (s, why)) in found.iter().enumerate() {
                     let r = reach::decide(s, hook_on);
                     let shown = dispatch_core::share::for_agents(serde_json::to_value(s).unwrap_or_default());
+                    // what it was asked lately, for the first few and only where it shares that
+                    let lately = if i < 20 && matches!(shown["share"].as_str(), Some("asks" | "rounds")) && dispatch_core::lately::readable(s, now) { dispatch_core::lately::shown(s) } else { vec![] };
                     println!(
                         "{:<26} {:<7} {:<4} {:<11} {:<26} {:<32} {}",
                         truncate(&s.short_address(), 26),
@@ -584,6 +587,12 @@ fn run() -> Result<i32> {
                         truncate(shown["cwd"].as_str().map(model::short_cwd).or_else(|| shown["project"].as_str().map(str::to_string)).as_deref().unwrap_or(""), 32),
                         r.text
                     );
+                    if *why == "asked" {
+                        println!("    {}", t("cli.find_asked"));
+                    }
+                    for l in &lately {
+                        println!("    › {}", truncate(l, 110));
+                    }
                 }
             }
         }
