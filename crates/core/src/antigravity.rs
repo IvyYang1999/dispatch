@@ -326,7 +326,8 @@ pub fn caller_conversation() -> Option<String> {
     let id = std::env::var("ANTIGRAVITY_CONVERSATION_ID").ok().map(|i| i.trim().to_lowercase()).filter(|i| crate::model::is_uuid(i))?;
     let dir = std::env::var("ANTIGRAVITY_APP_DATA_DIR").unwrap_or_default();
     let dir = dir.trim_end_matches(['/', '\\']);
-    (dir.is_empty() || dir == "antigravity" || Path::new(dir) == data_dir()).then_some(id)
+    // the folder is given in full (`/Users/me/.gemini/antigravity`); the command line's is `antigravity-cli`
+    (dir.is_empty() || Path::new(dir).file_name().map(|n| n == "antigravity").unwrap_or(false)).then_some(id)
 }
 
 /// Where the app looks for skills every conversation may use.

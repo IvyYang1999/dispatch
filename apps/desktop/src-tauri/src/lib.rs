@@ -434,7 +434,7 @@ async fn search_sessions(query: String) -> Result<Value, String> {
     blocking(move || Ok(ops::search(&query))).await
 }
 
-/// The installed clients' icons as data URLs, by harness key (claude, codex, grok).
+/// The installed clients' icons as data URLs, by harness key (claude, codex, grok, antigravity).
 #[tauri::command]
 async fn harness_icons() -> Result<Value, String> {
     blocking(|| Ok(icons::harness_icons(Store::open().root()))).await
@@ -726,6 +726,10 @@ async fn setup_status(app: AppHandle) -> Result<Value, String> {
             "grok_error": grok.error,
             "grok_sections": dispatch_core::grok::sections_mode(),
             "grok_section_count": dispatch_core::grok::sections().iter().filter(|s| !s.name.is_empty()).count(),
+            "antigravity_app": dispatch_core::antigravity::installed(),
+            "antigravity_open": dispatch_core::antigravity::hub().is_some(),
+            "antigravity_conversations": dispatch_core::antigravity::conversations().len(),
+            "antigravity_skill": dispatch_core::antigravity::skill_state(),
             "store_root": Store::open().root().to_string_lossy(),
             "claude_plugin": plugin_installed,
             "claude_cli": dispatch_core::claude::executable().map(|p| p.to_string_lossy().to_string()),
@@ -982,6 +986,12 @@ async fn setup_mark(key: String, done: bool) -> Result<Value, String> {
         Ok(json!(keys))
     })
     .await
+}
+
+/// Write the Dispatch skill where every Antigravity conversation finds it.
+#[tauri::command]
+async fn install_antigravity_skill() -> Result<String, String> {
+    blocking(|| dispatch_core::antigravity::install_skill().map(|p| p.to_string_lossy().to_string()).map_err(err)).await
 }
 
 /// Install the Claude Code hook alone, pointing at the installed command line.
@@ -1606,7 +1616,7 @@ pub fn run() {
         .manage(Updates::default())
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
-            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, setup_mark, set_onboarded, set_grok_sections, project_move, project_folder, project_merge, project_order, project_release, project_rename, project_dissolve, project_dismiss, update_check, update_install, update_status, set_update_mode, get_lang, set_lang, set_notify, set_theme, retry, cancel,
+            sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, install_antigravity_skill, setup_mark, set_onboarded, set_grok_sections, project_move, project_folder, project_merge, project_order, project_release, project_rename, project_dissolve, project_dismiss, update_check, update_install, update_status, set_update_mode, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget,
             wait_list, wait_open, wait_dismiss, set_wake, share_set

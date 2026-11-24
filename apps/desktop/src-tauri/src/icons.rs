@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
-const APPS: [(&str, &str, &str); 3] = [("claude", "Claude", "com.anthropic.claudefordesktop"), ("codex", "Codex", "com.openai.codex"), ("grok", "Grok Bot", "")];
+const APPS: [(&str, &str, &str); 4] = [("claude", "Claude", "com.anthropic.claudefordesktop"), ("codex", "Codex", "com.openai.codex"), ("grok", "Grok Bot", ""), ("antigravity", "Antigravity", "com.google.antigravity")];
 
 pub fn harness_icons(store_root: &Path) -> Value {
     let mut v = json!({});

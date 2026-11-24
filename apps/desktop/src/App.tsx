@@ -268,6 +268,7 @@ function harnessKey(label: string): string {
   if (label === 'Claude') return 'claude'
   if (label === 'Codex') return 'codex'
   if (label === 'Grok Bot') return 'grok'
+  if (label === 'Antigravity') return 'antigravity'
   return 'human'
 }
 
@@ -1874,6 +1875,26 @@ function Settings({ tab0, onWelcome }: { tab0?: SettingsTab; onWelcome: () => vo
               </SetupCard>
             )}
 
+            {st.antigravity_app ? (
+              <SetupCard harness="Antigravity" name="Antigravity" tone={st.antigravity_skill === 'current' ? 'ok' : 'todo'} state={st.antigravity_skill === 'current' ? t('setup.ready') : t('setup.agyHalf')}>
+                <div className="setup__part">{t('setup.agyIn')}<span className="step__note">{st.antigravity_open ? t('setup.agyOpen', { n: st.antigravity_conversations ?? 0 }) : t('setup.agyClosed')}</span></div>
+                <div className="step"><div className="step__body"><div className="step__sub">{t('setup.agyInSub')}</div></div></div>
+                <div className="setup__part">{t('setup.agyOut')}</div>
+                <Step n={1} done={st.antigravity_skill === 'current'} title={t('setup.agySkill')} sub={t(st.antigravity_skill === 'other' ? 'setup.agySkillOther' : st.antigravity_skill === 'old' ? 'setup.agySkillOld' : 'setup.agySkillSub')}>
+                  {st.antigravity_skill !== 'current' && st.antigravity_skill !== 'other' && (
+                    <div className="step__act">
+                      <button className="btn btn--primary btn--small" disabled={busy !== null || !st.binary} onClick={() => run('agy-skill', async () => { await api.installAntigravitySkill() }, t('setup.agySkillDone'))}>{busy === 'agy-skill' ? t('setup.installing') : t(st.antigravity_skill === 'old' ? 'setup.agySkillUpdate' : 'setup.agySkillInstall')}</button>
+                    </div>
+                  )}
+                </Step>
+                <div className="step"><div className="step__body"><div className="step__sub">{t('setup.agyAsk')}</div></div></div>
+              </SetupCard>
+            ) : (
+              <SetupCard harness="Antigravity" name="Antigravity" tone="none" state={t('setup.notHere')}>
+                <div className="step"><div className="step__body"><div className="step__sub">{t('setup.agyMissing')}</div></div></div>
+              </SetupCard>
+            )}
+
             {st.binary && (
               <div className="repair">
                 <span>{t('setup.cliOk', { p: st.binary })}</span>
@@ -2412,6 +2433,11 @@ function Welcome({ onDone, onSettings }: { onDone: () => void; onSettings: (tab:
               </WelcomeAgent>
             ) : (
               <WelcomeAgent harness="Grok Bot" name="Grok Bot" done={null} state={t('setup.notHere')} />
+            )}
+            {st?.antigravity_app && (
+              <WelcomeAgent harness="Antigravity" name="Antigravity" done={st.antigravity_skill === 'current'} state={st.antigravity_skill === 'current' ? t('welcome.agents.ready') : t('setup.agyHalf')}>
+                <button className="btn btn--small" onClick={() => onSettings('agents')}>{t('welcome.agents.grokSteps')}</button>
+              </WelcomeAgent>
             )}
             <p className="welcome__note">{t('welcome.agents.restart')}</p>
           </div>

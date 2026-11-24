@@ -203,6 +203,14 @@ fn sessions_response(query: Option<&str>, knows: &[String], clients: &discover::
 #[cfg(test)]
 mod snapshot_tests {
     use super::*;
+
+    #[test]
+    fn a_machine_that_predates_a_kind_of_session_is_not_sent_it() {
+        use crate::model::Harness as H;
+        assert!(!readable(H::Antigravity, &[]), "it could not read the list at all");
+        assert!(readable(H::Antigravity, &["antigravity".to_string()]));
+        assert!(readable(H::Codex, &[]) && readable(H::Claude, &[]) && readable(H::Grok, &[]));
+    }
     use crate::{contacts, discover::ClientStates, model::{Harness, Session}, snapshot::Snapshot};
     use std::sync::mpsc;
     use std::time::Instant;

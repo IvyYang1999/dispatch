@@ -143,6 +143,12 @@ export interface SetupStatus {
   /** How Grok Bot's own sidebar sections file its bots here. */
   grok_sections?: 'start' | 'follow' | 'off'
   grok_section_count?: number
+  antigravity_app?: boolean
+  /** The Antigravity App is running: its conversations can take a message now. */
+  antigravity_open?: boolean
+  antigravity_conversations?: number
+  /** The Dispatch skill in Antigravity's skills folder: ours and current, ours from an older version, someone else's file, or absent. */
+  antigravity_skill?: 'current' | 'old' | 'other' | 'none'
   store_root: string
   claude_plugin: boolean
   /** Where the `claude` program is, when Dispatch can run it to install the plugin. */
@@ -364,6 +370,7 @@ export const api = {
   openSession: (id: string) => invoke<OpenResult>('open_session', { id }),
   setupStatus: () => invoke<SetupStatus>('setup_status'),
   installHook: () => invoke<string>('install_hook'),
+  installAntigravitySkill: () => invoke<string>('install_antigravity_skill'),
   installCli: () => invoke<string>('install_cli'),
   installPlugin: (harness: 'claude' | 'codex') => invoke<string>('install_plugin', { harness }),
   setGrokSections: (mode: 'start' | 'follow' | 'off') => invoke<string>('set_grok_sections', { mode }),

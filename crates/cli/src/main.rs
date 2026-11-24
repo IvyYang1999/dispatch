@@ -125,6 +125,13 @@ enum Cmd {
     Codex,
     /// What this machine's Grok Bot can do right now: app, sign-in, gbot, the bots
     Grok,
+    /// What this machine's Antigravity App can do right now: app, whether it is open, the
+    /// conversations, the Dispatch skill
+    Antigravity {
+        /// Write the Dispatch skill into Antigravity's global skills folder
+        #[arg(long)]
+        install_skill: bool,
+    },
     /// Put the binary at ~/.dispatch/bin/dispatch, install the hook from there, register with Codex
     Install,
     /// Other machines running Dispatch: list them, name this one, pair, scan the network
@@ -324,6 +331,22 @@ fn run() -> Result<i32> {
                     }
                     Err(e) => println!("{}", t("cli.appserver_failed").replace("{e}", &format!("{e:#}"))),
                 }
+            }
+        }
+        Cmd::Antigravity { install_skill } => {
+            use dispatch_core::antigravity as agy;
+            if install_skill {
+                println!("{}", t("cli.agy_skill_done").replace("{path}", &agy::install_skill()?.display().to_string()));
+            }
+            let yes = |v: bool| if v { t("cli.yes") } else { t("cli.no") };
+            println!("{}", t("cli.agy_app").replace("{v}", yes(agy::installed())));
+            println!("{}", t("cli.agy_open").replace("{v}", yes(agy::hub().is_some())));
+            println!("{}", t("cli.agy_skill").replace("{v}", agy::skill_state()));
+            let list = agy::conversations();
+            println!("{}", t("cli.agy_conversations").replace("{n}", &list.len().to_string()));
+            for c in list.iter().take(20) {
+                let name = if c.title.is_empty() { &c.preview } else { &c.title };
+                println!("  {}  {}  {}{}", model::short_id(&c.id), model::local_minute(c.last_active), truncate(name, 48), if c.busy { "  …" } else { "" });
             }
         }
         Cmd::Grok => {
