@@ -983,7 +983,9 @@ mod tests {
     #[test]
     fn initialize_enables_experimental_queue_api() {
         let (client, socket) = UnixStream::pair().unwrap();
-        socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        // long enough that a busy machine running the whole suite does not time the read out
+        // (it did once, at two seconds); the test is about what is said, not how fast
+        socket.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
         let worker = std::thread::spawn(move || {
             let mut ws = tungstenite::accept(socket).unwrap();
             let init: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
