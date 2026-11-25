@@ -49,6 +49,46 @@ struct Reviews {
     dismissed: Mutex<HashSet<String>>,
 }
 
+/// The message the newest notification was about, until the user is back in the app. macOS
+/// only says that the app was brought forward, not which notification was clicked: so coming
+/// back after a notification opens the message of the newest one, and coming back any other
+/// way after having looked at the window opens nothing in particular.
+#[derive(Default)]
+struct Noticed(Mutex<(u64, Option<String>)>);
+
+impl Noticed {
+    /// A notification went up about this message.
+    fn note(&self, dispatch_id: &str) {
+        if !dispatch_id.is_empty() {
+            let mut n = self.0.lock().unwrap();
+            *n = (n.0 + 1, Some(dispatch_id.to_string()));
+        }
+    }
+
+    /// The app was brought forward (a notification clicked, or the Dock): the message to open.
+    fn take(&self) -> Option<String> {
+        self.0.lock().unwrap().1.take()
+    }
+
+    /// Which notification is waiting now: `forget` drops it only if no newer one came since.
+    fn mark(&self) -> u64 {
+        self.0.lock().unwrap().0
+    }
+
+    /// The user has had the main window in front of them for a moment: the notification that
+    /// was waiting then is not waiting any more.
+    fn forget(&self, mark: u64) {
+        let mut n = self.0.lock().unwrap();
+        if n.0 == mark {
+            n.1 = None;
+        }
+    }
+}
+
+/// How long the window is in front before a waiting notification counts as seen. Clicking a
+/// notification brings the window forward and then says "reopen": the click must get there first.
+const SEEN_AFTER: Duration = Duration::from_millis(1500);
+
 const MAIN_WINDOW: &str = "main";
 const REVIEW_WINDOW: &str = "review";
 
@@ -1577,6 +1617,9 @@ fn refresh_tray(app: &AppHandle, sum: watch::Summary) {
 fn notify(app: &AppHandle, e: &watch::Event) {
     let (title, body) = watch::notification(e);
     let _ = app.notification().builder().title(title).body(body).show();
+    // what clicking it should open
+    let (watch::Event::Reply { dispatch_id, .. } | watch::Event::Failed { dispatch_id, .. }) = e;
+    app.state::<Noticed>().note(dispatch_id);
 }
 
 /// Read the feed every few seconds (less often while the window is hidden); keep the tray,
@@ -1635,6 +1678,7 @@ pub fn run() {
         .manage(Cache::default())
         .manage(Reviews::default())
         .manage(Waits::default())
+        .manage(Noticed::default())
         .manage(Updates::default())
         .manage(cli_sync::State::default())
         .invoke_handler(tauri::generate_handler![
@@ -1659,6 +1703,17 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // the user is looking at the main window: no notification is waiting to be opened
+            if let tauri::WindowEvent::Focused(true) = event {
+                if window.label() == MAIN_WINDOW {
+                    let app = window.app_handle().clone();
+                    let mark = app.state::<Noticed>().mark();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(SEEN_AFTER);
+                        app.state::<Noticed>().forget(mark);
+                    });
+                }
+            }
             // Closing the window keeps the app in the menu bar; Quit is in the tray menu and ⌘Q.
             // Closing the review window puts away what it holds until something new comes.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -1683,10 +1738,46 @@ pub fn run() {
                 let _ = u.install(bytes.as_slice());
             }
         }
-        // The Dock icon: bring the window back, whether it was hidden, minimized or just behind.
+        // The Dock icon, or a notification clicked: bring the window back, whether it was hidden,
+        // minimized or just behind, and open the message the newest notification was about.
         #[cfg(target_os = "macos")]
         if let tauri::RunEvent::Reopen { .. } = event {
+            let noticed = app.state::<Noticed>().take();
             show_main(app);
+            if let Some(dispatch_id) = noticed {
+                let _ = app.emit("tray:select", dispatch_id);
+            }
         }
     });
+}
+
+#[cfg(test)]
+mod noticed_tests {
+    use super::Noticed;
+
+    #[test]
+    fn coming_back_after_a_notification_opens_the_newest_one_once() {
+        let n = Noticed::default();
+        assert_eq!(n.take(), None, "no notification: nothing to open");
+        n.note("d1");
+        n.note("d2");
+        assert_eq!(n.take().as_deref(), Some("d2"));
+        assert_eq!(n.take(), None, "opened once, not on every return");
+        n.note("");
+        assert_eq!(n.take(), None);
+    }
+
+    #[test]
+    fn a_window_looked_at_forgets_only_the_notification_it_saw() {
+        let n = Noticed::default();
+        n.note("d1");
+        let looked = n.mark();
+        // a newer one arrives before the look counts: it stays
+        n.note("d2");
+        n.forget(looked);
+        assert_eq!(n.take().as_deref(), Some("d2"));
+        n.note("d3");
+        n.forget(n.mark());
+        assert_eq!(n.take(), None, "seen in the window: coming back later opens nothing in particular");
+    }
 }
