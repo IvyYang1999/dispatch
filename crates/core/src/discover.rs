@@ -597,7 +597,7 @@ pub fn matching(query: &str, sessions: Vec<Session>) -> Vec<(Session, &'static s
     let words = words(query);
     let book = crate::contacts::list();
     let now = now_ms();
-    sessions
+    let found: Vec<(Session, &'static str)> = sessions
         .into_iter()
         .filter_map(|s| {
             let host_id = s.host.as_ref().map(|h| h.id.clone());
@@ -611,7 +611,10 @@ pub fn matching(query: &str, sessions: Vec<Session>) -> Vec<(Session, &'static s
             };
             reason_with(&s, &words, contact, &asked).map(|r| (s, r))
         })
-        .collect()
+        .collect();
+    // what was read of the records is written down, so the next search does not read it again
+    crate::lately::flush();
+    found
 }
 
 /// Every session a query could mean, whatever its age: all of this machine's, and what each
