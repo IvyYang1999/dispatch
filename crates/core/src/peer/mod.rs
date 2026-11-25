@@ -497,18 +497,73 @@ pub fn route(peer_id: &str) -> Option<&'static str> {
     }
 }
 
+/// For how long a failure another process wrote down keeps this one from trying that machine.
+/// Longer than the app takes between two tries of its own (its back-off plus a dial that times
+/// out), so that while the app is running a command never has to find out for itself.
+const SHARED_BACKOFF_SECS: i64 = 90;
+
+fn offline_path() -> PathBuf {
+    state_dir().join("offline.json")
+}
+
+fn failures_in(path: &std::path::Path) -> HashMap<String, Value> {
+    std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+/// Write down, for the other processes, that a machine did not answer just now. A search from
+/// the command line is a new process every time: without this each one waits out the whole
+/// dial (eight seconds) for a machine the app has known to be off for hours.
+fn note_failure_at(path: &std::path::Path, peer_id: &str, now: i64, why: &str) {
+    let mut all = failures_in(path);
+    all.insert(peer_id.to_string(), json!({ "at": now, "why": why }));
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = write_private(&path.to_path_buf(), &serde_json::to_string(&all).unwrap_or_default());
+}
+
+/// The machine answered: nobody has to stay away from it. Only writes when there was a note.
+fn clear_failure_at(path: &std::path::Path, peer_id: &str) {
+    let mut all = failures_in(path);
+    if all.remove(peer_id).is_some() {
+        let _ = write_private(&path.to_path_buf(), &serde_json::to_string(&all).unwrap_or_default());
+    }
+}
+
+/// Why a machine is being left alone, when some process found it not answering within the
+/// last minute and a half.
+fn shared_failure_at(path: &std::path::Path, peer_id: &str, now: i64) -> Option<String> {
+    let all = failures_in(path);
+    let v = all.get(peer_id)?;
+    let at = v["at"].as_i64()?;
+    (now >= at && now - at < SHARED_BACKOFF_SECS).then(|| v["why"].as_str().unwrap_or("").to_string())
+}
+
 fn mark_offline(p: &PeerInfo, why: String) {
     log_problem(&p.name, &why);
+    note_failure_at(&offline_path(), &p.id, chrono::Utc::now().timestamp(), &why);
     OFFLINE.lock().unwrap().insert(p.id.clone(), (Instant::now() + OFFLINE_BACKOFF, why));
     REMOTE.lock().unwrap().remove(&p.id);
 }
 
+/// Why this machine is not being tried right now, if it is not. A process that found it not
+/// answering itself goes by its own clock and tries again after `OFFLINE_BACKOFF`: that is
+/// the app, whose tries keep the shared note fresh. A process that has not tried yet (every
+/// command-line run) goes by what the others wrote down.
+fn left_alone(p: &PeerInfo) -> Option<String> {
+    if let Some((until, why)) = OFFLINE.lock().unwrap().get(&p.id) {
+        return (Instant::now() < *until).then(|| why.clone());
+    }
+    shared_failure_at(&offline_path(), &p.id, chrono::Utc::now().timestamp())
+}
+
 fn backing_off(p: &PeerInfo) -> bool {
-    OFFLINE.lock().unwrap().get(&p.id).map(|(until, _)| Instant::now() < *until).unwrap_or(false)
+    left_alone(p).is_some()
 }
 
 fn mark_online(p: &PeerInfo) {
     OFFLINE.lock().unwrap().remove(&p.id);
+    clear_failure_at(&offline_path(), &p.id);
 }
 
 /// Whether a peer is reachable right now: an address is known, it did not just fail, and its
@@ -536,8 +591,8 @@ pub fn probe(p: &PeerInfo) -> Result<String, String> {
 }
 
 fn ask(p: &PeerInfo, req: &Request) -> Result<Response, PeerError> {
-    if backing_off(p) {
-        return Err(PeerError::Offline(OFFLINE.lock().unwrap().get(&p.id).map(|(_, w)| w.clone()).unwrap_or_default()));
+    if let Some(why) = left_alone(p) {
+        return Err(PeerError::Offline(why));
     }
     match client::request(p, req) {
         Ok(r) => {
@@ -892,6 +947,44 @@ pub fn overview() -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_machine_another_process_found_off_is_not_dialled_again() {
+        let dir = std::env::temp_dir().join(format!("dispatch-offline-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let p = peer_named("peer-off-shared-1", "Air");
+        let now = chrono::Utc::now().timestamp();
+        assert!(left_alone(&p).is_none(), "nobody tried it: nothing keeps this process away");
+        // the app, in its own process, found it not answering half a minute ago
+        note_failure_at(&offline_path(), &p.id, now - 30, "internet: no answer within 8s");
+        assert_eq!(left_alone(&p).as_deref(), Some("internet: no answer within 8s"));
+        // so a request from here comes back at once, without a dial
+        let started = Instant::now();
+        let answer = ask(&p, &Request::Sessions { query: None, knows: vec![] });
+        assert!(matches!(&answer, Err(PeerError::Offline(why)) if why.contains("no answer")), "{answer:?}");
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // a note from long ago keeps nobody away
+        note_failure_at(&offline_path(), &p.id, now - SHARED_BACKOFF_SECS - 1, "old");
+        assert!(left_alone(&p).is_none());
+        // this process finds it off itself: it goes by its own clock from then on
+        mark_offline(&p, "mine".into());
+        assert_eq!(left_alone(&p).as_deref(), Some("mine"));
+        assert!(shared_failure_at(&offline_path(), &p.id, chrono::Utc::now().timestamp()).is_some(), "and tells the others");
+        // its own back-off is over: its turn to try again, though the shared note is fresh
+        OFFLINE.lock().unwrap().insert(p.id.clone(), (Instant::now() - Duration::from_secs(1), "mine".into()));
+        assert!(left_alone(&p).is_none());
+        // it answers: nobody stays away any more
+        mark_online(&p);
+        assert!(shared_failure_at(&offline_path(), &p.id, chrono::Utc::now().timestamp()).is_none());
+        assert!(left_alone(&p).is_none());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(offline_path()).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn peer_named(id: &str, name: &str) -> PeerInfo {
         serde_json::from_value(serde_json::json!({ "id": id, "name": name, "public_key": "00", "paired_at": "2026-11-09 08:43" })).unwrap()
