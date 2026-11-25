@@ -242,6 +242,7 @@ mod tests {
             to_host_name: None,
             from_harness: Some("claude".into()),
             signature: None,
+            review: None,
             body: "hello".into(),
             path: String::new(),
         };

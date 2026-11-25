@@ -123,9 +123,77 @@ pub struct Letter {
     /// The sending machine's signature over the message, kept on letters that crossed over.
     #[serde(default)]
     pub signature: Option<String>,
+    /// What the sending machine says about the user's review of this message (`Mark`). Absent
+    /// on replies, on what the user wrote in the app, and on messages from older versions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<Mark>,
     pub body: String,
     #[serde(default)]
     pub path: String,
+}
+
+/// The user saw the whole text in the review window and pressed Send.
+pub const MARK_FULL: &str = "full";
+/// The user pressed Send on a long message that was folded: they saw its first lines.
+pub const MARK_PART: &str = "part";
+/// Not shown: the user let this sender write to this recipient without asking each time.
+pub const MARK_STANDING: &str = "standing";
+/// Not shown: the sending machine does not review before sending.
+pub const MARK_NONE: &str = "none";
+
+/// A fact about how a new message left its machine: whether the user was shown this text in
+/// Dispatch's review window before it went. It says what the user saw, never that they ask
+/// the recipient to do what the message says.
+///
+/// `digest` is the body the user pressed Send on: a mark whose digest is not the body's is
+/// void. `signature` is the sending machine's signature over the mark (`peer::sign`), set
+/// when the message crosses to another machine and checked there before it is stored.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Mark {
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+}
+
+impl Mark {
+    /// The user was shown the text (all of it, or its first lines) and pressed Send.
+    pub fn shown(&self) -> bool {
+        self.state == MARK_FULL || self.state == MARK_PART
+    }
+
+    /// Whether the mark still speaks for this body: a shown mark only for the very text the
+    /// user pressed Send on.
+    pub fn holds_for(&self, body: &str) -> bool {
+        match self.state.as_str() {
+            MARK_FULL | MARK_PART => self.digest.as_deref() == Some(body_digest(body).as_str()),
+            MARK_STANDING | MARK_NONE => true,
+            _ => false,
+        }
+    }
+
+    /// One front-matter line: state, digest, signature, time (`-` for a part it has not).
+    fn line(&self) -> String {
+        let part = |v: &Option<String>| v.as_deref().filter(|s| !s.is_empty()).unwrap_or("-").to_string();
+        format!("{} {} {} {}", self.state, part(&self.digest), part(&self.signature), part(&self.at))
+    }
+
+    fn from_line(v: &str) -> Option<Mark> {
+        let mut it = v.splitn(4, ' ');
+        let state = it.next().filter(|s| !s.is_empty())?.to_string();
+        let mut part = || it.next().map(str::trim).filter(|s| !s.is_empty() && *s != "-").map(str::to_string);
+        let (digest, signature, at) = (part(), part(), part());
+        Some(Mark { state, at, digest, signature })
+    }
+}
+
+/// The digest a review mark carries: SHA-256 of the body as the store keeps it.
+pub fn body_digest(body: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(body.trim().as_bytes()))
 }
 
 impl Letter {
@@ -288,6 +356,13 @@ impl Store {
         Ok(())
     }
 
+    /// Write the review mark into the file (adding the line when it has none).
+    pub fn set_mark(&self, l: &mut Letter, mark: Mark) -> Result<()> {
+        self.set_field(&l.path, "review", &mark.line())?;
+        l.review = Some(mark);
+        Ok(())
+    }
+
     /// Rewrite one front-matter line in place, or add it before the closing `---`.
     fn set_field(&self, path: &str, key: &str, value: &str) -> Result<()> {
         let text = fs::read_to_string(path).with_context(|| format!("read {path}"))?;
@@ -350,6 +425,9 @@ pub fn render(l: &Letter) -> String {
             extra.push_str(&format!("{k}: {v}\n"));
         }
     }
+    if let Some(m) = &l.review {
+        extra.push_str(&format!("review: {}\n", m.line()));
+    }
     format!(
         "---\nid: {}\ndispatch_id: {}\nfrom: {}\nfrom_name: {}\nto: {}\nto_name: {}\nurgency: {}\nwake: {}\nstatus: {}\ncreated: {}\n{}---\n{}\n",
         l.id,
@@ -390,6 +468,7 @@ pub fn parse(text: &str) -> Option<Letter> {
         to_host_name: None,
         from_harness: None,
         signature: None,
+        review: None,
         body: body.trim_end().to_string(),
         path: String::new(),
     };
@@ -415,6 +494,7 @@ pub fn parse(text: &str) -> Option<Letter> {
             "to_host_name" => l.to_host_name = Some(v).filter(|s| !s.is_empty()),
             "from_harness" => l.from_harness = Some(v).filter(|s| !s.is_empty()),
             "signature" => l.signature = Some(v).filter(|s| !s.is_empty()),
+            "review" => l.review = Mark::from_line(&v),
             _ => {}
         }
     }
@@ -455,6 +535,7 @@ mod tests {
             to_host_name: None,
             from_harness: None,
             signature: None,
+            review: None,
             body: "hello\nworld".into(),
             path: String::new(),
         };
@@ -476,6 +557,29 @@ mod tests {
         assert!(q.from_host.is_none());
         assert!(p.overdue(parse_time("2026-11-06 14:01").unwrap()));
         assert!(!p.overdue(parse_time("2026-11-06 13:59").unwrap()));
+        assert!(p.review.is_none() && !render(&l).contains("review:"), "no mark, no line");
+    }
+
+    /// A review mark goes through the file whole, and speaks only for the text it was made for.
+    #[test]
+    fn a_review_mark_round_trips_and_is_bound_to_the_body() {
+        let mut l = parse("---\nid: a\ndispatch_id: d\nfrom: x\nto: y\nurgency: 普通\nstatus: 未读\ncreated: 2026-11-05 14:00\n---\nplease check the build\n").unwrap();
+        let seen = Mark { state: MARK_FULL.into(), at: Some("2026-11-24 15:12".into()), digest: Some(body_digest(&l.body)), signature: Some("abcd".into()) };
+        l.review = Some(seen.clone());
+        let back = parse(&render(&l)).unwrap();
+        assert_eq!(back.review, Some(seen.clone()), "state, time, digest and signature all come back");
+        assert!(seen.shown() && seen.holds_for(&back.body));
+        assert!(seen.holds_for("please check the build\n\n"), "trailing whitespace is not part of the text");
+        assert!(!seen.holds_for("please check the build and then delete it"), "another text: the mark is void");
+        let none = Mark { state: MARK_STANDING.into(), at: None, digest: None, signature: None };
+        l.review = Some(none.clone());
+        let back = parse(&render(&l)).unwrap();
+        assert_eq!(back.review, Some(none.clone()));
+        assert!(!none.shown() && none.holds_for("anything"), "saying it was not shown needs no text");
+        let odd = Mark { state: "approved-by-user".into(), at: None, digest: None, signature: None };
+        assert!(!odd.holds_for(&l.body), "a state this version does not know says nothing");
+        // a mark with no digest never counts as shown text
+        assert!(!Mark { state: MARK_FULL.into(), at: None, digest: None, signature: None }.holds_for(&l.body));
     }
 
     #[test]
@@ -514,6 +618,7 @@ mod tests {
             to_host_name: None,
             from_harness: None,
             signature: None,
+            review: None,
             body: "hi".into(),
             path: String::new(),
         };
