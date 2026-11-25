@@ -85,6 +85,14 @@ export function Review() {
   const closing = useRef<number | null>(null)
   const [always, setAlways] = useState(false)
   const [note, setNote] = useState<string | null>(null)
+  // the digest of the text that was on show in full (short, or opened): what Send can vouch for
+  const whole = useRef<string | null>(null)
+  const onWhole = useCallback(
+    (w: boolean) => {
+      if (w && info) whole.current = info.digest
+    },
+    [info],
+  )
   const bar = useRef<HTMLDivElement>(null)
   const body = useRef<HTMLDivElement>(null)
   const foot = useRef<HTMLDivElement>(null)
@@ -163,7 +171,7 @@ export function Review() {
     if (!info) return
     setBusy(true)
     try {
-      const r = await api.reviewDecide(info.letter_id, decision)
+      const r = await api.reviewDecide(info.letter_id, decision, { digest: info.digest, whole: whole.current === info.digest })
       const sent = decision !== 'decline'
       current.current = info.letter_id
       showing.current = true
@@ -177,6 +185,12 @@ export function Review() {
         more: ids.length > 1,
       })
     } catch (e) {
+      // the text may have changed under the window: show what is there now, and say why nothing went
+      try {
+        setInfo(await api.reviewInfo(info.letter_id))
+      } catch {
+        // gone: load() moves on
+      }
       setErr(String(e))
       load()
     } finally {
@@ -331,7 +345,7 @@ export function Review() {
 
           <div className="section-title">{t('review.message')}</div>
           <div className="review__msg">
-            <Clamp text={info.body} />
+            <Clamp key={info.digest} text={info.body} onWhole={onWhole} />
           </div>
           {!done && <div className="review__deadline">{t('review.deadline', { t: info.deadline.slice(5) })}</div>}
           {note && <div className="notice" onClick={() => setNote(null)}>{note}</div>}

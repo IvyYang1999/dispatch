@@ -140,6 +140,7 @@ pub fn run(store: &Store, input: &str) -> Result<HookOutput> {
         items.push_str(
             &t("hook.item")
                 .replace("{i}", &n.to_string())
+                .replace("{mark}", &crate::send::mark_text(l).map(|m| format!("\n{m}")).unwrap_or_default())
                 .replace("{from}", &crate::send::sender_text(l))
                 .replace("{created}", &l.created)
                 .replace("{id}", &crate::model::short_id(&l.id))
@@ -190,6 +191,7 @@ mod tests {
                 to_host_name: None,
                 from_harness: Some("human".into()),
                 signature: None,
+                review: None,
                 body: body.into(),
                 path: String::new(),
             };
