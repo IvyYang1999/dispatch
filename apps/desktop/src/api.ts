@@ -82,7 +82,7 @@ export interface Session {
   /** The last things it was asked, newest last: a session on this machine with a recent record. */
   lately?: string[]
 }
-export type Kind = 'review' | 'queued' | 'delivered' | 'working' | 'replied' | 'failed' | 'cancelled' | 'held'
+export type Kind = 'review' | 'queued' | 'delivered' | 'working' | 'replied' | 'finished' | 'failed' | 'cancelled' | 'held'
 /** Where the user's review of a held copy stands, as the sender sees it too. */
 export interface ReviewState {
   state: 'asked' | 'shown' | 'closed' | 'approved' | 'trusted' | 'declined' | 'withdrawn' | 'expired'

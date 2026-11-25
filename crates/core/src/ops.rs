@@ -396,6 +396,93 @@ fn was_handed(runs: &[store::Run]) -> bool {
     runs.iter().any(|r| matches!((r.action.as_str(), r.result.as_str()), ("inbox", "written") | ("codex", "queued") | ("grok", "sent") | ("antigravity", "sent") | ("hook", "handed") | ("peer", "inbox")))
 }
 
+/// Who a notice about an unanswered message is from: Dispatch itself, not a session.
+pub const NOTICE_FROM: &str = "dispatch";
+/// How long after a turn was first seen finished the sender is told nothing came back: a reply
+/// written in the turn's last moments, or one still on its way from another machine, gets here first.
+const UNANSWERED_AFTER_SECS: i64 = 45;
+/// A notice is news only for a while: a message older than this, or a turn seen finished
+/// longer ago than `UNANSWERED_STALE_SECS`, gets none. Without this the first round after an
+/// update would write to every session that ever went unanswered.
+const UNANSWERED_MAX_AGE_HOURS: i64 = 12;
+const UNANSWERED_STALE_SECS: i64 = 30 * 60;
+
+/// Tell a session that the session it wrote to finished its turn without replying. The sender
+/// otherwise waits for an answer that is not coming, and tells its user so. The notice says
+/// that, and how to go on; it does not carry what the other session said, which is that
+/// session's own record. Once per message, to the sender's machine only (the copy that was
+/// sent from here), and never about a notice itself. A person who sent from the app is told
+/// by a notification instead (`watch`). Returns the notices sent.
+pub fn notify_unanswered(store: &Store) -> Result<Vec<Value>> {
+    notify_unanswered_after(store, UNANSWERED_AFTER_SECS)
+}
+
+fn notify_unanswered_after(store: &Store, after_secs: i64) -> Result<Vec<Value>> {
+    notify_among(store, &store.list(None, false)?, after_secs)
+}
+
+fn notify_among(store: &Store, letters: &[store::Letter], after_secs: i64) -> Result<Vec<Value>> {
+    let mut out = vec![];
+    for c in letters {
+        if !notice_due(store, c, after_secs)? {
+            continue;
+        }
+        let target = match send::reply_target(&c.from) {
+            Ok(s) if s.harness != crate::model::Harness::Human => s,
+            _ => {
+                store.append_run(&c.id, "notice", "skipped", "the sender is not a session here")?;
+                continue;
+            }
+        };
+        let text = t("notice.unanswered").replace("{to}", &c.to_name).replace("{id}", &short_id(&c.id));
+        let rep = send::send(store, send::Request { to: target.clone(), from: NOTICE_FROM.into(), from_name: "Dispatch".into(), text, urgency: store::urgency_stored("normal").to_string(), dispatch_id: Some(c.dispatch_id.clone()), wait: false, allow_resume: false, deadline: None, review: false })?;
+        store.append_run(&c.id, "notice", "sent", &rep.letter_id)?;
+        out.push(json!({ "about": c.id, "to": target.id, "letter_id": rep.letter_id, "route": rep.route }));
+    }
+    Ok(out)
+}
+
+/// Whether the session that sent this copy is owed a notice now: it was sent from here by a
+/// session (not a person, not Dispatch itself), the turn it started was seen finished at least
+/// `after_secs` ago, nothing came back, and no notice was sent or ruled out before.
+fn notice_due(store: &Store, c: &store::Letter, after_secs: i64) -> Result<bool> {
+    if c.status == store::REPLIED || c.from_host.is_some() || c.from == NOTICE_FROM || send::is_person(&c.from) {
+        return Ok(false);
+    }
+    // old history is not news
+    let created = store::parse_time(&c.created);
+    if created.map(|at| chrono::Local::now().naive_local() - at > chrono::Duration::hours(UNANSWERED_MAX_AGE_HOURS)).unwrap_or(true) {
+        return Ok(false);
+    }
+    if stage_of(store, c).0 != "finished" {
+        return Ok(false);
+    }
+    let runs = store.runs(&c.id);
+    if runs.iter().any(|r| r.action == "notice") {
+        return Ok(false);
+    }
+    // when it was first seen finished: `stage_of` writes that down for a copy on this machine;
+    // for one on another machine it is written down now
+    let Some(seen) = runs.iter().find(|r| r.action == "receipt" && r.result == "completed") else {
+        store.append_run(&c.id, "receipt", "completed", "there")?;
+        return Ok(after_secs <= 0);
+    };
+    let age = chrono::DateTime::parse_from_rfc3339(&seen.at).ok().map(|at| (chrono::Local::now().fixed_offset() - at).num_seconds()).unwrap_or(0);
+    if age < after_secs {
+        return Ok(false);
+    }
+    if age > UNANSWERED_STALE_SECS {
+        store.append_run(&c.id, "notice", "skipped", "finished long ago")?;
+        return Ok(false);
+    }
+    // an answer that came as its own letter counts, whatever this copy's status says
+    if store.copies(&c.dispatch_id)?.iter().any(|r| r.id != c.id && r.from == c.to && r.to == c.from) {
+        store.append_run(&c.id, "notice", "skipped", "it was answered")?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
 fn last_run_age_secs(runs: &[store::Run]) -> i64 {
     runs.last().and_then(|r| chrono::DateTime::parse_from_rfc3339(&r.at).ok()).map(|at| (chrono::Local::now().fixed_offset() - at).num_seconds()).unwrap_or(i64::MAX)
 }
@@ -407,6 +494,8 @@ pub fn sweep(store: &Store) -> Result<Value> {
     let _ = crate::peer::mirror(store);
     let mut letters = store.list(None, false)?;
     let failed = reconcile(store, &mut letters)?;
+    // sessions whose message was worked on and not answered are told so (the list is already read)
+    let _ = notify_among(store, &letters, UNANSWERED_AFTER_SECS);
     let queued: Vec<&store::Letter> = letters.iter().filter(|l| l.status == store::UNREAD).collect();
     let mut retried = vec![];
     if !queued.is_empty() {
@@ -572,6 +661,11 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
             if remote.0 == "held" {
                 return ("queued".into(), "stage.held_there".into());
             }
+            // between machines a finished turn still travels as `replied` with this stage, so
+            // that a machine on an older version can read it: here it is told apart again
+            if remote.1 == "stage.finished" {
+                return ("finished".into(), remote.1);
+            }
             return remote;
         }
         let (key, kind) = stage_by_status(&c.status);
@@ -617,7 +711,8 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
     }
     let (key, kind) = match (&receipt, c.status.as_str()) {
         (_, store::REPLIED) => ("stage.replied", "replied"),
-        (Some(claude::Receipt::Completed { .. }), _) => ("stage.finished", "replied"),
+        // the turn is over and nothing came back: not an answer, and the sender is told so
+        (Some(claude::Receipt::Completed { .. }), _) => ("stage.finished", "finished"),
         (Some(claude::Receipt::Started), _) => ("stage.working", "working"),
         (Some(claude::Receipt::Queued), _) => ("stage.queued_after_turn", "delivered"),
         _ => stage_by_status(&c.status),
@@ -690,7 +785,7 @@ pub fn status_wait(store: &Store, id: &str, wait_secs: u64) -> Result<Value> {
     let key = |v: &Value| -> Vec<String> {
         v["copies"].as_array().into_iter().flatten().map(|c| format!("{}|{}|{}", c["kind"], c["stage"], c["review"]["state"])).collect()
     };
-    let settled = |v: &Value| v["copies"].as_array().into_iter().flatten().all(|c| matches!(c["kind"].as_str(), Some("replied" | "failed" | "cancelled")));
+    let settled = |v: &Value| v["copies"].as_array().into_iter().flatten().all(|c| matches!(c["kind"].as_str(), Some("replied" | "finished" | "failed" | "cancelled")));
     let wait = std::time::Duration::from_secs(wait_secs.min(120));
     if wait.is_zero() || settled(&first) {
         let mut v = first;
@@ -943,7 +1038,7 @@ pub fn threads(store: &Store, limit: usize) -> Result<Value> {
         .map(|(key, t)| {
             // what needs the user now: anything held for review, and whatever has not gone through
             // since the last message that did (an old failure the talk has moved past is history)
-            let went = t.messages.iter().rposition(|m| matches!(m["kind"].as_str(), Some("delivered" | "working" | "replied"))).map(|i| i + 1).unwrap_or(0);
+            let went = t.messages.iter().rposition(|m| matches!(m["kind"].as_str(), Some("delivered" | "working" | "replied" | "finished"))).map(|i| i + 1).unwrap_or(0);
             let attention = t.messages.iter().enumerate().filter(|(i, m)| *i >= went || m["kind"] == "review").filter_map(|(_, m)| m["kind"].as_str().and_then(|k| attention_rank(k).map(|r| (r, k.to_string())))).min().map(|(_, k)| k);
             let last = t.messages.last().cloned().unwrap_or(Value::Null);
             // what they are talking about now: the subject of the latest message that began a dispatch
@@ -1167,10 +1262,56 @@ mod tests {
         let delivered = mk(DELIVERED_INBOX);
         assert_eq!(stage_of(&s, &delivered), ("delivered".to_string(), "stage.delivered".to_string()), "no transcript to read: it stands as delivered");
         s.append_run(&delivered.id, "receipt", "completed", "").unwrap();
-        assert_eq!(stage_of(&s, &delivered), ("replied".to_string(), "stage.finished".to_string()));
+        assert_eq!(stage_of(&s, &delivered), ("finished".to_string(), "stage.finished".to_string()), "a turn that ended is not an answer");
         assert_eq!(s.runs(&delivered.id).iter().filter(|r| r.action == "receipt").count(), 1, "written down once");
         let replied = mk(REPLIED);
         assert_eq!(stage_of(&s, &replied), ("replied".to_string(), "stage.replied".to_string()));
+
+        // the sender is owed a notice once the finished turn has stood unanswered for a while
+        assert!(!notice_due(&s, &delivered, 45).unwrap(), "just finished: a reply may still be on its way");
+        assert!(notice_due(&s, &delivered, 0).unwrap());
+        assert!(!notice_due(&s, &replied, 0).unwrap(), "it answered");
+        let waiting = mk(DELIVERED_INBOX);
+        assert!(!notice_due(&s, &waiting, 0).unwrap(), "still delivered: its turn is not over");
+        // never to a person (the app notifies them), about a notice, or for a copy sent from elsewhere
+        for change in [0, 1, 2] {
+            let mut other = mk(DELIVERED_INBOX);
+            s.append_run(&other.id, "receipt", "completed", "").unwrap();
+            match change {
+                0 => other.from = "app".into(),
+                1 => other.from = NOTICE_FROM.into(),
+                _ => other.from_host = Some("peer-1".into()),
+            }
+            assert!(!notice_due(&s, &other, 0).unwrap(), "case {change}");
+        }
+        // an answer that arrived as its own letter is an answer, whatever the copy's status says
+        let asked = mk(DELIVERED_INBOX);
+        s.append_run(&asked.id, "receipt", "completed", "").unwrap();
+        let mut answer = mk(DELIVERED_INBOX);
+        answer.dispatch_id = asked.dispatch_id.clone();
+        answer.from = asked.to.clone();
+        answer.to = asked.from.clone();
+        s.write_letter(&mut answer).unwrap();
+        assert!(!notice_due(&s, &asked, 0).unwrap());
+        assert!(s.runs(&asked.id).iter().any(|r| r.action == "notice" && r.result == "skipped"));
+        // old history is not news: a message from yesterday gets no notice, however it ended
+        let mut old = mk(DELIVERED_INBOX);
+        s.append_run(&old.id, "receipt", "completed", "").unwrap();
+        old.created = crate::store::time_text(chrono::Local::now().naive_local() - chrono::Duration::hours(UNANSWERED_MAX_AGE_HOURS + 1));
+        assert!(!notice_due(&s, &old, 0).unwrap());
+        // the notice: a letter from Dispatch to the session that wrote, in the same exchange,
+        // saying that nothing came back and nothing of what the other session said
+        let sent = notify_unanswered_after(&s, 0).unwrap();
+        let about: Vec<&str> = sent.iter().filter_map(|n| n["about"].as_str()).collect();
+        assert!(about.contains(&delivered.id.as_str()));
+        assert!(!about.contains(&replied.id.as_str()) && !about.contains(&waiting.id.as_str()) && !about.contains(&asked.id.as_str()), "only those that are due");
+        let notice = s.copies(&delivered.dispatch_id).unwrap().into_iter().find(|l| l.from == NOTICE_FROM).expect("the notice");
+        assert_eq!((notice.to.as_str(), notice.from_name.as_str()), (delivered.from.as_str(), "Dispatch"));
+        assert!(notice.body.contains(&short_id(&delivered.id)) && notice.body.contains("B"), "{}", notice.body);
+        assert!(!notice.body.contains("hello"), "not what was written, and nothing of what the other session said");
+        // once, and never a notice about a notice
+        assert!(notify_unanswered_after(&s, 0).unwrap().is_empty());
+        assert!(!notice_due(&s, &delivered, 0).unwrap() && !notice_due(&s, &notice, 0).unwrap());
         let _ = std::fs::remove_dir_all(dir);
     }
 

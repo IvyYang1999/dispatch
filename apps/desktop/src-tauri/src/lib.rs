@@ -1618,7 +1618,7 @@ fn notify(app: &AppHandle, e: &watch::Event) {
     let (title, body) = watch::notification(e);
     let _ = app.notification().builder().title(title).body(body).show();
     // what clicking it should open
-    let (watch::Event::Reply { dispatch_id, .. } | watch::Event::Failed { dispatch_id, .. }) = e;
+    let (watch::Event::Reply { dispatch_id, .. } | watch::Event::Failed { dispatch_id, .. } | watch::Event::Unanswered { dispatch_id, .. }) = e;
     app.state::<Noticed>().note(dispatch_id);
 }
 
