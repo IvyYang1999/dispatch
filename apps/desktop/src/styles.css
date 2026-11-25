@@ -175,6 +175,7 @@ input, textarea { font: inherit; }
 .badge[data-kind="delivered"] { background: var(--delivered-soft); color: var(--delivered); }
 .badge[data-kind="working"] { background: var(--working-soft); color: var(--working); }
 .badge[data-kind="replied"] { background: var(--replied-soft); color: var(--text-ok); }
+.badge[data-kind="finished"] { background: var(--tag); color: var(--text); }
 .badge[data-kind="failed"] { background: var(--failed-soft); color: var(--failed); }
 .badge[data-kind="cancelled"] { background: var(--tag); color: var(--text-faint); }
 .btn { display: inline-flex; align-items: center; justify-content: center; height: 28px; padding: 0 12px; border-radius: 7px; font-weight: 500; box-shadow: inset 0 0 0 1px var(--line); background: var(--surface); white-space: nowrap; }
@@ -206,6 +207,7 @@ input, textarea { font: inherit; }
 .chip[data-kind="delivered"] .chip__dot { background: var(--delivered); }
 .chip[data-kind="working"] .chip__dot { background: var(--working); }
 .chip[data-kind="replied"] .chip__dot { background: var(--replied); }
+.chip[data-kind="finished"] .chip__dot { background: var(--text-faint); }
 .chip[data-kind="failed"] .chip__dot { background: var(--failed); }
 .chip[data-kind="cancelled"] { color: var(--text-faint); text-decoration: line-through; }
 .chip[data-kind="cancelled"] .chip__dot { background: var(--line); }

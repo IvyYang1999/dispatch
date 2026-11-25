@@ -24,6 +24,8 @@ pub enum Event {
     Reply { dispatch_id: String, from: String, to: String, to_is_me: bool, body: String },
     /// The copy to `to` is now marked failed.
     Failed { dispatch_id: String, to: String, text: String, stage: String },
+    /// `to` finished its turn on a message the person sent and did not reply.
+    Unanswered { dispatch_id: String, to: String, text: String },
 }
 
 fn s(v: &Value, key: &str) -> String {
@@ -64,6 +66,10 @@ pub fn events(prev: Option<&Snapshot>, feed: &Value) -> (Snapshot, Vec<Event>) {
             }
             if r["kind"] == "failed" && prev.kinds.get(&letter_id).map(|k| k != "failed").unwrap_or(false) {
                 out.push(Event::Failed { dispatch_id: dispatch_id.clone(), to: s(r, "to_name"), text: s(d, "text"), stage: s(r, "stage") });
+            }
+            // a session that wrote is told by a notice in its own inbox; the person is told here
+            if r["kind"] == "finished" && is_me(&s(d, "from")) && prev.kinds.get(&letter_id).map(|k| k != "finished").unwrap_or(false) {
+                out.push(Event::Unanswered { dispatch_id: dispatch_id.clone(), to: s(r, "to_name"), text: s(d, "text") });
             }
         }
     }
@@ -165,6 +171,7 @@ pub fn notification(e: &Event) -> (String, String) {
             (title, clip(body, 120))
         }
         Event::Failed { to, text, stage, .. } => (t("notify.failed").replace("{to}", to), format!("{} · {}", stage, clip(text, 100))),
+        Event::Unanswered { to, text, .. } => (t("notify.unanswered").replace("{to}", to), clip(text, 120)),
     }
 }
 

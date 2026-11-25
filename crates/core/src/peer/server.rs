@@ -143,6 +143,9 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
                                 continue;
                             }
                             let (kind, stage_key) = ops::stage_of(&store, &l);
+                            // a machine on an older version knows no `finished`: on the wire it
+                            // stays `replied`, and the stage key says which of the two it is
+                            let kind = if kind == "finished" { "replied".to_string() } else { kind };
                             // a letter that started here (a reply) carries this machine's signature
                             let signature = if l.from_host.is_none() { key.as_ref().map(|k| sign::sign(k, &l)) } else { None };
                             copies.push(RemoteCopy { letter: l, kind, stage_key, signature });

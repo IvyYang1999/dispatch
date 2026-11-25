@@ -154,7 +154,9 @@ pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
 
         // where a copy stands
         "stage.replied" => ("已回复", "Replied"),
-        "stage.finished" => ("本轮结束", "Turn finished"),
+        "stage.finished" => ("本轮结束，没有回信", "Turn finished, no reply"),
+        "notice.unanswered" => ("「{to}」处理完了你发给它的信（id {id}），这一轮已经结束，但它没有通过 Dispatch 回信。它在自己的会话里说了什么，这里看不到，不要假设它照做了或者还在处理。需要结果的话：用 dispatch_send 再给它发一封追问，或者告诉用户它没有回信，请用户去那个会话里看。", "\"{to}\" has finished its turn on the message you sent it (id {id}) and did not reply through Dispatch. What it said in its own session cannot be seen from here: do not assume it did what you asked, or that it is still working on it. If you need the result, send it a follow-up with dispatch_send, or tell the user it did not reply and ask them to look in that session."),
+        "notify.unanswered" => ("{to} 处理完了，但没有回信", "{to} finished without replying"),
         "stage.working" => ("处理中", "Working on it"),
         "stage.queued_after_turn" => ("已送达（排在本轮之后）", "Delivered, queued behind the current turn"),
         "stage.delivered_hook" => ("已送达（hook 递的）", "Delivered by the hook"),
