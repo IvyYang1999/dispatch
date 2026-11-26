@@ -784,6 +784,9 @@ pub enum Receipt {
     Queued,
     Started,
     Completed,
+    /// The turn it was taken in ended without finishing: someone stopped it (the user in
+    /// Codex, or by taking the thread back from a background run). Nobody is working on it.
+    Stopped,
 }
 
 /// What a rollout line says that following a message needs: a turn starting or ending, or
@@ -971,8 +974,8 @@ fn receipt_in(events: &[Event], marker: &str) -> Receipt {
         match e {
             Event::Started(turn) => active_turn = turn.as_deref(),
             Event::Ended { turn, complete } => {
-                if *complete && turn.is_some() && turn.as_deref() == message_turn {
-                    return Receipt::Completed;
+                if turn.is_some() && turn.as_deref() == message_turn {
+                    return if *complete { Receipt::Completed } else { Receipt::Stopped };
                 }
                 if turn.as_deref() == active_turn {
                     active_turn = None;
@@ -1074,6 +1077,24 @@ mod tests {
         assert_eq!(thread_open(&id), Some(false), "left the thread free");
         let mut srv = Server::private().unwrap();
         assert_eq!(queue_len(&mut srv, &id), 0);
+    }
+
+    /// A message whose turn was interrupted stood as "working on it" for good: only a turn that
+    /// completed counted as over.
+    #[test]
+    fn a_turn_that_was_stopped_is_not_still_being_worked_on() {
+        let line = |kind: &str, turn: &str| json!({ "type": "event_msg", "payload": { "type": kind, "turn_id": turn } }).to_string();
+        let said = |turn: &str, text: &str| json!({ "type": "event_msg", "payload": { "type": "user_message", "turn_id": turn, "message": text } }).to_string();
+        let log = |lines: &[String]| events_of(&lines.join("\n"));
+        // taken, its turn under way
+        assert_eq!(receipt_in(&log(&[line("task_started", "a"), said("a", "id ab12cd34")]), "ab12cd34"), Receipt::Started);
+        // its turn was interrupted
+        assert_eq!(receipt_in(&log(&[line("task_started", "a"), said("a", "id ab12cd34"), line("turn_aborted", "a")]), "ab12cd34"), Receipt::Stopped);
+        // and stays so whatever the thread does next
+        assert_eq!(receipt_in(&log(&[line("task_started", "a"), said("a", "id ab12cd34"), line("turn_aborted", "a"), line("task_started", "b"), said("b", "something else"), line("task_complete", "b")]), "ab12cd34"), Receipt::Stopped);
+        // another turn's interruption says nothing about this message
+        assert_eq!(receipt_in(&log(&[line("task_started", "a"), line("turn_aborted", "a"), line("task_started", "b"), said("b", "id ab12cd34")]), "ab12cd34"), Receipt::Started);
+        assert_eq!(receipt_in(&log(&[line("task_started", "a"), said("a", "id ab12cd34"), line("task_complete", "a")]), "ab12cd34"), Receipt::Completed);
     }
 
     #[test]

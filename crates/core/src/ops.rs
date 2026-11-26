@@ -744,7 +744,7 @@ fn stage_by_status(status: &str) -> (&'static str, &'static str) {
     }
 }
 
-const STAGE_KEYS: [&str; 26] = ["stage.wait_open_codex", "stage.woken", "stage.review_asked", "stage.review_no_app", "stage.review_shown", "stage.review_closed", "stage.review_declined", "stage.review_expired", "stage.held", "stage.held_there", "stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
+const STAGE_KEYS: [&str; 27] = ["stage.stopped", "stage.wait_open_codex", "stage.woken", "stage.review_asked", "stage.review_no_app", "stage.review_shown", "stage.review_closed", "stage.review_declined", "stage.review_expired", "stage.held", "stage.held_there", "stage.replied", "stage.finished", "stage.working", "stage.queued_after_turn", "stage.delivered_hook", "stage.delivered", "stage.queued_codex", "stage.failed", "stage.cancelled", "stage.queued", "stage.queued_until", "stage.wait_open", "stage.wait_turn_end", "stage.wait_speak", "stage.wait_codex", "stage.wait_peer"];
 
 /// Why a pending copy waits, from the recipient's state right now: the session is closed, busy
 /// (the hook hands it over when the turn ends), idle (its next turn), a Codex thread not on the
@@ -829,6 +829,9 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
     } else if queued_codex {
         Some(match crate::wake::codex_receipt(store, c, &runs) {
             crate::codex::Receipt::Completed => claude::Receipt::Completed { turn_id: String::new() },
+            // it arrived and its turn was cut short: not being worked on, and not a turn that
+            // ended by itself with nothing to say
+            crate::codex::Receipt::Stopped => return ("delivered".into(), "stage.stopped".into()),
             crate::codex::Receipt::Started => claude::Receipt::Started,
             crate::codex::Receipt::Queued => claude::Receipt::Queued,
             crate::codex::Receipt::NotFound => claude::Receipt::NotFound,

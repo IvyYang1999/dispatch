@@ -154,11 +154,19 @@ pub fn codex_receipt(store: &Store, l: &Letter, runs: &[Run]) -> crate::codex::R
     if noted("completed") {
         return Receipt::Completed;
     }
+    // a turn that was stopped does not start again: written down once, like one that finished
+    if noted("stopped") {
+        return Receipt::Stopped;
+    }
     let taken = noted("taken");
     match crate::codex::receipt(&l.to, &short_id(&l.id)) {
         Receipt::Completed => {
             let _ = store.append_run(&l.id, "receipt", "completed", "");
             Receipt::Completed
+        }
+        Receipt::Stopped => {
+            let _ = store.append_run(&l.id, "receipt", "stopped", "");
+            Receipt::Stopped
         }
         // taken once, and its log no longer shows it (the file is gone or was replaced): long over
         Receipt::NotFound if taken => Receipt::Completed,
@@ -317,6 +325,12 @@ mod tests {
         let mut done = queued.clone();
         done.push(run("receipt", "completed", 30));
         assert!(!codex_waiting(&s, &l, &done));
+        // one whose turn was stopped was taken too: it is not waiting to be opened for, and it
+        // stays stopped although the thread's log (none here) no longer shows it
+        let mut stopped = taken.clone();
+        stopped.push(run("receipt", "stopped", 20));
+        assert_eq!(codex_receipt(&s, &l, &stopped), crate::codex::Receipt::Stopped);
+        assert!(!codex_waiting(&s, &l, &stopped));
         assert!(s.runs(&l.id).iter().all(|r| r.action != "receipt"), "a lookup that finds nothing writes nothing");
         let _ = std::fs::remove_dir_all(dir);
     }
