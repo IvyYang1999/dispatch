@@ -129,7 +129,7 @@ pub fn for_agents(mut v: Value) -> Value {
     match lvl {
         "none" => {
             o.insert("name".into(), json!(name));
-            for k in ["about", "avatar", "app_name", "title", "project", "cwd", "cwd_short", "lately"] {
+            for k in ["about", "about_by", "roles", "avatar", "app_name", "title", "project", "cwd", "cwd_short", "lately"] {
                 o.remove(k);
             }
         }
@@ -178,7 +178,11 @@ pub fn context(s: &Session) -> Value {
         v["note"] = json!(crate::i18n::t("share.none_note"));
         return v;
     }
-    v["about"] = json!(contact.as_ref().and_then(|c| c.description.clone()));
+    let known = crate::about::of(s);
+    v["about"] = json!(known.about);
+    if !known.roles.is_empty() {
+        v["roles"] = json!(known.roles);
+    }
     v["project"] = json!(s.project.clone().or_else(|| s.cwd.as_deref().and_then(last_folder)));
     v["running"] = json!(s.running);
     if lvl == "basic" {
@@ -346,9 +350,13 @@ mod tests {
         assert!(v["reach"].get("mode").is_none(), "how it runs is not shared");
 
         set_level(id, None, "none").unwrap();
-        let v = for_agents(session_json(id));
+        let mut full = session_json(id);
+        full["about_by"] = json!("self");
+        full["roles"] = json!([{ "name": "周报", "about": "每周一跑" }]);
+        let v = for_agents(full);
         assert_eq!(v["name"], "日历", "its address-book name only");
         assert!(v.get("about").is_none() && v.get("project").is_none());
+        assert!(v.get("roles").is_none() && v.get("about_by").is_none(), "nor what it answers for");
 
         set_level(id, None, "asks").unwrap();
         let v = for_agents(session_json(id));

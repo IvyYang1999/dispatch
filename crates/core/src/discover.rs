@@ -554,15 +554,23 @@ pub fn reason(s: &Session, words: &[String], contact: Option<&crate::contacts::C
 /// `reason`, with what the session was asked lately as one more field. `asked` is only called
 /// when a word is in none of the other fields: reading a record costs more than they do.
 pub fn reason_with(s: &Session, words: &[String], contact: Option<&crate::contacts::Contact>, asked: &dyn Fn() -> String) -> Option<&'static str> {
+    reason_known(s, words, contact, &crate::about::Known::default(), asked)
+}
+
+/// `reason_with`, with what is known about the session beyond its address-book entry: the line
+/// it wrote about itself (or its machine sent), and the roles it answers for. A role's name
+/// counts as a name, its line as the line about the session.
+pub fn reason_known(s: &Session, words: &[String], contact: Option<&crate::contacts::Contact>, known: &crate::about::Known, asked: &dyn Fn() -> String) -> Option<&'static str> {
     const LABELS: [&str; 9] = ["id", "name", "about", "project", "cwd", "title", "asked", "kind", "host"];
     const ASKED: usize = 5;
     if words.is_empty() {
         return Some("all");
     }
     let low = |o: Option<&str>| o.map(str::to_lowercase).unwrap_or_default();
+    let (role_names, known_about) = known.text();
     let fields = [
-        format!("{}\n{}", low(s.name.as_deref()), low(contact.map(|c| c.name.as_str()))),
-        low(contact.and_then(|c| c.description.as_deref())),
+        format!("{}\n{}\n{}", low(s.name.as_deref()), low(contact.map(|c| c.name.as_str())), role_names),
+        format!("{}\n{}", low(contact.and_then(|c| c.description.as_deref())), known_about),
         low(s.project.as_deref()),
         low(s.cwd.as_deref()),
         low(s.title.as_deref()),
@@ -595,7 +603,8 @@ pub fn reason_with(s: &Session, words: &[String], contact: Option<&crate::contac
 /// The sessions every word of the query is found in, each with why, in the order given.
 pub fn matching(query: &str, sessions: Vec<Session>) -> Vec<(Session, &'static str)> {
     let words = words(query);
-    let book = crate::contacts::list();
+    let view = crate::about::View::load();
+    let book = view.contacts();
     let now = now_ms();
     let found: Vec<(Session, &'static str)> = sessions
         .into_iter()
@@ -609,7 +618,7 @@ pub fn matching(query: &str, sessions: Vec<Session>) -> Vec<(Session, &'static s
                 None if crate::lately::readable(&s, now) => crate::lately::asks(&s).join("\n"),
                 None => String::new(),
             };
-            reason_with(&s, &words, contact, &asked).map(|r| (s, r))
+            reason_known(&s, &words, contact, &view.of(&s), &asked).map(|r| (s, r))
         })
         .collect();
     // what was read of the records is written down, so the next search does not read it again
@@ -784,6 +793,24 @@ mod tests {
         p.project = Some("Trends Lab".into());
         p.cwd = None;
         assert_eq!(reason(&p, &w("trends lab"), None), Some("project"));
+    }
+
+    #[test]
+    fn a_session_is_found_by_what_it_says_it_is_for_and_by_a_role_it_answers_for() {
+        let s = session("0199bbbb-1111-4222-8333-444455556666", None, "/Users/y/developer/handoff", "安装某某");
+        let w = |q: &str| words(q);
+        let none = || String::new();
+        let nothing = crate::about::Known::default();
+        assert_eq!(reason_known(&s, &w("助理"), None, &nothing, &none), None, "its title and folder do not say so");
+        let known = crate::about::Known {
+            about: Some("负责 Handoff 的代码；不要找我发版".into()),
+            by: Some("self"),
+            roles: vec![crate::about::RoleLine { name: "handoff助理".into(), about: Some("每 30 分钟跑一次的例行任务".into()) }],
+        };
+        assert_eq!(reason_known(&s, &w("助理"), None, &known, &none), Some("name"), "a role's name counts as a name");
+        assert_eq!(reason_known(&s, &w("例行任务"), None, &known, &none), Some("about"));
+        assert_eq!(reason_known(&s, &w("发版 codex"), None, &known, &none), Some("about"), "its own line, with a kind word");
+        assert_eq!(reason_known(&s, &w("助理 claude"), None, &known, &none), None);
     }
 
     /// Codex's automatic approval reviewer writes a thread per check ("Guardian review"), with a

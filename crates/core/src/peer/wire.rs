@@ -124,6 +124,13 @@ pub struct RemoteSession {
     /// asking machine has no record to look in and would otherwise drop it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The line about it on its own machine (the address book's, else the one it wrote about
+    /// itself), unless it shares nothing but its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
+    /// What it answers for that has no session of its own (a scheduled task, a bot).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<crate::about::RoleLine>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

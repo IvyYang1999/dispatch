@@ -13,15 +13,16 @@ use serde_json::{json, Value};
 
 /// One session as the app shows it: names, where it runs, and how a message reaches it now.
 pub fn session_json(s: &Session) -> Value {
-    let mut v = session_json_with(s, hook::installed(), &crate::contacts::list());
+    let mut v = session_json_with(s, hook::installed(), &crate::about::View::load());
     v["group"] = json!(crate::projects::load().group_of(s));
     v
 }
 
-fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Contact]) -> Value {
+fn session_json_with(s: &Session, hook_on: bool, view: &crate::about::View) -> Value {
     let r = reach::decide(s, hook_on);
     let host_id = s.host.as_ref().map(|h| h.id.as_str());
-    let contact = contacts.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id);
+    let known = view.of(s);
+    let contact = view.contacts().iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id);
     json!({
         "contact": contact.map(|c| c.name.clone()),
         "avatar": match contact.and_then(|c| c.avatar.clone()) {
@@ -30,7 +31,12 @@ fn session_json_with(s: &Session, hook_on: bool, contacts: &[crate::contacts::Co
             None if s.harness == crate::model::Harness::Grok && s.host.is_none() => json!(crate::grok::look(&s.id)),
             None => Value::Null,
         },
-        "about": contact.and_then(|c| c.description.clone()),
+        // the address book's line, else the one the session wrote about itself (`self`), else
+        // what its own machine said (`machine`)
+        "about": known.about,
+        "about_by": known.by,
+        // what it answers for that has no session of its own
+        "roles": known.roles,
         "provisional": contact.map(|c| c.provisional).unwrap_or(false),
         "id": s.id,
         "short_id": s.short_id,
@@ -104,6 +110,17 @@ fn codex_caller(id: &str) -> Caller {
     Caller { id: id.to_string(), name, harness: crate::model::Harness::Codex, cwd: s.as_ref().and_then(|s| s.cwd.clone()), desktop: false }
 }
 
+/// What `whoami` tells a session nobody has described.
+const ABOUT_NOTE: &str = "Nothing says what this session is for, so a sender looking for who handles something cannot tell it is you. Unless the user would not want that shared, call dispatch_register with only `description` (command line: dispatch describe \"<line>\"): one line on which project or area you handle, what you can change, and what not to ask you for. No secrets and no personal details. Other agents and paired machines read it; the user can change it in Dispatch.";
+
+/// The caller as a session on this machine: enough to ask what is known about it.
+fn bare_caller(c: &Caller) -> Session {
+    let mut s = crate::peer::remote_target("", "", &c.id, Some(c.name.clone()), c.harness);
+    s.host = None;
+    s.cwd = c.cwd.clone();
+    s
+}
+
 /// Who is calling, as `dispatch_whoami` answers.
 pub fn whoami() -> Result<Value> {
     let me = crate::peer::me()?;
@@ -112,7 +129,13 @@ pub fn whoami() -> Result<Value> {
         Some(c) => {
             let contact = crate::contacts::for_session(&c.id, None).map(|c| c.name);
             let handle = contact.clone().unwrap_or_else(|| short_id(&c.id));
-            json!({ "session_id": c.id, "short_id": short_id(&c.id), "name": c.name, "contact": contact, "harness": c.harness.label(), "cwd": c.cwd, "desktop": c.desktop, "machine": machine, "address_elsewhere": format!("{}/{}", me.name, handle) })
+            let known = crate::about::of(&bare_caller(&c));
+            let mut v = json!({ "session_id": c.id, "short_id": short_id(&c.id), "name": c.name, "contact": contact, "about": known.about, "roles": known.roles, "harness": c.harness.label(), "cwd": c.cwd, "desktop": c.desktop, "machine": machine, "address_elsewhere": format!("{}/{}", me.name, handle) });
+            // nothing says what this session is for, and it shares more than its name: ask it once
+            if known.about.is_none() && crate::share::level(&c.id, None) != "none" {
+                v["note"] = json!(ABOUT_NOTE);
+            }
+            v
         }
         None => json!({ "session_id": null, "name": "unknown", "harness": null, "machine": machine }),
     })
@@ -128,7 +151,8 @@ pub fn caller_identity() -> (String, String) {
 
 pub fn sessions(running_only: bool) -> Value {
     let hook_on = hook::installed();
-    let contacts = crate::contacts::list();
+    let view = crate::about::View::load();
+    let contacts = view.contacts();
     // a named session is listed whether or not it is running: that is what the name is for
     let all = discover::sessions();
     let book = crate::projects::load();
@@ -136,7 +160,7 @@ pub fn sessions(running_only: bool) -> Value {
         .iter()
         .filter(|s| !running_only || s.running || contacts.iter().any(|c| c.session_id.eq_ignore_ascii_case(&s.id)))
         .map(|s| {
-            let mut v = session_json_with(s, hook_on, &contacts);
+            let mut v = session_json_with(s, hook_on, &view);
             v["group"] = json!(book.group_of(s));
             v
         })
@@ -164,31 +188,75 @@ pub fn contacts() -> Value {
             json!({ "name": c.name, "session_id": c.session_id, "short_id": short_id(&c.session_id), "harness": c.harness.label(), "host": c.host, "cwd": c.cwd, "set_by": c.set_by, "updated": c.updated, "about": c.description, "provisional": c.provisional, "running": live.map(|s| s.running).unwrap_or(false), "address": match &c.host { Some(h) => format!("{}/{}", h.name, c.name), None => c.name.clone() } })
         })
         .collect();
-    json!({ "count": rows.len(), "contacts": rows })
+    let roles: Vec<Value> = crate::about::roles()
+        .into_iter()
+        .map(|r| {
+            let owner = all.iter().find(|s| s.id.eq_ignore_ascii_case(&r.session_id) && s.host.as_ref().map(|h| &h.id) == r.host.as_ref().map(|h| &h.id));
+            json!({ "name": r.name, "about": r.about, "session_id": r.session_id, "short_id": short_id(&r.session_id), "session_name": owner.map(|s| s.display_name()), "harness": r.harness.label(), "host": r.host, "set_by": r.set_by, "updated": r.updated })
+        })
+        .collect();
+    json!({ "count": rows.len(), "contacts": rows, "roles": roles })
 }
 
 /// Give a session a stable name (and a line on what it is for): the one `session` names, else
 /// the calling session.
 pub fn register(name: &str, session: Option<&str>, by: &str, description: Option<&str>) -> Result<Value> {
-    let target = match session.map(str::trim).filter(|s| !s.is_empty()) {
-        Some(q) => send::resolve(q)?,
-        None => {
-            let i = caller().ok_or_else(|| anyhow!("no session given and the caller is not a Claude Code or Codex session; pass the session's id or name"))?;
-            discover::lookup(&i.id).unwrap_or_else(|| {
-                let mut s = crate::peer::remote_target("", "", &i.id, Some(i.name.clone()), i.harness);
-                s.host = None;
-                s.cwd = i.cwd.clone();
-                s
-            })
-        }
-    };
+    let target = named_or_caller(session)?;
     let c = crate::contacts::set(name, &target, by, description, false)?;
     Ok(json!({ "name": c.name, "about": c.description, "session_id": c.session_id, "short_id": short_id(&c.session_id), "harness": c.harness.label(), "host": c.host, "address": match &c.host { Some(h) => format!("{}/{}", h.name, c.name), None => c.name.clone() }, "text": t("ops.registered").replace("{name}", &c.name).replace("{who}", &target.display_name()) }))
 }
 
+/// The session `session` names, else the calling session.
+fn named_or_caller(session: Option<&str>) -> Result<Session> {
+    match session.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(q) => send::resolve(q),
+        None => {
+            let i = caller().ok_or_else(|| anyhow!("no session given and the caller is not a Claude Code or Codex session; pass the session's id or name"))?;
+            Ok(discover::lookup(&i.id).unwrap_or_else(|| bare_caller(&i)))
+        }
+    }
+}
+
+/// Say what a session is for without naming it: the one `session` names, else the calling
+/// session. The line is the session's own; what the user wrote in the address book stays what
+/// others read, and a line the session gave when it named itself is replaced.
+pub fn describe(session: Option<&str>, text: &str) -> Result<Value> {
+    let target = named_or_caller(session)?;
+    let host = target.host.as_ref().map(|h| h.id.as_str());
+    let contact = crate::contacts::for_session(&target.id, host);
+    match &contact {
+        // it named itself and said what it does then: this is the same line, said again
+        Some(c) if !c.provisional && matches!(c.set_by.as_str(), "self" | "mcp") && c.description.is_some() => {
+            crate::contacts::set(&c.name, &target, &c.set_by, Some(text), false)?;
+        }
+        _ if host.is_some() => return Err(anyhow!("{}", t("ops.describe_remote"))),
+        _ => {}
+    }
+    if host.is_none() {
+        crate::about::set_own(&target.id, text)?;
+    }
+    let known = crate::about::of(&target);
+    let text = match known.by {
+        Some("book") if known.about.as_deref().map(str::trim) != Some(text.trim()) => t("ops.described_book").replace("{line}", known.about.as_deref().unwrap_or("")),
+        _ => t("ops.described").replace("{who}", &target.display_name()),
+    };
+    Ok(json!({ "session_id": target.id, "short_id": short_id(&target.id), "about": known.about, "about_by": known.by, "text": text }))
+}
+
+/// Name something a session answers for that has no session of its own (a scheduled task, a
+/// bot that only runs now and then): the one `session` names, else the calling session.
+pub fn register_role(name: &str, session: Option<&str>, by: &str, about: Option<&str>) -> Result<Value> {
+    let target = named_or_caller(session)?;
+    let r = crate::about::set_role(name, &target, by, about)?;
+    Ok(json!({ "role": r.name, "about": r.about, "session_id": r.session_id, "short_id": short_id(&r.session_id), "session_name": target.display_name(), "harness": r.harness.label(), "host": r.host, "address": match &r.host { Some(h) => format!("{}/{}", h.name, r.name), None => r.name.clone() }, "text": t("ops.role_registered").replace("{name}", &r.name).replace("{who}", &target.display_name()) }))
+}
+
 pub fn unregister(name: &str) -> Result<Value> {
-    match crate::contacts::remove(name)? {
-        Some(c) => Ok(json!({ "removed": c.name })),
+    if let Some(c) = crate::contacts::remove(name)? {
+        return Ok(json!({ "removed": c.name }));
+    }
+    match crate::about::remove_role(name)? {
+        Some(r) => Ok(json!({ "removed": r.name, "role": true })),
         None => Err(anyhow!("{}", t("ops.no_contact").replace("{name}", name))),
     }
 }
@@ -206,7 +274,16 @@ pub fn find_sessions(query: &str) -> Vec<(Session, &'static str)> {
     };
     // nothing to look for: the recent ones, as the session list shows them
     let pool = if q.trim().is_empty() { discover::sessions() } else { discover::anywhere(&q, host.as_ref()) };
-    let pool: Vec<Session> = pool.into_iter().filter(|s| host.as_ref().map(|p| s.host.as_ref().map(|h| h.id == p.id).unwrap_or(false)).unwrap_or(true)).collect();
+    let mut pool: Vec<Session> = pool.into_iter().filter(|s| host.as_ref().map(|p| s.host.as_ref().map(|h| h.id == p.id).unwrap_or(false)).unwrap_or(true)).collect();
+    // a role named here for a session over there: its machine does not know the role, so it
+    // did not send the session for these words
+    for r in crate::about::roles() {
+        let Some(h) = &r.host else { continue };
+        if host.as_ref().map(|p| p.id != h.id).unwrap_or(false) || pool.iter().any(|s| s.id.eq_ignore_ascii_case(&r.session_id) && s.host.as_ref().map(|x| x.id == h.id).unwrap_or(false)) {
+            continue;
+        }
+        pool.push(crate::peer::remote_target(&h.id, &h.name, &r.session_id, None, r.harness));
+    }
     let book = crate::contacts::list();
     let ql = q.trim().to_lowercase();
     let exact = |s: &Session| {
@@ -224,35 +301,80 @@ pub fn find_sessions(query: &str) -> Vec<(Session, &'static str)> {
 /// What `find_sessions` finds, as candidates for an agent: at most `FIND_MAX`, with how many matched.
 pub fn find(query: &str) -> Value {
     let hook_on = hook::installed();
-    let book = crate::contacts::list();
+    let book = crate::about::View::load();
     let all = find_sessions(query);
     let count = all.len();
     let out: Vec<Value> = all.iter().take(FIND_MAX).map(|(s, r)| with_reason(s, r, hook_on, &book)).collect();
-    let mut note = "Send only when exactly one candidate is the right one; otherwise ask the user or refine the query. Sessions of any age are searched; every word of the query must match. A session is also found by what it was asked lately (reason `asked`), so words for the work itself are worth trying when a name is not known.".to_string();
+    let mut note = "Send only when exactly one candidate is the right one; otherwise ask the user or refine the query. Sessions of any age are searched; every word of the query must match. A session is also found by what it was asked lately (reason `asked`), so words for the work itself are worth trying when a name is not known. `about` says what a candidate is for and `active` how long ago it last did anything: one that has not been active for weeks has probably lost its context. `roles` are things a candidate answers for that have no session of their own (a scheduled task, a bot): write to that session about them.".to_string();
     if count > out.len() {
         note = format!("{count} sessions matched; these are the {} most relevant. Add a word to narrow it down. {note}", out.len());
     }
-    json!({ "query": query, "count": count, "candidates": out, "note": note })
+    let mut v = json!({ "query": query, "count": count, "candidates": out, "note": note });
+    if count == 0 && !query.trim().is_empty() {
+        let recent: Vec<Value> = recent_instead(query).iter().map(|s| with_reason_only(s, "recent", hook_on, &book)).collect();
+        v["note"] = json!(format!("Nothing is called or described as \"{}\": no session, address-book name or role matches every word. `recent` lists the sessions most recently active{}; they are NOT matches, so do not send to one because it looks closest. Try other words (the project, what the work is about), or ask the user who handles this.", query.trim(), if recent.is_empty() { " (none)" } else { "" }));
+        v["recent"] = json!(recent);
+    }
+    v
+}
+
+/// At most this many recent sessions stand in when a search finds nothing.
+const RECENT_MAX: usize = 5;
+
+/// When nothing matches: the sessions most recently active (on the machine the query named,
+/// when it named one), those filed with the caller first, the caller itself left out.
+pub fn recent_instead(query: &str) -> Vec<Session> {
+    let host = crate::peer::split_address(query.trim()).ok().flatten().map(|(p, _)| p);
+    let me = caller().map(|c| c.id);
+    let projects = crate::projects::load();
+    let all = discover::sessions();
+    recent_of(all, host.as_ref().map(|p| p.id.as_str()), me.as_deref(), &|s| projects.group_of(s).id)
+}
+
+/// `recent_instead`, from what it looks at: every session, the machine asked for, the caller,
+/// and where each session is filed.
+fn recent_of(all: Vec<Session>, host: Option<&str>, me: Option<&str>, group: &dyn Fn(&Session) -> String) -> Vec<Session> {
+    let is_me = |s: &Session| s.host.is_none() && me.map(|id| s.id.eq_ignore_ascii_case(id)).unwrap_or(false);
+    let mine = all.iter().find(|s| is_me(s)).map(group);
+    let mut list: Vec<Session> = all.into_iter().filter(|s| host.map(|p| s.host.as_ref().map(|h| h.id == p).unwrap_or(false)).unwrap_or(true)).filter(|s| !is_me(s)).collect();
+    let with_me = |s: &Session| mine.as_ref().map(|g| &group(s) == g).unwrap_or(false);
+    list.sort_by(|a, b| with_me(b).cmp(&with_me(a)).then(b.running.cmp(&a.running)).then(b.last_active.cmp(&a.last_active)));
+    // bots that are always on would fill the list: two of a kind first, then whoever is next
+    let mut taken: Vec<usize> = vec![];
+    for (i, s) in list.iter().enumerate() {
+        if taken.len() < RECENT_MAX && taken.iter().filter(|j| list[**j].harness == s.harness).count() < 2 {
+            taken.push(i);
+        }
+    }
+    for i in 0..list.len() {
+        if taken.len() < RECENT_MAX && !taken.contains(&i) {
+            taken.push(i);
+        }
+    }
+    taken.sort();
+    taken.into_iter().map(|i| list[i].clone()).collect()
 }
 
 /// Every session this machine has records of or a paired machine finds (any age), that matches.
 pub fn search(query: &str) -> Value {
     let hook_on = hook::installed();
-    let book = crate::contacts::list();
+    let book = crate::about::View::load();
     // what each was asked lately, for the first screenful: enough to tell candidates apart
     let out: Vec<Value> = find_sessions(query).iter().enumerate().map(|(i, (s, r))| if i < FIND_MAX { with_reason(s, r, hook_on, &book) } else { with_reason_only(s, r, hook_on, &book) }).collect();
     json!({ "query": query, "count": out.len(), "sessions": out })
 }
 
-fn with_reason_only(s: &Session, reason: &str, hook_on: bool, book: &[crate::contacts::Contact]) -> Value {
+fn with_reason_only(s: &Session, reason: &str, hook_on: bool, book: &crate::about::View) -> Value {
     let mut v = session_json_with(s, hook_on, book);
     v["reason"] = json!(reason);
+    // how long ago it last did anything, in words: a number of milliseconds does not stand out
+    v["active"] = json!(crate::about::active_text(s.running, s.last_active, crate::model::now_ms()));
     v
 }
 
 /// A candidate: why it matched, and the last things it was asked (a session here with a
 /// recent record; what an agent sees of them is cut down by `share::for_agents`).
-fn with_reason(s: &Session, reason: &str, hook_on: bool, book: &[crate::contacts::Contact]) -> Value {
+fn with_reason(s: &Session, reason: &str, hook_on: bool, book: &crate::about::View) -> Value {
     let mut v = with_reason_only(s, reason, hook_on, book);
     if crate::lately::readable(s, crate::model::now_ms()) {
         let lines = crate::lately::shown(s);
@@ -1059,7 +1181,7 @@ pub fn threads(store: &Store, limit: usize) -> Result<Value> {
 pub fn session_page(store: &Store, query: &str) -> Result<Value> {
     let s = send::resolve(query)?;
     let hook_on = hook::installed();
-    let book = crate::contacts::list();
+    let book = crate::about::View::load();
     let mut session = session_json_with(&s, hook_on, &book);
     session["group"] = json!(crate::projects::load().group_of(&s));
     let all = feed(store, 500)?;
@@ -1312,6 +1434,63 @@ mod tests {
         // once, and never a notice about a notice
         assert!(notify_unanswered_after(&s, 0).unwrap().is_empty());
         assert!(!notice_due(&s, &delivered, 0).unwrap() && !notice_due(&s, &notice, 0).unwrap());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn when_nothing_matches_the_recent_sessions_stand_in_and_the_callers_project_comes_first() {
+        let s = |id: &str, cwd: &str, at: i64, running: bool, host: Option<&str>| Session {
+            harness: crate::model::Harness::Codex, id: id.into(), short_id: short_id(id), name: None, cwd: Some(cwd.into()), title: None, last_active: at, running,
+            desktop: false, host_session_id: None, status: None, transcript: None, host: host.map(|h| crate::model::Host { id: h.into(), name: h.into() }), project: None, app_name: None,
+        };
+        let all = vec![
+            s("me", "/w/handoff", 90, true, None),
+            s("old-same-project", "/w/handoff", 10, false, None),
+            s("running-elsewhere", "/w/other", 50, true, None),
+            s("newer-elsewhere", "/w/other", 80, false, None),
+            s("over-there", "/w/handoff", 70, false, Some("m2")),
+            s("a", "/w/x", 5, false, None),
+            s("b", "/w/x", 4, false, None),
+            s("c", "/w/x", 3, false, None),
+        ];
+        let group = |s: &Session| s.cwd.clone().unwrap_or_default();
+        let ids = |v: Vec<Session>| v.into_iter().map(|s| s.id).collect::<Vec<_>>();
+        // the caller is left out; its project first, then running, then the newest; five at most
+        assert_eq!(ids(recent_of(all.clone(), None, Some("me"), &group)), ["over-there", "old-same-project", "running-elsewhere", "newer-elsewhere", "a"]);
+        // a machine was named: only that machine's
+        assert_eq!(ids(recent_of(all.clone(), Some("m2"), Some("me"), &group)), ["over-there"]);
+        // nobody is calling (a person at a terminal): running first, then the newest
+        assert_eq!(ids(recent_of(all.clone(), None, None, &group))[..3], ["me", "running-elsewhere", "newer-elsewhere"]);
+        // bots that are always on do not fill the list: two of a kind, then the others
+        let mut mixed: Vec<Session> = (0..6).map(|i| { let mut b = s(&format!("bot{i}"), "/bots", 1000 - i, true, None); b.harness = crate::model::Harness::Grok; b }).collect();
+        mixed.extend(all);
+        assert_eq!(ids(recent_of(mixed, None, None, &group)), ["bot0", "bot1", "bot2", "me", "running-elsewhere"], "two bots, two threads, then the next in line; in the list's order");
+    }
+
+    #[test]
+    fn a_session_is_described_without_being_named_and_the_users_line_stays() {
+        let dir = std::env::temp_dir().join(format!("dispatch-describe-{}", uuid::Uuid::new_v4()));
+        store::set_thread_root(Some(dir.clone()));
+        let id = "5e5e5e5e-1111-4222-8333-444455556666";
+        let v = describe(Some(id), "负责 Handoff 的代码，不要找我发版").unwrap();
+        assert_eq!(v["about"], "负责 Handoff 的代码，不要找我发版");
+        assert_eq!(v["about_by"], "self");
+        assert!(crate::contacts::list().is_empty(), "describing is not naming");
+        // it named itself with a line: describing again replaces that line
+        register("Handoff dev", Some(id), "self", Some("旧的一句")).unwrap();
+        let v = describe(Some(id), "新的一句").unwrap();
+        assert_eq!((v["about"].as_str(), v["about_by"].as_str()), (Some("新的一句"), Some("book")));
+        // the user wrote the line: it stays what others read, and the answer says so
+        register("Handoff dev", Some(id), "app", Some("用户写的")).unwrap();
+        let v = describe(Some(id), "会话又写了一句").unwrap();
+        assert_eq!(v["about"], "用户写的");
+        assert!(v["text"].as_str().unwrap().contains("用户写的"));
+        // a role beside the name: both are removed by name
+        register_role("handoff助理", Some(id), "self", Some("例行任务")).unwrap();
+        assert_eq!(contacts()["roles"][0]["name"], "handoff助理");
+        assert_eq!(unregister("handoff助理").unwrap()["role"], true);
+        assert!(unregister("handoff助理").is_err());
+        store::set_thread_root(None);
         let _ = std::fs::remove_dir_all(dir);
     }
 
