@@ -364,6 +364,22 @@ fn codex_home() -> PathBuf {
     std::env::var_os("CODEX_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home_dir().join(".codex"))
 }
 
+/// Whether the Codex desktop app is running on this machine. A thread nobody has loaded is
+/// then opened there, where the user sees it and can type in it, rather than run by a Codex
+/// of our own that they cannot see and that keeps them out of the thread. Told on macOS only;
+/// elsewhere the answer is no, and such a thread is run in the background as before.
+pub fn desktop_running() -> bool {
+    desktop_among(&crate::discover::ps_commands())
+}
+
+/// `desktop_running`, from every process's command line. The app's own program is the one
+/// directly in `Codex.app/Contents/MacOS` (whatever it is called); its helpers live in their
+/// own bundles further down, and the `codex` the app carries in `Resources` is the command
+/// line, which is what our own background runs start.
+fn desktop_among(commands: &str) -> bool {
+    cfg!(target_os = "macos") && commands.lines().any(|l| l.contains("/Codex.app/Contents/MacOS/"))
+}
+
 /// Whether some Codex process (the app, a terminal, the daemon) has this thread open now.
 /// Every Codex process that loads a thread holds a lock on `thread-writer-locks/<id>.lock`
 /// for as long as it has it, so that no two of them write one thread. The probe takes Codex's
@@ -1383,6 +1399,20 @@ fn parse_traits(head: &str, tail: &str) -> Traits {
 #[cfg(test)]
 mod traits_tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_desktop_app_is_told_from_its_helpers_and_from_the_command_line() {
+        // the app itself, whatever its program is called
+        assert!(desktop_among("/sbin/launchd\n/Applications/Codex.app/Contents/MacOS/ChatGPT\n"));
+        assert!(desktop_among("/Users/y/Applications/Codex.app/Contents/MacOS/Codex --flag"));
+        // the command line the app carries, which a background run of our own starts
+        assert!(!desktop_among("/Applications/Codex.app/Contents/Resources/codex app-server --listen stdio://"));
+        // a helper left behind without the app, a terminal Codex, another app
+        assert!(!desktop_among("/Applications/Codex.app/Contents/Frameworks/Codex Helper (Renderer).app/Contents/MacOS/Codex Helper (Renderer) --type=renderer"));
+        assert!(!desktop_among("/opt/homebrew/bin/codex resume 019a0000-1111-7222-8333-444455556666\n/Applications/Claude.app/Contents/MacOS/Claude"));
+        assert!(!desktop_among(""));
+    }
 
     #[test]
     fn the_latest_turn_says_the_policy() {

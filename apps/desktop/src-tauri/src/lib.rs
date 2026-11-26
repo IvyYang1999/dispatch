@@ -1495,9 +1495,11 @@ fn start_wake_watcher(app: AppHandle) {
                 if let Ok(mut c) = app.state::<Waits>().current.lock() {
                     *c = ids.clone();
                 }
-                // a Codex thread nobody has open: run it in the background, no window, so whether
-                // someone is typing does not matter
-                if mode == "auto" {
+                // a Codex thread nobody has open: with the Codex app running it is opened there,
+                // further down, where the user sees it and can type in it. Only when the Codex app
+                // is not running is it run in the background, no window: nobody is locked out then,
+                // and whether someone is typing does not matter
+                if mode == "auto" && list.iter().any(|w| w["session"]["harness"] == "Codex") && !dispatch_core::codex::desktop_running() {
                     for w in &list {
                         let s = &w["session"];
                         let (Some(sid), Some("Codex")) = (s["id"].as_str(), s["harness"].as_str()) else { continue };

@@ -158,7 +158,7 @@ fn parse_head(text: &str) -> (Option<String>, Option<String>) {
 
 /// Every process's command line, one per line.
 #[cfg(unix)]
-fn ps_commands() -> String {
+pub(crate) fn ps_commands() -> String {
     std::process::Command::new("ps")
         .args(["-axo", "command"])
         .output()
@@ -167,7 +167,7 @@ fn ps_commands() -> String {
 }
 
 #[cfg(windows)]
-fn ps_commands() -> String {
+pub(crate) fn ps_commands() -> String {
     std::process::Command::new("powershell")
         .args(["-NoProfile", "-Command", "Get-CimInstance Win32_Process | ForEach-Object { $_.CommandLine }"])
         .output()
