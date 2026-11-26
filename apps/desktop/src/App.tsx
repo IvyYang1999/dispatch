@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react'
 import { listen } from '@tauri-apps/api/event'
-import { api, type Group, type Kind, type Look, type MergeSuggestion, type UpdateStatus, type WaitItem, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
+import { api, type BackgroundList, type Group, type Kind, type Look, type MergeSuggestion, type UpdateStatus, type WaitItem, type OpenResult, type Party, type PeerOverview, type Session, type SessionPageData, type SetupStatus, type Thread, type UpdateCheck } from './api'
 import { loadLang, setLang, t, useLang, type Lang } from './i18n'
 
 type Screen = 'feed' | 'agents' | 'compose' | 'settings' | 'session'
@@ -557,6 +557,81 @@ function NeedsYou({ threads, onPick, act }: { threads: Thread[]; onPick: (key: s
   )
 }
 
+/** What Dispatch does with a Codex thread on the user's behalf, and the one button that changes
+ *  it: a thread it is running in the background can be handed back (its turn stops and the
+ *  thread is free to type in or archive in Codex), and one handed back is left alone until the
+ *  user lets Dispatch run it again. */
+function useBackground() {
+  const [bg, setBg] = useState<BackgroundList>({ running: [], handed: [] })
+  const [busy, setBusy] = useState<string | null>(null)
+  const [said, setSaid] = useState<string | null>(null)
+  const load = useCallback(() => api.backgroundList().then(setBg).catch(() => {}), [])
+  useEffect(() => {
+    load()
+    const h = setInterval(load, 5000)
+    const un = listen('dispatch:changed', () => load())
+    return () => {
+      clearInterval(h)
+      un.then((f) => f())
+    }
+  }, [load])
+  const handBack = async (id: string) => {
+    setBusy(id)
+    try {
+      setSaid((await api.handBack(id)).text)
+    } catch (e) {
+      setSaid(String(e))
+    }
+    setBusy(null)
+    load()
+  }
+  const resume = async (id: string) => {
+    try {
+      await api.handBackUndo(id)
+      setSaid(null)
+    } catch (e) {
+      setSaid(String(e))
+    }
+    load()
+  }
+  return { bg, busy, said, handBack, resume }
+}
+
+function BackgroundRuns() {
+  useLang()
+  const { bg, busy, said, handBack, resume } = useBackground()
+  if (bg.running.length === 0 && bg.handed.length === 0 && !said) return null
+  return (
+    <div className="need need--bg">
+      {bg.running.length > 0 && <div className="need__head">{t('bg.running', { n: bg.running.length })}</div>}
+      {bg.running.map((r) => (
+        <div key={r.id} className="need__row" data-kind="queued">
+          <span className="need__dot" />
+          <div className="need__main">
+            <span className="need__title">{plain(r.name)}</span>
+            <span className="need__sub">{t('bg.runningSub', { at: r.since.slice(11, 16) })}</span>
+          </div>
+          <button className="btn btn--primary btn--small" disabled={busy === r.id || r.stopping} onClick={() => handBack(r.id)}>
+            {busy === r.id || r.stopping ? t('bg.stopping') : t('bg.handBack')}
+          </button>
+        </div>
+      ))}
+      {bg.handed.length > 0 && <div className="need__head">{t('bg.handed', { n: bg.handed.length })}</div>}
+      {bg.handed.map((h) => (
+        <div key={h.id} className="need__row">
+          <span className="need__dot" />
+          <div className="need__main">
+            <span className="need__title">{plain(h.name)}</span>
+            <span className="need__sub">{t('bg.handedSub')}</span>
+          </div>
+          <button className="btn btn--small" onClick={() => resume(h.id)}>{t('bg.resume')}</button>
+        </div>
+      ))}
+      {said && <div className="need__said">{said}</div>}
+    </div>
+  )
+}
+
 const OLDER = 'older'
 const CROSS = 'cross'
 /** A conversation's time on this machine's clock, in ms. */
@@ -688,6 +763,7 @@ function Feed({ onCompose, pick, sessions, order }: { onCompose: (to?: string) =
         </span>
       </header>
       <NeedsYou threads={items} onPick={(key) => { setFilter('all'); setSelected(key) }} act={act} />
+      <BackgroundRuns />
       <div className="split">
         <div className="list tlist">
           <FirstRun />
@@ -1117,6 +1193,9 @@ function SessionPage({ id, groups, onFiled, onCompose, onFeedPick, onBack }: { i
     return () => clearInterval(h)
   }, [load])
   const s = page?.session
+  const background = useBackground()
+  const bgRunning = s && !s.host ? background.bg.running.find((r) => r.id === s.id.toLowerCase()) : undefined
+  const bgHanded = s && !s.host ? background.bg.handed.find((h) => h.id === s.id.toLowerCase()) : undefined
   const edit = () => s && setEditing({ address: addressOf(s), name: s.app_name ?? s.name, contact: s.provisional ? null : s.contact, about: s.about, avatar: s.avatar })
   const reach = s ? plainReach(s) : null
   const ties = page ? tiesOf(page) : []
@@ -1176,6 +1255,21 @@ function SessionPage({ id, groups, onFiled, onCompose, onFeedPick, onBack }: { i
                 <div className="sp__state">{reach.title}</div>
                 <p className="sp__detail">{reach.detail}</p>
                 {reach.todo && <p className="sp__todo">{reach.todo}</p>}
+                {bgRunning && (
+                  <p className="sp__todo sp__bg">
+                    <span>{t('sp.bgRunning')}</span>
+                    <button className="btn btn--primary btn--small" disabled={background.busy === bgRunning.id || bgRunning.stopping} onClick={() => background.handBack(bgRunning.id)}>
+                      {background.busy === bgRunning.id || bgRunning.stopping ? t('bg.stopping') : t('bg.handBack')}
+                    </button>
+                  </p>
+                )}
+                {!bgRunning && bgHanded && (
+                  <p className="sp__todo sp__bg">
+                    <span>{t('sp.bgHanded')}</span>
+                    <button className="btn btn--small" onClick={() => background.resume(bgHanded.id)}>{t('bg.resume')}</button>
+                  </p>
+                )}
+                {background.said && (bgRunning || bgHanded) && <p className="sp__detail">{background.said}</p>}
               </div>
               <div className="sp__reachside">
                 <span className="sp__seen">{presence(s)}{s.last_active ? ` · ${t('sp.lastActive')} ${localStamp(new Date(s.last_active).toISOString())}` : ''}</span>

@@ -420,8 +420,10 @@ pub struct RunOutcome {
     pub turns: u32,
     /// Requests for approval or input declined, nobody being there to answer them.
     pub declined: u32,
-    /// Still running when the time was up: stopped.
+    /// Still running when the time was up, or when the user took the thread back: stopped.
     pub interrupted: bool,
+    /// The user took the thread back while we had it: we left at once.
+    pub handed_back: bool,
 }
 
 /// Why something was declined, as the agent reads it.
@@ -450,14 +452,36 @@ fn unattended_answer(method: &str) -> Option<Value> {
 /// carries on and says what it could not do. Only for a thread `thread_open` says nobody has:
 /// two processes writing one thread is what Codex's lock is there to stop.
 pub fn run_unopened(thread_id: &str, max: Duration) -> Result<RunOutcome> {
+    run_unopened_until(thread_id, max, &std::sync::atomic::AtomicBool::new(false))
+}
+
+/// `run_unopened`, until `stop` is set: the user wants the thread back. The turn under way is
+/// interrupted and the server leaves at once, which frees the thread's lock, so the user can
+/// type in it or archive it in Codex. What is still in the thread's queue stays there.
+pub fn run_unopened_until(thread_id: &str, max: Duration, stop: &std::sync::atomic::AtomicBool) -> Result<RunOutcome> {
+    use std::sync::atomic::Ordering;
+    let mut out = RunOutcome::default();
+    if stop.load(Ordering::Relaxed) {
+        out.handed_back = true;
+        return Ok(out);
+    }
     let mut srv = Server::private()?;
     let deadline = Instant::now() + max;
     srv.call("thread/resume", json!({ "threadId": thread_id, "excludeTurns": true }), Duration::from_secs(60))?;
-    let mut out = RunOutcome::default();
     let mut turn: Option<String> = None;
     // a resumed thread starts its queue at once; one whose queue someone else emptied meanwhile has nothing to do
     let mut quiet_since = Instant::now();
+    let mut asked_queue = Instant::now();
     loop {
+        if stop.load(Ordering::Relaxed) {
+            if let Some(t) = turn.take() {
+                let _ = srv.call("turn/interrupt", json!({ "threadId": thread_id, "turnId": t }), Duration::from_secs(10));
+                out.interrupted = true;
+            }
+            out.handed_back = true;
+            // leaving drops the server: it closes and the thread's lock goes with it
+            return Ok(out);
+        }
         if Instant::now() >= deadline {
             if let Some(t) = turn.take() {
                 let _ = srv.call("turn/interrupt", json!({ "threadId": thread_id, "turnId": t }), Duration::from_secs(10));
@@ -465,9 +489,13 @@ pub fn run_unopened(thread_id: &str, max: Duration) -> Result<RunOutcome> {
             }
             return Ok(out);
         }
-        let Some(msg) = srv.next(Duration::from_secs(5))? else {
-            if turn.is_none() && quiet_since.elapsed() >= Duration::from_secs(20) && queue_len(&mut srv, thread_id) == 0 {
-                return Ok(out);
+        // a short wait, so that being told to stop is noticed within a second
+        let Some(msg) = srv.next(Duration::from_secs(1))? else {
+            if turn.is_none() && quiet_since.elapsed() >= Duration::from_secs(20) && asked_queue.elapsed() >= Duration::from_secs(5) {
+                asked_queue = Instant::now();
+                if queue_len(&mut srv, thread_id) == 0 {
+                    return Ok(out);
+                }
             }
             continue;
         };
@@ -967,6 +995,38 @@ mod tests {
         assert_eq!(thread_open(&id), Some(false), "left the thread free");
         let mut srv = Server::private().unwrap();
         assert_eq!(queue_len(&mut srv, &id), 0);
+    }
+
+    /// Against a real Codex: the user takes back a thread the app is running. `CODEX_HOME` with
+    /// a thread nobody has open and two messages in its queue, the first one long enough to
+    /// still be running after a few seconds; the thread's id in `DISPATCH_PROBE_THREAD`.
+    #[test]
+    #[ignore]
+    fn probe_hand_back() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let id = std::env::var("DISPATCH_PROBE_THREAD").unwrap();
+        assert_eq!(thread_open(&id), Some(false));
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let (stop2, id2) = (stop.clone(), id.clone());
+        let run = std::thread::spawn(move || run_unopened_until(&id2, Duration::from_secs(300), &stop2).unwrap());
+        // let it take the first message and get going; while it runs, the thread is not free
+        let began = Instant::now();
+        while thread_open(&id) != Some(true) && began.elapsed() < Duration::from_secs(60) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        assert_eq!(thread_open(&id), Some(true), "the background run holds the thread");
+        std::thread::sleep(Duration::from_secs(8));
+        let asked = Instant::now();
+        stop.store(true, Ordering::Relaxed);
+        let out = run.join().unwrap();
+        eprintln!("{out:?}, left {:.1}s after being told", asked.elapsed().as_secs_f32());
+        assert!(out.handed_back && out.turns >= 1);
+        assert!(asked.elapsed() < Duration::from_secs(20), "it leaves soon after being told");
+        assert_eq!(thread_open(&id), Some(false), "the thread is free: the user can type in it or archive it");
+        let mut srv = Server::private().unwrap();
+        let left = queue_len(&mut srv, &id);
+        eprintln!("still in the thread's queue: {left}");
+        assert!(left >= 1, "the message that had not started is still waiting");
     }
 
     #[test]

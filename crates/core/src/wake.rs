@@ -8,6 +8,11 @@
 //! when it cannot: the setting says remind only, opening failed, or the session was opened and
 //! still has not taken the message.
 //!
+//! The user can take a Codex thread back from the app while it runs in the background, or keep
+//! the app off a session altogether (`set_handed_back`): the run stops at once and frees the
+//! thread, and from then on the app only reminds about messages for that session, until the user
+//! says it may open it again.
+//!
 //! Neither ever starts a second copy of a session: a Claude Code session counts only when no
 //! process runs it, and a Codex thread that some Codex holds (its lock says so) is left to it:
 //! it takes the message when its turn ends.
@@ -46,6 +51,32 @@ pub fn set_mode(mode: &str) -> anyhow::Result<&'static str> {
     };
     crate::settings::set("wake", json!(m))?;
     Ok(m)
+}
+
+/// The sessions the user took back from the app (`wake_handed_back` in the settings): the app
+/// does not run them in the background or open them by itself until the user says so again.
+/// Their messages stay where they are and the user is reminded of them.
+pub fn handed_back_list() -> Vec<String> {
+    crate::settings::get("wake_handed_back").and_then(|v| v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_lowercase)).collect())).unwrap_or_default()
+}
+
+pub fn handed_back(session_id: &str) -> bool {
+    handed_back_list().iter().any(|id| id.eq_ignore_ascii_case(session_id))
+}
+
+/// Take a session back from the app (`on`), or let the app open it by itself again.
+pub fn set_handed_back(session_id: &str, on: bool) -> anyhow::Result<()> {
+    let id = session_id.trim().to_lowercase();
+    if id.is_empty() {
+        anyhow::bail!("no session given");
+    }
+    let mut list = handed_back_list();
+    list.retain(|x| *x != id);
+    if on {
+        list.push(id);
+    }
+    crate::settings::set("wake_handed_back", json!(list))?;
+    Ok(())
 }
 
 fn age_secs(at: &str) -> i64 {
@@ -156,6 +187,7 @@ pub fn waiting(store: &Store) -> Vec<Value> {
         return vec![];
     }
     let local = crate::discover::local();
+    let handed = handed_back_list();
     let mut out = vec![];
     for l in candidates {
         let Some(s) = local.iter().find(|s| s.id.eq_ignore_ascii_case(&l.to)).cloned().or_else(|| crate::discover::lookup(&l.to)) else { continue };
@@ -172,6 +204,8 @@ pub fn waiting(store: &Store) -> Vec<Value> {
             "from_host_name": l.from_host_name,
             "since": since,
             "woken": woken(&runs),
+            // the user took this session back: the app only reminds
+            "handed": handed.iter().any(|id| id.eq_ignore_ascii_case(&s.id)),
             // opened for it a while ago and still waiting: something is off, the user is asked
             "stuck": woken_at(&runs).map(|at| age_secs(at) >= STUCK_SECS).unwrap_or(false),
             "session": {
@@ -292,6 +326,35 @@ mod tests {
         assert!(woken(&[run("codex", "queued", 30), run("wake", "opened", 5)]));
         assert_eq!(queued_at(&[run("store", "written", 40), run("codex", "queued", 30)]).map(|at| age_secs(at) >= AFTER_SECS), Some(true));
         assert_eq!(queued_at(&[run("codex", "queued", 3)]).map(|at| age_secs(at) >= AFTER_SECS), Some(false));
+    }
+
+    #[test]
+    fn a_session_taken_back_stays_taken_back_until_the_user_says_otherwise() {
+        let dir = std::env::temp_dir().join(format!("dispatch-handed-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let a = "019A0000-1111-7222-8333-444455556666";
+        let b = "019b0000-1111-7222-8333-444455556666";
+        assert!(!handed_back(a));
+        set_handed_back(a, true).unwrap();
+        set_handed_back(a, true).unwrap();
+        set_handed_back(b, true).unwrap();
+        assert!(handed_back(&a.to_lowercase()) && handed_back(a) && handed_back(b));
+        assert_eq!(handed_back_list().len(), 2, "once each, whatever the case");
+        // it is kept in the settings file: a restart of the app does not undo it
+        assert!(std::fs::read_to_string(crate::settings::path()).unwrap().contains("wake_handed_back"));
+        set_handed_back(a, false).unwrap();
+        assert!(!handed_back(a) && handed_back(b));
+        assert!(set_handed_back("  ", true).is_err());
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Told to stop before it began, a background run does not start a Codex at all.
+    #[test]
+    fn a_run_told_to_stop_before_it_starts_never_touches_the_thread() {
+        let stop = std::sync::atomic::AtomicBool::new(true);
+        let out = crate::codex::run_unopened_until("019c0000-1111-7222-8333-444455556666", Duration::from_secs(60), &stop).unwrap();
+        assert!(out.handed_back && !out.interrupted && out.turns == 0);
     }
 
     #[test]
