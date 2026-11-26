@@ -16,6 +16,7 @@
 //! - `transcript`: the last turns of a session's own record, for the session page.
 
 mod snapshot;
+pub mod about;
 pub mod antigravity;
 pub mod claude;
 pub mod codex;

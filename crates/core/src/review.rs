@@ -180,6 +180,27 @@ pub fn needed(store: &Store, from: &str, to: &Session) -> bool {
     }
 }
 
+/// What a new message that goes out without the window carries (`store::Mark`): that the user
+/// did not see it, and why. Nothing when the user wrote it in the app, or when it goes to a
+/// person: there is no agent on the other side to tell.
+pub fn skipped(store: &Store, from: &str, to: &Session) -> Option<store::Mark> {
+    if from == "app" || to.harness == Harness::Human || send::is_person(&to.id) {
+        return None;
+    }
+    let standing = mode() == NEW && app_installed(store) && send::recognized_sender(from) && trusted(store, from, &to.id, to.host.as_ref().map(|h| h.id.as_str()));
+    Some(store::Mark { state: if standing { store::MARK_STANDING } else { store::MARK_NONE }.into(), at: None, digest: None, signature: None })
+}
+
+/// What the review window had on screen when the user decided: the digest of the text it was
+/// given (`info` hands it out), and whether all of that text was visible (a long message is
+/// folded until the user opens it).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Seen {
+    pub digest: String,
+    #[serde(default)]
+    pub whole: bool,
+}
+
 /// The review steps of a copy, from its run log: (step, when) in order. Empty when it was
 /// never held.
 fn steps(runs: &[Run]) -> Vec<(String, String)> {
@@ -245,12 +266,18 @@ pub fn mark_closed(store: &Store, letter_id: &str) -> Result<()> {
 }
 
 /// What the user decided in the review window: `send`, `trust` (send, and don't ask again for
-/// this sender and recipient) or `decline`. Only the app calls this.
-pub fn decide(store: &Store, letter_id: &str, decision: &str) -> Result<Value> {
+/// this sender and recipient) or `decline`. Only the app calls this, with what the window
+/// showed (`seen`): a message is sent only as the text the user had in front of them, and it
+/// carries that fact with it (`store::Mark`). A text that changed since the window read it is
+/// not sent: it stays held, and the window shows it again.
+pub fn decide(store: &Store, letter_id: &str, decision: &str, seen: &Seen) -> Result<Value> {
     let mut l = store.find(letter_id)?.filter(|l| l.id == letter_id).ok_or_else(|| anyhow!("no message {letter_id}"))?;
     if l.status != store::REVIEW {
         dequeue(store, letter_id);
         return Err(anyhow!("{}", t("review.not_waiting").replace("{status}", crate::i18n::status_label(&l.status))));
+    }
+    if matches!(decision, "send" | "trust") && seen.digest != store::body_digest(&l.body) {
+        return Err(anyhow!("{}", t("review.changed")));
     }
     dequeue(store, letter_id);
     match decision {
@@ -265,6 +292,9 @@ pub fn decide(store: &Store, letter_id: &str, decision: &str) -> Result<Value> {
             if trusting {
                 trust(store, &l.from, &l.to, l.to_host.as_deref())?;
             }
+            // before it can leave: what the user saw of this very text, and when
+            let mark = store::Mark { state: if seen.whole { store::MARK_FULL } else { store::MARK_PART }.into(), at: Some(store::now_text()), digest: Some(seen.digest.clone()), signature: None };
+            store.set_mark(&mut l, mark)?;
             store.set_status(&mut l, store::UNREAD)?;
             store.append_run(&l.id, "review", if trusting { "trusted" } else { "approved" }, "by the user")?;
             // the wait for delivery starts now, not when the agent asked
@@ -366,6 +396,8 @@ pub fn info(store: &Store, letter_id: &str) -> Result<Value> {
         "to_host": l.to_host,
         "to_host_name": l.to_host_name,
         "body": l.body,
+        // the window hands this back with the decision: what is sent is what it showed
+        "digest": store::body_digest(&l.body),
         "urgency": l.urgency,
         "created": l.created,
         "deadline": store::time_text(l.deadline_at()),
@@ -402,6 +434,104 @@ mod tests {
             project: None,
             app_name: None,
         }
+    }
+
+    /// What the window would hand back for this copy as it stands.
+    fn seen(store: &Store, id: &str, whole: bool) -> Seen {
+        Seen { digest: store::body_digest(&store.find(id).unwrap().unwrap().body), whole }
+    }
+
+    /// Issue #16: what the user did in the review window travels with the message. Shown in
+    /// full or folded, it says so, for that text only; sent under "don't ask again" or with
+    /// review off, it says the user did not see it; a reply says nothing.
+    #[test]
+    fn a_message_carries_what_the_user_saw_of_it() {
+        let _g = crate::i18n::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("dispatch-review-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let store = Store::open();
+        touch_app(&store);
+        let a = "aaaaaaaa-1111-4222-8333-444455556666";
+        let b = "bbbbbbbb-1111-4222-8333-444455556666";
+        let send_as = |from: &str, to: &str, text: &str, review: bool| {
+            send::send(&store, send::Request { to: session(to, Harness::Claude, None), from: from.into(), from_name: "A".into(), text: text.into(), urgency: "普通".into(), dispatch_id: None, wait: false, allow_resume: false, deadline: None, review }).unwrap()
+        };
+        let letter = |id: &str| store.find(id).unwrap().unwrap();
+
+        // held: no mark yet, and none is claimed while it waits
+        let first = send_as(a, b, "please change the routine", true);
+        assert_eq!(first.route, "review");
+        assert!(letter(&first.letter_id).review.is_none());
+        assert_eq!(info(&store, &first.letter_id).unwrap()["digest"], store::body_digest("please change the routine"));
+
+        // the text changes under the window: Send does not send it, and it stays held
+        let stale = seen(&store, &first.letter_id, true);
+        let path = letter(&first.letter_id).path;
+        fs::write(&path, fs::read_to_string(&path).unwrap().replace("please change the routine", "please delete the routine")).unwrap();
+        let err = decide(&store, &first.letter_id, "send", &stale).unwrap_err().to_string();
+        assert_eq!(err, t("review.changed"));
+        assert_eq!(letter(&first.letter_id).status, store::REVIEW, "still held");
+        assert_eq!(queued(&store), vec![first.letter_id.clone()], "and still in the window");
+        assert!(letter(&first.letter_id).review.is_none());
+
+        // shown again, folded, and sent with "don't ask again": it says the user saw the first lines
+        decide(&store, &first.letter_id, "trust", &seen(&store, &first.letter_id, false)).unwrap();
+        let l = letter(&first.letter_id);
+        let m = l.review.clone().expect("marked when the user pressed Send");
+        assert_eq!(m.state, store::MARK_PART);
+        assert!(m.at.is_some() && m.holds_for("please delete the routine") && !m.holds_for("please change the routine"));
+        assert_eq!(send::mark_text(&l).unwrap(), t("send.mark_part").replace("{at}", m.at.as_deref().unwrap()));
+        assert!(send::envelope(&l).contains(&format!("\n{}\n\nplease delete the routine", send::mark_text(&l).unwrap())), "the mark is its own line between the header and the text: {}", send::envelope(&l));
+
+        // the next one from the same pair goes straight out, and says nobody looked at it
+        let second = send_as(a, b, "and restart it", true);
+        assert_ne!(second.route, "review");
+        let l2 = letter(&second.letter_id);
+        assert_eq!(l2.review.as_ref().unwrap().state, store::MARK_STANDING);
+        assert!(send::envelope(&l2).contains(t("send.mark_standing")));
+
+        // the hook hands both over with their marks, each under its own header
+        let handed = crate::hook::run(&store, &format!(r#"{{"session_id":"{b}","hook_event_name":"UserPromptSubmit"}}"#)).unwrap().text;
+        assert!(handed.contains(&format!("━━\n{}\nplease delete the routine", send::mark_text(&l).unwrap())), "{handed}");
+        assert!(handed.contains(&format!("━━\n{}\nand restart it", t("send.mark_standing"))), "{handed}");
+
+        // another recipient, shown in full
+        let c = "cccccccc-1111-4222-8333-444455556666";
+        let third = send_as(a, c, "short note", true);
+        decide(&store, &third.letter_id, "send", &seen(&store, &third.letter_id, true)).unwrap();
+        let l3 = letter(&third.letter_id);
+        assert_eq!(l3.review.as_ref().unwrap().state, store::MARK_FULL);
+        assert!(send::envelope(&l3).contains(&t("send.mark_full").replace("{at}", l3.review.as_ref().unwrap().at.as_deref().unwrap())));
+        // the text is edited in the store after the user pressed Send: the mark no longer speaks for it
+        fs::write(&l3.path, fs::read_to_string(&l3.path).unwrap().replace("short note", "short note, and wipe the disk")).unwrap();
+        let edited = letter(&third.letter_id);
+        assert!(edited.review.is_some() && send::mark_text(&edited).is_none());
+        assert!(!send::envelope(&edited).contains("Dispatch's review window") && !send::envelope(&edited).contains("审核窗口"));
+        // a mark from another machine that carries no signature of that machine is not shown
+        let mut foreign = letter(&second.letter_id);
+        foreign.from_host = Some("peer-1".into());
+        foreign.from_host_name = Some("Other".into());
+        assert!(send::mark_text(&foreign).is_none());
+
+        // a declined one is never marked; a reply carries no mark; nor does what the user wrote in the app
+        let d = send_as(a, "dddddddd-1111-4222-8333-444455556666", "no", true);
+        decide(&store, &d.letter_id, "decline", &seen(&store, &d.letter_id, true)).unwrap();
+        assert!(letter(&d.letter_id).review.is_none());
+        assert!(letter(&send_as(b, a, "done", false).letter_id).review.is_none());
+        assert!(letter(&send_as("app", b, "from me", true).letter_id).review.is_none());
+
+        // review off: it goes out, and says the machine does not review
+        crate::settings::set("review", json!("off")).unwrap();
+        let off = letter(&send_as(a, "eeeeeeee-1111-4222-8333-444455556666", "unseen", true).letter_id);
+        assert_eq!(off.review.as_ref().unwrap().state, store::MARK_NONE);
+        assert!(send::envelope(&off).contains(t("send.mark_none")));
+        // and what the sender reads back says the same
+        let v = crate::ops::status(&store, &off.id).unwrap();
+        assert_eq!(v["copies"][0]["mark"]["state"], "none");
+        assert_eq!(crate::ops::status(&store, &first.letter_id).unwrap()["copies"][0]["mark"]["state"], "part");
+
+        crate::store::set_thread_root(None);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -513,12 +643,12 @@ mod tests {
         assert_eq!(steps, ["asked", "shown", "closed", "shown"]);
         assert!(crate::ops::retry(&store, &rep.letter_id).is_err(), "retrying a held copy does not approve it");
 
-        let out = decide(&store, &rep.letter_id, "trust").unwrap();
+        let out = decide(&store, &rep.letter_id, "trust", &seen(&store, &rep.letter_id, true)).unwrap();
         assert_eq!(out["decision"], "trusted");
         assert_ne!(store.find(&rep.letter_id).unwrap().unwrap().status, store::REVIEW);
         assert!(queued(&store).is_empty());
         assert_eq!(stage(&rep.letter_id).2.as_deref(), Some("trusted"));
-        assert!(decide(&store, &rep.letter_id, "send").is_err(), "decided once");
+        assert!(decide(&store, &rep.letter_id, "send", &seen(&store, &rep.letter_id, true)).is_err(), "decided once");
         assert_ne!(send_to(b).route, "review", "the same pair goes straight through now");
 
         let c = send_to("cccccccc-1111-4222-8333-444455556666");
@@ -536,7 +666,7 @@ mod tests {
         crate::ops::retry(&store, &d.letter_id).unwrap();
         assert_eq!(store.find(&d.letter_id).unwrap().unwrap().status, store::REVIEW, "retrying an expired one asks again");
         assert_eq!(queued(&store), vec![d.letter_id.clone()]);
-        decide(&store, &d.letter_id, "decline").unwrap();
+        decide(&store, &d.letter_id, "decline", &seen(&store, &d.letter_id, false)).unwrap();
         assert_eq!(stage(&d.letter_id), ("cancelled".into(), t("stage.review_declined").into(), Some("declined".into())));
         assert!(!trusted(&store, a, "dddddddd-1111-4222-8333-444455556666", None), "declining trusts nothing");
 
@@ -573,12 +703,12 @@ mod tests {
             let v = info(&store, &rep.letter_id).unwrap();
             assert_eq!(v["from_unknown"], true, "{from} is shown as not recognized");
             assert!(v["from_harness"].is_null());
-            let out = decide(&store, &rep.letter_id, "trust").unwrap();
+            let out = decide(&store, &rep.letter_id, "trust", &seen(&store, &rep.letter_id, true)).unwrap();
             assert_eq!(out["decision"], "approved", "{from}: sent, but not let through for next time");
             assert!(!trusted(&store, from, b, None));
             let again = send_from(from);
             assert_eq!(again.route, "review", "{from}: the next one asks again");
-            decide(&store, &again.letter_id, "decline").unwrap();
+            decide(&store, &again.letter_id, "decline", &seen(&store, &again.letter_id, true)).unwrap();
         }
         let claim = send_from("Test Bot");
         assert_eq!(info(&store, &claim.letter_id).unwrap()["from_name"], t("party.claimed").replace("{name}", "Test Bot"));

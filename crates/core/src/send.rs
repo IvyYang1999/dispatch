@@ -90,6 +90,18 @@ pub fn resolve_how(query: &str) -> Result<(Session, Match)> {
         Some(p) => s.host.as_ref().map(|h| h.id == p.id).unwrap_or(false),
         None => true,
     };
+    // a role: the session that answers for it, wherever it is and whatever its age
+    if let Some(r) = crate::about::role(q).filter(|r| match (&host, &r.host) {
+        (Some(p), Some(h)) => p.id == h.id,
+        (Some(_), None) => false,
+        (None, _) => true,
+    }) {
+        let s = match &r.host {
+            Some(h) => discover::sessions().into_iter().find(|s| s.id.eq_ignore_ascii_case(&r.session_id) && s.host.as_ref().map(|x| x.id == h.id).unwrap_or(false)).unwrap_or_else(|| peer::remote_target(&h.id, &h.name, &r.session_id, None, r.harness)),
+            None => discover::lookup(&r.session_id).unwrap_or_else(|| bare_session(r.harness, &r.session_id, None)),
+        };
+        return Ok((s, Match::Exact));
+    }
     let recent: Vec<Session> = discover::sessions().into_iter().filter(|s| on_host(s)).collect();
     if let Some(hit) = pick(q, &recent)? {
         return Ok(hit);
@@ -130,10 +142,8 @@ fn pick(q: &str, all: &[Session]) -> Result<Option<(Session, Match)>> {
         return Ok(Some((exact[0].clone(), Match::Exact)));
     }
     let ql = q.to_lowercase();
-    let about = |s: &Session| -> Option<String> {
-        let host_id = s.host.as_ref().map(|h| h.id.as_str());
-        book.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id).and_then(|c| c.description.clone())
-    };
+    let view = crate::about::View::with(book.clone());
+    let about = |s: &Session| -> Option<String> { view.of(s).about };
     let mut hits: Vec<&Session> = all.iter().filter(|s| s.id.to_lowercase().starts_with(&ql)).collect();
     let how = if hits.is_empty() { Match::Fragment } else { Match::Id };
     if hits.is_empty() {
@@ -287,11 +297,36 @@ pub fn can_reply(l: &Letter) -> bool {
     l.from_host.is_some() || reply_target(&l.from).is_ok()
 }
 
-/// The text the session sees: who sent it, when, the body, and how to answer (or that it cannot
-/// be answered: no reply instruction that is bound to fail).
+/// What the recipient is told about the user's review of this message, as one line under the
+/// header: that the user was shown this text and pressed Send, or that they did not see it.
+/// Nothing when the message has no mark, when a mark from another machine was not signed by
+/// it (checked on arrival), or when the mark was made for another text than the body has now.
+pub fn mark_text(l: &Letter) -> Option<String> {
+    let m = l.review.as_ref()?;
+    if (l.from_host.is_some() && m.signature.is_none()) || !m.holds_for(&l.body) {
+        return None;
+    }
+    let key = match m.state.as_str() {
+        store::MARK_FULL => "send.mark_full",
+        store::MARK_PART => "send.mark_part",
+        store::MARK_STANDING => "send.mark_standing",
+        store::MARK_NONE => "send.mark_none",
+        _ => return None,
+    };
+    Some(t(key).replace("{at}", m.at.as_deref().unwrap_or("?")))
+}
+
+/// The mark as a line of its own after the header, or nothing.
+fn mark_line(l: &Letter) -> String {
+    mark_text(l).map(|m| format!("\n{m}")).unwrap_or_default()
+}
+
+/// The text the session sees: who sent it, when, what the user saw of it, the body, and how to
+/// answer (or that it cannot be answered: no reply instruction that is bound to fail).
 pub fn envelope(l: &Letter) -> String {
     let key = if can_reply(l) { "send.envelope" } else { "send.envelope_noreply" };
     t(key)
+        .replace("{mark}", &mark_line(l))
         .replace("{from}", &sender_text(l))
         .replace("{created}", &l.created)
         .replace("{id}", &crate::model::short_id(&l.id))
@@ -550,6 +585,9 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
         to_host_name: req.to.host.as_ref().map(|h| h.name.clone()),
         from_harness: sender_harness(&req.from).map(str::to_string),
         signature: None,
+        // a new message that is not held says it was not shown; a held one is marked when the
+        // user presses Send (`review::decide`); a reply carries no mark
+        review: if req.review && !held { crate::review::skipped(store, &req.from, &req.to) } else { None },
         created,
         body: req.text.clone(),
         path: String::new(),
@@ -616,6 +654,24 @@ mod tests {
 
     /// A Grok bot that wrote in under its name is answered by that name (issue #12), and only
     /// when the name picks out one bot: never a session whose title matches, never a guess.
+    #[test]
+    fn a_role_is_an_address_for_the_session_that_answers_for_it() {
+        let dir = std::env::temp_dir().join(format!("dispatch-role-send-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let owner = "7a7a7a7a-1111-4222-8333-444455556666";
+        let there = "8b8b8b8b-1111-4222-8333-444455556666";
+        crate::about::set_role("handoff助理", &bare_session(Harness::Codex, owner, None), "self", Some("例行任务")).unwrap();
+        let (s, how) = resolve_how("Handoff助理").unwrap();
+        assert_eq!((s.id.as_str(), how, s.harness), (owner, Match::Exact, Harness::Codex));
+        // one that points at a session on another machine: addressed there, with or without the machine in front
+        let remote = peer::remote_target("m-2", "主力", there, None, Harness::Codex);
+        crate::about::set_role("发版", &remote, "cli", None).unwrap();
+        let (s, _) = resolve_how("发版").unwrap();
+        assert_eq!((s.id.as_str(), s.host.as_ref().map(|h| h.id.as_str())), (there, Some("m-2")));
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn a_bot_that_wrote_under_its_name_is_answered_by_it() {
         let here = vec![claude("0199aaaa-1111-4222-8333-444455556666", "OpenTrends QA"), bot("bot-qa", "OpenTrends QA"), bot("bot-dev", "OpenTrends Dev")];

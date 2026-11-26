@@ -121,6 +121,15 @@ enum Cmd {
     Mcp,
     /// Who am I, as the session that started this process sees it
     Whoami,
+    /// Say in one line what a session is for (the session this command runs in, unless
+    /// --session names another), without putting it in the address book
+    Describe {
+        text: Vec<String>,
+        #[arg(long)]
+        session: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// What this machine's Codex can do right now: CLI, daemon, loaded threads
     Codex,
     /// What this machine's Grok Bot can do right now: app, sign-in, the bots
@@ -171,6 +180,10 @@ enum ContactsCmd {
         /// One line on what the session is for (other agents match it when looking for a role)
         #[arg(long)]
         about: Option<String>,
+        /// The name is not the session's own but something it answers for that has no session
+        /// of its own (a scheduled task, a bot): a message to that name goes to the session
+        #[arg(long)]
+        role: bool,
     },
     /// Forget a name
     Remove { name: String },
@@ -309,6 +322,14 @@ fn run() -> Result<i32> {
         }
         Cmd::Whoami => {
             println!("{}", serde_json::to_string_pretty(&dispatch_core::ops::whoami()?)?);
+        }
+        Cmd::Describe { text, session, json } => {
+            let v = dispatch_core::ops::describe(session.as_deref(), &text.join(" "))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                println!("{}", v["text"].as_str().unwrap_or(""));
+            }
         }
         Cmd::Codex => {
             let s = dispatch_core::codex::state_now();
@@ -479,10 +500,17 @@ fn run() -> Result<i32> {
                         let mark = if c["provisional"].as_bool().unwrap_or(false) { "≈ " } else { "" };
                         println!("{:<24} {:<8} {:<9} {:<4} {:<32} {}", truncate(&format!("{mark}{}", c["address"].as_str().unwrap_or("")), 24), c["harness"].as_str().unwrap_or(""), c["short_id"].as_str().unwrap_or(""), if c["running"].as_bool().unwrap_or(false) { t("cli.running_mark") } else { "  " }, truncate(&c["cwd"].as_str().map(model::short_cwd).unwrap_or_default(), 32), c["about"].as_str().unwrap_or(""));
                     }
+                    let roles = v["roles"].as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+                    if !roles.is_empty() {
+                        println!("{}", t("cli.roles_title"));
+                    }
+                    for r in roles {
+                        println!("{:<24} → {:<9} {:<26} {}", truncate(r["name"].as_str().unwrap_or(""), 24), r["short_id"].as_str().unwrap_or(""), truncate(r["session_name"].as_str().unwrap_or(""), 26), r["about"].as_str().unwrap_or(""));
+                    }
                 }
             }
-            ContactsCmd::Add { name, session, about } => {
-                let v = dispatch_core::ops::register(&name, session.as_deref(), "cli", about.as_deref())?;
+            ContactsCmd::Add { name, session, about, role } => {
+                let v = if role { dispatch_core::ops::register_role(&name, session.as_deref(), "cli", about.as_deref())? } else { dispatch_core::ops::register(&name, session.as_deref(), "cli", about.as_deref())? };
                 if json {
                     println!("{}", serde_json::to_string_pretty(&v)?);
                 } else {
@@ -566,11 +594,17 @@ fn run() -> Result<i32> {
                 println!("{}", serde_json::to_string_pretty(&dispatch_core::share::list_for_agents(dispatch_core::ops::search(&q), "sessions"))?);
             } else {
                 let hook_on = hook::installed();
-                let found = dispatch_core::ops::find_sessions(&q);
+                let mut found = dispatch_core::ops::find_sessions(&q);
                 if found.is_empty() {
                     println!("{}", t("cli.find_none").replace("{q}", &q));
+                    // somewhere to go from here: the recent ones, said not to be matches
+                    found = dispatch_core::ops::recent_instead(&q).into_iter().map(|s| (s, "recent")).collect();
+                    if !found.is_empty() {
+                        println!("{}", t("cli.find_recent"));
+                    }
                 }
                 let now = model::now_ms();
+                let view = dispatch_core::about::View::load();
                 for (i, (s, why)) in found.iter().enumerate() {
                     let r = reach::decide(s, hook_on);
                     let shown = dispatch_core::share::for_agents(serde_json::to_value(s).unwrap_or_default());
@@ -586,6 +620,16 @@ fn run() -> Result<i32> {
                         truncate(shown["cwd"].as_str().map(model::short_cwd).or_else(|| shown["project"].as_str().map(str::to_string)).as_deref().unwrap_or(""), 32),
                         r.text
                     );
+                    // what it is for and what it answers for, unless it shares only its name
+                    if shown["share"].as_str() != Some("none") {
+                        let known = view.of(s);
+                        if let Some(a) = &known.about {
+                            println!("    {}", truncate(a, 110));
+                        }
+                        for r in &known.roles {
+                            println!("    ↳ {}{}", r.name, r.about.as_deref().map(|a| format!(": {}", truncate(a, 90))).unwrap_or_default());
+                        }
+                    }
                     if *why == "asked" {
                         println!("    {}", t("cli.find_asked"));
                     }
@@ -646,6 +690,10 @@ fn run() -> Result<i32> {
             } else {
                 for l in &letters {
                     println!("{}\n    {}", t("cli.inbox_line").replace("{id}", &model::short_id(&l.id)).replace("{status}", status_label(&l.status)).replace("{from}", &send::sender_text(l)).replace("{created}", &l.created), first_line(&l.body));
+                    // what the user saw of it, when the sending machine said
+                    if let Some(mark) = send::mark_text(l) {
+                        println!("    {mark}");
+                    }
                 }
             }
         }

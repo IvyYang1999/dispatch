@@ -285,6 +285,8 @@ export interface ReviewInfo {
   to_host: string | null
   to_host_name: string | null
   body: string
+  /** The digest of `body`; handed back with the decision, so what is sent is what was shown. */
+  digest: string
   urgency: string
   created: string
   deadline: string
@@ -417,7 +419,9 @@ export const api = {
   contactRemove: (name: string) => invoke<{ removed: string }>('contact_remove', { name }),
   reviewList: () => invoke<string[]>('review_list'),
   reviewInfo: (id: string) => invoke<ReviewInfo>('review_info', { id }),
-  reviewDecide: (id: string, decision: 'send' | 'trust' | 'decline') => invoke<{ letter_id: string; decision: string; route?: string; detail?: string; text: string; plain?: string }>('review_decide', { id, decision }),
+  /** `seen`: the digest of the text the window showed, and whether all of it was visible. */
+  reviewDecide: (id: string, decision: 'send' | 'trust' | 'decline', seen: { digest: string; whole: boolean }) =>
+    invoke<{ letter_id: string; decision: string; route?: string; detail?: string; text: string; plain?: string }>('review_decide', { id, decision, seen }),
   reviewClose: () => invoke<void>('review_close'),
   reviewOpen: () => invoke<void>('review_open'),
   reviewSettings: () => invoke<ReviewSettings>('review_settings'),

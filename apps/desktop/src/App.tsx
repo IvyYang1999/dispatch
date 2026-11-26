@@ -1016,11 +1016,15 @@ export function localStamp(iso: string | null | undefined): string {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 
-/** Long text folds to a few lines with a toggle. */
-export function Clamp({ text }: { text: string }) {
+/** Long text folds to a few lines with a toggle. `onWhole` hears whether all of the text is
+ *  on show: it is short, or the person opened it. */
+export function Clamp({ text, onWhole }: { text: string; onWhole?: (whole: boolean) => void }) {
   useLang()
   const [open, setOpen] = useState(false)
   const long = text.length > 420 || text.split('\n').length > 9
+  useEffect(() => {
+    onWhole?.(!long || open)
+  }, [long, open, onWhole])
   return (
     <>
       <p className={`msg__text${long && !open ? ' msg__text--clamp' : ''}`}>{text}</p>

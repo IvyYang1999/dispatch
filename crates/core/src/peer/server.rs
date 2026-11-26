@@ -148,6 +148,12 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
                             let kind = if kind == "finished" { "replied".to_string() } else { kind };
                             // a letter that started here (a reply) carries this machine's signature
                             let signature = if l.from_host.is_none() { key.as_ref().map(|k| sign::sign(k, &l)) } else { None };
+                            let mut l = l;
+                            match (&key, l.from_host.is_none()) {
+                                (Some(k), true) => sign::seal_mark(k, &mut l),
+                                // a mark another machine made is that machine's to pass on, not this one's
+                                _ => l.review = None,
+                            }
                             copies.push(RemoteCopy { letter: l, kind, stage_key, signature });
                         }
                     }
@@ -198,8 +204,13 @@ fn sessions_response(query: Option<&str>, knows: &[String], clients: &discover::
     let hook_on = hook::installed();
     let query = query.map(str::trim).filter(|q| !q.is_empty());
     let limit = if query.is_some() { SEARCH_MAX } else { usize::MAX };
+    let view = crate::about::View::load();
     let sessions = discover::for_peer(query, clients).into_iter().filter(|(s, _)| readable(s.harness, knows)).take(limit)
-        .map(|(s, why)| RemoteSession { reach: reach::decide_with(&s, hook_on, Some(clients)), session: s, reason: Some(why).filter(|w| *w == "asked").map(str::to_string) }).collect();
+        .map(|(s, why)| {
+            // a session that shares only its name says nothing about itself to another machine either
+            let known = if crate::share::level(&s.id, None) == "none" { crate::about::Known::default() } else { view.of(&s) };
+            RemoteSession { reach: reach::decide_with(&s, hook_on, Some(clients)), about: known.about, roles: known.roles, session: s, reason: Some(why).filter(|w| *w == "asked").map(str::to_string) }
+        }).collect();
     Response::Sessions { hook_installed: hook_on, sessions }
 }
 
@@ -217,6 +228,43 @@ mod snapshot_tests {
     use crate::{contacts, discover::ClientStates, model::{Harness, Session}, snapshot::Snapshot};
     use std::sync::mpsc;
     use std::time::Instant;
+
+    #[test]
+    fn another_machine_is_told_what_a_session_is_for_unless_it_shares_only_its_name() {
+        let root = std::env::temp_dir().join(format!("dispatch-peer-about-{}", uuid::Uuid::new_v4()));
+        store::set_thread_root(Some(root.clone()));
+        struct Reset(std::path::PathBuf);
+        impl Drop for Reset {
+            fn drop(&mut self) { store::set_thread_root(None); let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let _reset = Reset(root);
+        let id = "about-fixture-session";
+        let s = Session { harness: Harness::Codex, id: id.into(), short_id: id.into(), name: None,
+            cwd: None, title: None, last_active: 0, running: false, desktop: false,
+            host_session_id: None, status: None, transcript: None, host: None, project: None, app_name: None };
+        // named so that it is listed whatever this machine has; it wrote its own line
+        contacts::set("about-fixture", &s, "test", None, false).unwrap();
+        crate::about::set_own(id, "负责夜间构建").unwrap();
+        crate::about::set_role("夜间巡检fixture", &s, "self", Some("每晚跑一次的例行任务")).unwrap();
+        let clients = ClientStates { codex: None, grok: None };
+        let ask = |q: &str| {
+            let Response::Sessions { sessions, .. } = crate::snapshot::without_blocking_probes(|| sessions_response(Some(q), &[], &clients)) else { panic!("expected sessions") };
+            sessions.into_iter().find(|r| r.session.id == id)
+        };
+        // found by the role's name, and by its own line; both go along
+        let found = ask("夜间巡检fixture").expect("found by the role it answers for");
+        assert_eq!(found.about.as_deref(), Some("负责夜间构建"));
+        assert_eq!(found.roles.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["夜间巡检fixture"]);
+        assert!(ask("夜间构建").is_some());
+        // older machines read the answer too: the fields are left out when empty, ignored when unknown
+        let wire = serde_json::to_value(&found).unwrap();
+        assert!(wire.get("about").is_some() && wire.get("roles").is_some());
+        // it shares only its name: still found, nothing said about it
+        crate::share::set_level(id, None, "none").unwrap();
+        let found = ask("夜间巡检fixture").expect("still found");
+        assert!(found.about.is_none() && found.roles.is_empty());
+        assert!(serde_json::to_value(&found).unwrap().get("about").is_none());
+    }
 
     #[test]
     fn peer_list_and_search_answer_while_client_probes_are_blocked() {
@@ -346,6 +394,7 @@ fn deliver_in(store: &Store, peer: &PeerInfo, mut letter: Letter, signature: Opt
     letter.to_host = None;
     letter.to_host_name = None;
     letter.signature = Some(signature);
+    let unmarked = sign::keep_valid_mark(Some(signer), &mut letter);
     letter.status = if hold { store::HELD.into() } else { store::UNREAD.into() };
     letter.path = String::new();
     letter.wake = true;
@@ -360,6 +409,9 @@ fn deliver_in(store: &Store, peer: &PeerInfo, mut letter: Letter, signature: Opt
         return Response::Error { message: format!("{e:#}") };
     }
     let _ = store.append_run(&letter.id, "peer", "received", &format!("{}; signature verified", peer.name));
+    if unmarked {
+        let _ = store.append_run(&letter.id, "mark", "dropped", "the review mark did not check out against that machine's key");
+    }
     if hold {
         let why = if !peer.verified { "machine not confirmed yet" } else { "rule: ask first" };
         let _ = store.append_run(&letter.id, "peer", "held", why);
