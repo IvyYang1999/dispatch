@@ -1,9 +1,11 @@
 //! A message that waits for its session to be opened. A Claude Code session that is not
 //! running takes nothing until it runs again; a Codex thread takes what is in its queue only
 //! while some Codex window (or terminal) has it open. On the machine where the session lives,
-//! the app takes care of it itself, at once. A Codex thread nobody has open is run in the
-//! background by a Codex of the app's own (`codex::run_unopened`), which takes its queue as
-//! opening it would, with no window. Any other session is opened in its own app when it has one
+//! the app takes care of it itself, at once. A Codex thread nobody has open is opened in the
+//! Codex app when that app is running: there the user sees it and can type in it. Only when the
+//! Codex app is not running is it run in the background by a Codex of the app's own
+//! (`codex::run_unopened`), which takes its queue as opening it would, with no window, and keeps
+//! the thread to itself meanwhile. Any other session is opened in its own app when it has one
 //! (the Claude app), else in a Terminal window behind the user's windows. It asks the user only
 //! when it cannot: the setting says remind only, opening failed, or the session was opened and
 //! still has not taken the message.
