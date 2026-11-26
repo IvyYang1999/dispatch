@@ -219,7 +219,9 @@ async fn hand_back(app: AppHandle, id: String) -> Result<Value, String> {
     };
     let id2 = id.clone();
     let released = blocking(move || {
-        wake::set_handed_back(&id2, true).map_err(err)?;
+        // noted on every copy pending for it: what was opened for before starts over, so a
+        // message that was never taken is opened for again once the user lets Dispatch run it
+        wake::hand_back(&Store::open(), &id2, true).map_err(err)?;
         // the run notices within a second, interrupts its turn and closes its Codex
         let until = Instant::now() + Duration::from_secs(25);
         while Instant::now() < until && runs.lock().map(|r| r.contains_key(&id2)).unwrap_or(false) {
@@ -239,7 +241,8 @@ async fn hand_back(app: AppHandle, id: String) -> Result<Value, String> {
 /// Let the app open a session by itself again.
 #[tauri::command]
 async fn hand_back_undo(app: AppHandle, id: String) -> Result<(), String> {
-    blocking(move || wake::set_handed_back(&id, false).map_err(err)).await?;
+    blocking(move || wake::hand_back(&Store::open(), &id, false).map(|_| ()).map_err(err)).await?;
+    forget_feed(&app);
     let _ = app.emit("wait:changed", ());
     let _ = app.emit("dispatch:changed", ());
     Ok(())

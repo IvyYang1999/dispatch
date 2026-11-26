@@ -88,14 +88,39 @@ fn queued_at(runs: &[Run]) -> Option<&str> {
     runs.iter().rev().find(|r| r.action == "codex" && r.result == "queued").map(|r| r.at.as_str())
 }
 
-/// Whether this copy was already opened for once (by the user from the reminder, or by the app).
-pub fn woken(runs: &[Run]) -> bool {
-    runs.iter().any(|r| r.action == "wake" && r.result == "opened")
+/// The last thing noted about opening the session for this copy: `opened`, or `released` when
+/// the user took the session back from the app or let the app have it again after that.
+fn last_wake(runs: &[Run]) -> Option<&Run> {
+    runs.iter().rev().find(|r| r.action == "wake" && matches!(r.result.as_str(), "opened" | "released"))
 }
 
-/// When it was last opened for this copy.
+/// Whether this copy was already opened for once (by the user from the reminder, or by the app)
+/// and that still stands. Taking the session back, or letting the app open it again, starts
+/// over: a copy the app had opened the session for, and that was still untaken when the user
+/// took the session back, is opened for again once the user says so.
+pub fn woken(runs: &[Run]) -> bool {
+    last_wake(runs).map(|r| r.result == "opened").unwrap_or(false)
+}
+
+/// When it was last opened for this copy, while that still stands.
 fn woken_at(runs: &[Run]) -> Option<&str> {
-    runs.iter().rev().find(|r| r.action == "wake" && r.result == "opened").map(|r| r.at.as_str())
+    last_wake(runs).filter(|r| r.result == "opened").map(|r| r.at.as_str())
+}
+
+/// Take a session back from the app (`on`), or let the app open it by itself again, and note
+/// it on every copy still pending for the session, whether or not it counts as waiting this
+/// very moment (a thread someone has open is not "waiting", and still has these copies in its
+/// queue). Returns how many copies were noted.
+pub fn hand_back(store: &Store, session_id: &str, on: bool) -> anyhow::Result<usize> {
+    set_handed_back(session_id, on)?;
+    let id = session_id.trim();
+    let mut n = 0;
+    for l in store.list(None, false)?.into_iter().filter(|l| l.to_host.is_none() && l.to.eq_ignore_ascii_case(id) && (l.status == store::DELIVERED_CODEX || l.status == store::UNREAD) && current(l)) {
+        if store.append_run(&l.id, "wake", "released", if on { "handed back by the user" } else { "the user lets Dispatch open it again" }).is_ok() {
+            n += 1;
+        }
+    }
+    Ok(n)
 }
 
 /// Whether some Codex process has this thread now: it holds the thread's lock (when that can be
@@ -348,6 +373,99 @@ mod tests {
         assert!(set_handed_back("  ", true).is_err());
         crate::store::set_thread_root(None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What the main Mac found: two messages queued, the app opens the thread in the background
+    /// (which notes `opened` on both), the user takes the thread back while the first is being
+    /// worked on, then lets Dispatch run it again without any new message. The second message
+    /// was opened for once and never taken: it must be opened for again, not skipped for ever.
+    #[test]
+    fn a_message_opened_for_and_then_handed_back_is_opened_for_again() {
+        let dir = std::env::temp_dir().join(format!("dispatch-resume-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let s = Store::open();
+        let thread = uuid::Uuid::new_v4().to_string();
+        let letter = |to: &str, status: &str| {
+            let mut l = Letter {
+                id: uuid::Uuid::new_v4().to_string(),
+                dispatch_id: uuid::Uuid::new_v4().to_string(),
+                from: "aaaaaaaa-1111-4222-8333-444455556666".into(),
+                from_name: "A".into(),
+                to: to.to_string(),
+                to_name: "B".into(),
+                urgency: "普通".into(),
+                wake: true,
+                status: status.into(),
+                created: store::now_text(),
+                deadline: None,
+                to_harness: Some("codex".into()),
+                from_host: None,
+                from_host_name: None,
+                to_host: None,
+                to_host_name: None,
+                from_harness: Some("claude".into()),
+                signature: None,
+                review: None,
+                body: "hello".into(),
+                path: String::new(),
+            };
+            s.write_letter(&mut l).unwrap();
+            l
+        };
+        let (first, second) = (letter(&thread, store::DELIVERED_CODEX), letter(&thread, store::DELIVERED_CODEX));
+        // one that is over, and one for another thread: neither is touched
+        let done = letter(&thread, store::REPLIED);
+        let other = letter(&uuid::Uuid::new_v4().to_string(), store::DELIVERED_CODEX);
+        for l in [&first, &second, &done, &other] {
+            s.append_run(&l.id, "codex", "queued", "").unwrap();
+            s.append_run(&l.id, "wake", "opened", "auto, background").unwrap();
+        }
+        assert!(woken(&s.runs(&second.id)), "the background run was started for it");
+
+        // the user takes the thread back: in upper case, as an id may come
+        assert_eq!(hand_back(&s, &thread.to_uppercase(), true).unwrap(), 2, "both copies still pending for this thread");
+        assert!(handed_back(&thread));
+        assert!(!woken(&s.runs(&second.id)) && woken_at(&s.runs(&second.id)).is_none());
+        assert!(woken(&s.runs(&done.id)) && woken(&s.runs(&other.id)), "a copy that is over, or for another thread, is left as it was");
+
+        // and lets Dispatch run it again, with no new message: the old one is not skipped
+        assert_eq!(hand_back(&s, &thread, false).unwrap(), 2);
+        assert!(!handed_back(&thread), "not kept off any more");
+        assert!(!woken(&s.runs(&second.id)), "and not counted as opened for: the two things the watcher looks at");
+        let log: Vec<String> = s.runs(&second.id).iter().filter(|r| r.action == "wake").map(|r| format!("{} {}", r.result, r.detail)).collect();
+        assert_eq!(log, ["opened auto, background", "released handed back by the user", "released the user lets Dispatch open it again"]);
+
+        // opened for again: that counts from here on, as before
+        s.append_run(&second.id, "wake", "opened", "auto, background").unwrap();
+        assert!(woken(&s.runs(&second.id)) && woken_at(&s.runs(&second.id)).is_some());
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Against a real store (`DISPATCH_HOME`) and a real Codex thread (`DISPATCH_PROBE_THREAD`)
+    /// with a message in its queue that the app already opened the thread for: taking the
+    /// thread back and letting the app have it again leaves that message neither kept off nor
+    /// counted as opened for, which is what the app's watcher asks before it runs a thread.
+    #[test]
+    #[ignore]
+    fn probe_hand_back_and_resume() {
+        let id = std::env::var("DISPATCH_PROBE_THREAD").unwrap();
+        let s = Store::open();
+        let of_thread = |s: &Store| -> Vec<(String, bool, bool)> {
+            waiting(s).into_iter().filter(|w| w["session"]["id"].as_str().map(|x| x.eq_ignore_ascii_case(&id)).unwrap_or(false)).map(|w| (short_id(w["letter_id"].as_str().unwrap_or("")), w["handed"] == true, w["woken"] == true)).collect()
+        };
+        let before = of_thread(&s);
+        eprintln!("before (letter, handed, woken): {before:?}");
+        assert!(before.iter().any(|(_, _, woken)| *woken), "a waiting copy the thread was already opened for");
+        eprintln!("handed back, copies noted: {}", hand_back(&s, &id, true).unwrap());
+        let held = of_thread(&s);
+        eprintln!("handed back: {held:?}");
+        assert!(held.iter().all(|(_, handed, _)| *handed));
+        eprintln!("let go again, copies noted: {}", hand_back(&s, &id, false).unwrap());
+        let after = of_thread(&s);
+        eprintln!("after: {after:?}");
+        assert_eq!(after.len(), before.len());
+        assert!(after.iter().all(|(_, handed, woken)| !*handed && !*woken), "the watcher runs the thread for these again");
     }
 
     /// Told to stop before it began, a background run does not start a Codex at all.
