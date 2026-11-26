@@ -20,6 +20,13 @@ export interface Reach {
   /** What sending does, in a person's words (see dispatch_core::reach::plain). */
   plain?: Plain
 }
+/** The Codex threads the app is running in the background now, and the sessions the user took
+ *  back from it (it will not open those by itself). */
+export type BackgroundList = {
+  running: { id: string; name: string; since: string; stopping: boolean }[]
+  handed: { id: string; name: string }[]
+}
+
 /** What a session lets other sessions see: its name only, name and about, plus recent questions, plus recent rounds. */
 export type ShareLevel = 'none' | 'basic' | 'asks' | 'rounds'
 export interface Plain {
@@ -342,7 +349,7 @@ export interface WaitItem {
   /** The session was already opened for it, by the user or by the app. */
   woken: boolean
   /** Why it needs the user: remind only is set (ask), opening failed, opened and still waiting (stuck), no way to open it here (manual). */
-  why?: 'ask' | 'failed' | 'stuck' | 'manual'
+  why?: 'handed' | 'ask' | 'failed' | 'stuck' | 'manual'
   session: { id: string; name: string; app_name: string | null; harness: string; desktop: boolean; avatar: Look | null; url: string | null }
 }
 
@@ -423,6 +430,9 @@ export const api = {
   waitList: () => invoke<{ mode: string; waiting: WaitItem[] }>('wait_list'),
   waitOpen: (id: string) => invoke<OpenResult>('wait_open', { id }),
   waitDismiss: () => invoke<void>('wait_dismiss'),
+  backgroundList: () => invoke<BackgroundList>('background_list'),
+  handBack: (id: string) => invoke<{ id: string; was_running: boolean; released: boolean; text: string }>('hand_back', { id }),
+  handBackUndo: (id: string) => invoke<void>('hand_back_undo', { id }),
   setWake: (mode: 'auto' | 'ask' | 'off') => invoke<string>('set_wake', { mode }),
   setShareDefault: (level: ShareLevel) => invoke<string>('set_share_default', { level }),
   shareSet: (id: string, level: ShareLevel) => invoke<string>('share_set', { id, level }),
