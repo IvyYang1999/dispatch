@@ -554,13 +554,16 @@ pub fn reason(s: &Session, words: &[String], contact: Option<&crate::contacts::C
 /// `reason`, with what the session was asked lately as one more field. `asked` is only called
 /// when a word is in none of the other fields: reading a record costs more than they do.
 pub fn reason_with(s: &Session, words: &[String], contact: Option<&crate::contacts::Contact>, asked: &dyn Fn() -> String) -> Option<&'static str> {
-    reason_known(s, words, contact, &crate::about::Known::default(), asked)
+    reason_known(s, words, contact, &crate::about::Known::default(), "", asked)
 }
 
 /// `reason_with`, with what is known about the session beyond its address-book entry: the line
 /// it wrote about itself (or its machine sent), and the roles it answers for. A role's name
-/// counts as a name, its line as the line about the session.
-pub fn reason_known(s: &Session, words: &[String], contact: Option<&crate::contacts::Contact>, known: &crate::about::Known, asked: &dyn Fn() -> String) -> Option<&'static str> {
+/// counts as a name, its line as the line about the session. `filed` is where the user filed
+/// it in Dispatch (the project's name and the names of the folders filed with it, lowercased):
+/// it counts as its project, beside the one its own app has it under. Candidates are shown
+/// under that name, so it has to be a name they are found by.
+pub fn reason_known(s: &Session, words: &[String], contact: Option<&crate::contacts::Contact>, known: &crate::about::Known, filed: &str, asked: &dyn Fn() -> String) -> Option<&'static str> {
     const LABELS: [&str; 9] = ["id", "name", "about", "project", "cwd", "title", "asked", "kind", "host"];
     const ASKED: usize = 5;
     if words.is_empty() {
@@ -571,7 +574,7 @@ pub fn reason_known(s: &Session, words: &[String], contact: Option<&crate::conta
     let fields = [
         format!("{}\n{}\n{}", low(s.name.as_deref()), low(contact.map(|c| c.name.as_str())), role_names),
         format!("{}\n{}", low(contact.and_then(|c| c.description.as_deref())), known_about),
-        low(s.project.as_deref()),
+        format!("{}\n{}", low(s.project.as_deref()), filed),
         low(s.cwd.as_deref()),
         low(s.title.as_deref()),
         String::new(),
@@ -605,6 +608,9 @@ pub fn matching(query: &str, sessions: Vec<Session>) -> Vec<(Session, &'static s
     let words = words(query);
     let view = crate::about::View::load();
     let book = view.contacts();
+    // where the user filed things: read once, looked up per session
+    let filing = crate::projects::load();
+    let filed = filing.search_index();
     let now = now_ms();
     let found: Vec<(Session, &'static str)> = sessions
         .into_iter()
@@ -618,7 +624,8 @@ pub fn matching(query: &str, sessions: Vec<Session>) -> Vec<(Session, &'static s
                 None if crate::lately::readable(&s, now) => crate::lately::asks(&s).join("\n"),
                 None => String::new(),
             };
-            reason_known(&s, &words, contact, &view.of(&s), &asked).map(|r| (s, r))
+            let project = filing.project_of(&s).and_then(|id| filed.get(&id)).map(String::as_str).unwrap_or("");
+            reason_known(&s, &words, contact, &view.of(&s), project, &asked).map(|r| (s, r))
         })
         .collect();
     // what was read of the records is written down, so the next search does not read it again
@@ -801,16 +808,95 @@ mod tests {
         let w = |q: &str| words(q);
         let none = || String::new();
         let nothing = crate::about::Known::default();
-        assert_eq!(reason_known(&s, &w("助理"), None, &nothing, &none), None, "its title and folder do not say so");
+        assert_eq!(reason_known(&s, &w("助理"), None, &nothing, "", &none), None, "its title and folder do not say so");
         let known = crate::about::Known {
             about: Some("负责 Handoff 的代码；不要找我发版".into()),
             by: Some("self"),
             roles: vec![crate::about::RoleLine { name: "handoff助理".into(), about: Some("每 30 分钟跑一次的例行任务".into()) }],
         };
-        assert_eq!(reason_known(&s, &w("助理"), None, &known, &none), Some("name"), "a role's name counts as a name");
-        assert_eq!(reason_known(&s, &w("例行任务"), None, &known, &none), Some("about"));
-        assert_eq!(reason_known(&s, &w("发版 codex"), None, &known, &none), Some("about"), "its own line, with a kind word");
-        assert_eq!(reason_known(&s, &w("助理 claude"), None, &known, &none), None);
+        assert_eq!(reason_known(&s, &w("助理"), None, &known, "", &none), Some("name"), "a role's name counts as a name");
+        assert_eq!(reason_known(&s, &w("例行任务"), None, &known, "", &none), Some("about"));
+        assert_eq!(reason_known(&s, &w("发版 codex"), None, &known, "", &none), Some("about"), "its own line, with a kind word");
+        assert_eq!(reason_known(&s, &w("助理 claude"), None, &known, "", &none), None);
+    }
+
+    /// What happened: the same product is `日历小插件` on one Mac and `日记插件` on the other, the
+    /// user merged the two folders into one project, and a search for the project's name (or for
+    /// this machine's folder) still found nothing over there, though candidates are shown under
+    /// that very name.
+    #[test]
+    fn a_session_is_found_by_the_project_the_user_filed_it_under() {
+        let dir = std::env::temp_dir().join(format!("dispatch-filed-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let here = session("0199cccc-1111-4222-8333-444455556666", None, "/Users/c/vault/日历小插件", "发信端");
+        let mut there = session("0199dddd-1111-4222-8333-444455556666", None, "/Users/y/Developer/日记插件", "澄清问题背景");
+        there.host = Some(crate::model::Host { id: "m-2".into(), name: "Mac mini".into() });
+        let mut elsewhere = session("0199eeee-1111-4222-8333-444455556666", None, "/Users/y/Developer/opentrends", "别的事");
+        elsewhere.host = there.host.clone();
+        let ids = |q: &str| matching(q, vec![here.clone(), there.clone(), elsewhere.clone()]).into_iter().map(|(s, r)| (s.id[..8].to_string(), r)).collect::<Vec<_>>();
+        // each folder is its own project: nothing ties the two together
+        assert_eq!(ids("日历小插件"), [("0199cccc".to_string(), "cwd")]);
+        assert!(ids("modular diary").is_empty());
+        // the user merges them and names the project
+        crate::projects::change(|b| {
+            let id = b.merge("folder:m-2|/Users/y/Developer/日记插件", "folder:|/Users/c/vault/日历小插件")?;
+            b.rename(&id, "Modular Diary")
+        })
+        .unwrap();
+        // the project's name finds both; a kind word narrows it as before
+        assert_eq!(ids("modular diary"), [("0199cccc".to_string(), "project"), ("0199dddd".to_string(), "project")]);
+        assert_eq!(ids("codex Modular"), [("0199cccc".to_string(), "project"), ("0199dddd".to_string(), "project")]);
+        // this machine's folder name finds the same work on the other machine, and the other way round
+        assert_eq!(ids("日历小插件"), [("0199cccc".to_string(), "project"), ("0199dddd".to_string(), "project")]);
+        assert_eq!(ids("日记插件").len(), 2);
+        // what is not filed there is not found by it
+        assert!(ids("modular opentrends").is_empty());
+        assert_eq!(ids("opentrends"), [("0199eeee".to_string(), "cwd")]);
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// What looking up where each session is filed costs a search over a large made-up history:
+    /// 20,000 sessions in 2,000 folders on two machines, 60 projects of three folders each.
+    /// Prints the time of the whole match and of the filing part alone.
+    #[test]
+    #[ignore]
+    fn probe_filing_cost_on_a_large_history() {
+        let dir = std::env::temp_dir().join(format!("dispatch-filed-cost-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        crate::projects::change(|b| {
+            for p in 0..60 {
+                let id = b.merge(&format!("folder:m-2|/Users/y/dev/folder-{}", p * 3 + 1), &format!("folder:|/Users/c/dev/folder-{}", p * 3))?;
+                let id = b.merge(&format!("folder:m-2|/Users/y/dev/folder-{}", p * 3 + 2), &id)?;
+                b.rename(&id, &format!("Product {p}"))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let sessions: Vec<Session> = (0..20_000)
+            .map(|i| {
+                let mut s = session(&format!("{:08x}-1111-4222-8333-444455556666", i), None, &format!("/Users/{}/dev/folder-{}", if i % 2 == 0 { "c" } else { "y" }, i % 2000), "某个任务的第一句话");
+                if i % 2 == 1 {
+                    s.host = Some(crate::model::Host { id: "m-2".into(), name: "Mac mini".into() });
+                }
+                s
+            })
+            .collect();
+        let filing = crate::projects::load();
+        let index = filing.search_index();
+        let t = std::time::Instant::now();
+        let hits = sessions.iter().filter(|s| filing.project_of(s).and_then(|id| index.get(&id)).is_some()).count();
+        let filing_ms = t.elapsed().as_millis();
+        let t = std::time::Instant::now();
+        let found = matching("product 7", sessions.clone()).len();
+        let match_ms = t.elapsed().as_millis();
+        let t = std::time::Instant::now();
+        let none = matching("zzqq nothing", sessions).len();
+        let miss_ms = t.elapsed().as_millis();
+        eprintln!("20000 sessions, 60 projects: filing alone {filing_ms} ms ({hits} filed); matching \"product 7\" {match_ms} ms ({found} found); matching nothing {miss_ms} ms ({none} found)");
+        assert!(found > 0 && none == 0);
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Codex's automatic approval reviewer writes a thread per check ("Guardian review"), with a

@@ -103,7 +103,16 @@ struct Waits {
     /// Sessions the app tried to open and could not.
     failed: Mutex<HashSet<String>>,
     /// Codex threads the app is running in the background now.
-    running: std::sync::Arc<Mutex<HashSet<String>>>,
+    running: std::sync::Arc<Mutex<std::collections::HashMap<String, BackgroundRun>>>,
+}
+
+/// A Codex thread the app is running in the background: what the user sees of it, and the
+/// switch that makes the run leave the thread.
+#[derive(Clone)]
+struct BackgroundRun {
+    name: String,
+    since: String,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The longest the app runs a Codex thread in the background for one round of messages.
@@ -115,11 +124,15 @@ const QUIET_SECS: u64 = 3;
 /// A session the app opened itself is not opened again for this long.
 const REOPEN_SECS: u64 = 600;
 
-/// Why a waiting message needs the user, or None when the app takes care of it: the setting says
-/// remind only (`ask`), opening failed (`failed`), it was opened and still has not taken the
-/// message (`stuck`), or there is no way to open it here (`manual`).
+/// Why a waiting message needs the user, or None when the app takes care of it: the user took
+/// the session back from the app (`handed`), the setting says remind only (`ask`), opening
+/// failed (`failed`), it was opened and still has not taken the message (`stuck`), or there is
+/// no way to open it here (`manual`).
 fn needs_you(app: &AppHandle, mode: &str, w: &Value) -> Option<&'static str> {
     let sid = w["session"]["id"].as_str().unwrap_or("");
+    if w["handed"] == true {
+        return Some("handed");
+    }
     if mode != "auto" {
         return Some("ask");
     }
@@ -167,6 +180,72 @@ async fn wait_open(app: AppHandle, id: String) -> Result<Value, String> {
     forget_feed(&app);
     let _ = app.emit("dispatch:changed", ());
     Ok(v)
+}
+
+/// The Codex threads the app is running in the background now, and the sessions the user took
+/// back from it (those it will not open by itself).
+#[tauri::command]
+async fn background_list(app: AppHandle) -> Result<Value, String> {
+    let running: Vec<Value> = app.state::<Waits>().running.lock().map(|r| r.iter().map(|(id, b)| json!({ "id": id, "name": b.name, "since": b.since, "stopping": b.stop.load(std::sync::atomic::Ordering::Relaxed) })).collect()).unwrap_or_default();
+    blocking(move || {
+        let handed: Vec<Value> = wake::handed_back_list()
+            .into_iter()
+            .map(|id| {
+                let name = dispatch_core::discover::lookup(&id).map(|s| s.display_name()).unwrap_or_else(|| model::short_id(&id));
+                json!({ "id": id, "name": name })
+            })
+            .collect();
+        Ok(json!({ "running": running, "handed": handed }))
+    })
+    .await
+}
+
+/// Give a session back to its own app: the background run (if one has it) stops its turn and
+/// lets go of the thread, and from now on the app only reminds about messages for it. Answers
+/// once the thread is free, or after a while with `released: false` when it still is not.
+#[tauri::command]
+async fn hand_back(app: AppHandle, id: String) -> Result<Value, String> {
+    let id = id.to_lowercase();
+    let runs = app.state::<Waits>().running.clone();
+    let was_running = match runs.lock() {
+        Ok(r) => match r.get(&id) {
+            Some(b) => {
+                b.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                true
+            }
+            None => false,
+        },
+        Err(_) => false,
+    };
+    let id2 = id.clone();
+    let released = blocking(move || {
+        // noted on every copy pending for it: what was opened for before starts over, so a
+        // message that was never taken is opened for again once the user lets Dispatch run it
+        wake::hand_back(&Store::open(), &id2, true).map_err(err)?;
+        // the run notices within a second, interrupts its turn and closes its Codex
+        let until = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < until && runs.lock().map(|r| r.contains_key(&id2)).unwrap_or(false) {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let gone = !runs.lock().map(|r| r.contains_key(&id2)).unwrap_or(false);
+        // what Codex's own lock says, where it can be told: free means the user can type or archive
+        Ok(gone && dispatch_core::codex::thread_open(&id2) != Some(true))
+    })
+    .await?;
+    forget_feed(&app);
+    let _ = app.emit("wait:changed", ());
+    let _ = app.emit("dispatch:changed", ());
+    Ok(json!({ "id": id, "was_running": was_running, "released": released, "text": if released { t("wake.handed") } else { t("wake.handed_stuck") } }))
+}
+
+/// Let the app open a session by itself again.
+#[tauri::command]
+async fn hand_back_undo(app: AppHandle, id: String) -> Result<(), String> {
+    blocking(move || wake::hand_back(&Store::open(), &id, false).map(|_| ()).map_err(err)).await?;
+    forget_feed(&app);
+    let _ = app.emit("wait:changed", ());
+    let _ = app.emit("dispatch:changed", ());
+    Ok(())
 }
 
 /// Later: put the reminder away for what it shows now.
@@ -1424,11 +1503,23 @@ fn start_wake_watcher(app: AppHandle) {
                     for w in &list {
                         let s = &w["session"];
                         let (Some(sid), Some("Codex")) = (s["id"].as_str(), s["harness"].as_str()) else { continue };
-                        if w["woken"] == true || dispatch_core::codex::thread_open(sid) != Some(false) {
+                        // one the user took back is theirs: its messages wait, and they are reminded
+                        if w["handed"] == true || w["woken"] == true || dispatch_core::codex::thread_open(sid) != Some(false) {
                             continue;
                         }
                         let running = app.state::<Waits>().running.clone();
-                        if !running.lock().map(|mut r| r.insert(sid.to_string())).unwrap_or(false) {
+                        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let fresh = running
+                            .lock()
+                            .map(|mut r| {
+                                if r.contains_key(sid) {
+                                    return false;
+                                }
+                                r.insert(sid.to_string(), BackgroundRun { name: s["name"].as_str().unwrap_or("").to_string(), since: dispatch_core::store::now_text(), stop: stop.clone() });
+                                true
+                            })
+                            .unwrap_or(false);
+                        if !fresh {
                             continue;
                         }
                         wake::opened(&store, sid, "auto, background");
@@ -1438,7 +1529,7 @@ fn start_wake_watcher(app: AppHandle) {
                         }
                         let (app2, sid) = (app.clone(), sid.to_string());
                         let _ = std::thread::Builder::new().name("dispatch-codex-run".into()).spawn(move || {
-                            let result = dispatch_core::codex::run_unopened(&sid, BACKGROUND_MAX);
+                            let result = dispatch_core::codex::run_unopened_until(&sid, BACKGROUND_MAX, &stop);
                             if let Err(e) = &result {
                                 eprintln!("dispatch: running Codex thread {sid} in the background: {e:#}");
                             }
@@ -1454,15 +1545,16 @@ fn start_wake_watcher(app: AppHandle) {
                     }
                 }
                 // what runs in the background is taken care of: not opened, nobody reminded
-                let running_now = app.state::<Waits>().running.lock().map(|r| r.clone()).unwrap_or_default();
+                let running_now: HashSet<String> = app.state::<Waits>().running.lock().map(|r| r.keys().cloned().collect()).unwrap_or_default();
                 let list: Vec<Value> = list.into_iter().filter(|w| !running_now.contains(w["session"]["id"].as_str().unwrap_or(""))).collect();
                 // only while nobody is typing, so a window that comes up cannot take a keystroke
                 if mode == "auto" && idle_secs().map(|s| s >= QUIET_SECS).unwrap_or(true) {
                     let mut seen = HashSet::new();
                     for w in &list {
                         let Some(sid) = w["session"]["id"].as_str() else { continue };
-                        // once per message: a session opened for it that still did not take it is left to the user
-                        if w["woken"] == true || !seen.insert(sid.to_string()) {
+                        // once per message: a session opened for it that still did not take it is left to the user;
+                        // and never one the user took back
+                        if w["handed"] == true || w["woken"] == true || !seen.insert(sid.to_string()) {
                             continue;
                         }
                         let tried = app.state::<Waits>().failed.lock().map(|f| f.contains(sid)).unwrap_or(false);
@@ -1687,7 +1779,7 @@ pub fn run() {
             sessions, find, feed, threads, dispatch_status, send, reply, open_session, setup_status, install_cli, install_hook, install_plugin, install_antigravity_skill, setup_mark, set_onboarded, set_grok_sections, project_move, project_folder, project_merge, project_order, project_release, project_rename, project_dissolve, project_dismiss, update_check, update_install, update_status, set_update_mode, get_lang, set_lang, set_notify, set_theme, retry, cancel,
             peers_overview, peer_scan, peer_set_name, peer_code, peer_pair, peer_remove, peer_set_address, contact_set, contact_remove, me_set, search_sessions, harness_icons, session_page, set_inbound, open_local_network_settings,
             peer_link, peer_verify, peer_rule, set_peer_internet, set_peer_relay, review_list, review_info, review_decide, review_close, review_open, review_settings, set_review, review_forget,
-            wait_list, wait_open, wait_dismiss, set_wake, set_share_default, share_set
+            wait_list, wait_open, wait_dismiss, background_list, hand_back, hand_back_undo, set_wake, set_share_default, share_set
         ])
         .setup(|app| {
             let handle = app.handle().clone();
