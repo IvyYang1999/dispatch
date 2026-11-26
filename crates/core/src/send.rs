@@ -90,6 +90,18 @@ pub fn resolve_how(query: &str) -> Result<(Session, Match)> {
         Some(p) => s.host.as_ref().map(|h| h.id == p.id).unwrap_or(false),
         None => true,
     };
+    // a role: the session that answers for it, wherever it is and whatever its age
+    if let Some(r) = crate::about::role(q).filter(|r| match (&host, &r.host) {
+        (Some(p), Some(h)) => p.id == h.id,
+        (Some(_), None) => false,
+        (None, _) => true,
+    }) {
+        let s = match &r.host {
+            Some(h) => discover::sessions().into_iter().find(|s| s.id.eq_ignore_ascii_case(&r.session_id) && s.host.as_ref().map(|x| x.id == h.id).unwrap_or(false)).unwrap_or_else(|| peer::remote_target(&h.id, &h.name, &r.session_id, None, r.harness)),
+            None => discover::lookup(&r.session_id).unwrap_or_else(|| bare_session(r.harness, &r.session_id, None)),
+        };
+        return Ok((s, Match::Exact));
+    }
     let recent: Vec<Session> = discover::sessions().into_iter().filter(|s| on_host(s)).collect();
     if let Some(hit) = pick(q, &recent)? {
         return Ok(hit);
@@ -130,10 +142,8 @@ fn pick(q: &str, all: &[Session]) -> Result<Option<(Session, Match)>> {
         return Ok(Some((exact[0].clone(), Match::Exact)));
     }
     let ql = q.to_lowercase();
-    let about = |s: &Session| -> Option<String> {
-        let host_id = s.host.as_ref().map(|h| h.id.as_str());
-        book.iter().find(|c| c.session_id.eq_ignore_ascii_case(&s.id) && c.host.as_ref().map(|h| h.id.as_str()) == host_id).and_then(|c| c.description.clone())
-    };
+    let view = crate::about::View::with(book.clone());
+    let about = |s: &Session| -> Option<String> { view.of(s).about };
     let mut hits: Vec<&Session> = all.iter().filter(|s| s.id.to_lowercase().starts_with(&ql)).collect();
     let how = if hits.is_empty() { Match::Fragment } else { Match::Id };
     if hits.is_empty() {
@@ -644,6 +654,24 @@ mod tests {
 
     /// A Grok bot that wrote in under its name is answered by that name (issue #12), and only
     /// when the name picks out one bot: never a session whose title matches, never a guess.
+    #[test]
+    fn a_role_is_an_address_for_the_session_that_answers_for_it() {
+        let dir = std::env::temp_dir().join(format!("dispatch-role-send-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let owner = "7a7a7a7a-1111-4222-8333-444455556666";
+        let there = "8b8b8b8b-1111-4222-8333-444455556666";
+        crate::about::set_role("handoff助理", &bare_session(Harness::Codex, owner, None), "self", Some("例行任务")).unwrap();
+        let (s, how) = resolve_how("Handoff助理").unwrap();
+        assert_eq!((s.id.as_str(), how, s.harness), (owner, Match::Exact, Harness::Codex));
+        // one that points at a session on another machine: addressed there, with or without the machine in front
+        let remote = peer::remote_target("m-2", "主力", there, None, Harness::Codex);
+        crate::about::set_role("发版", &remote, "cli", None).unwrap();
+        let (s, _) = resolve_how("发版").unwrap();
+        assert_eq!((s.id.as_str(), s.host.as_ref().map(|h| h.id.as_str())), (there, Some("m-2")));
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn a_bot_that_wrote_under_its_name_is_answered_by_it() {
         let here = vec![claude("0199aaaa-1111-4222-8333-444455556666", "OpenTrends QA"), bot("bot-qa", "OpenTrends QA"), bot("bot-dev", "OpenTrends Dev")];

@@ -459,6 +459,34 @@ struct Remote {
 static REMOTE: LazyLock<Mutex<HashMap<String, Remote>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// How a message would reach the remote sessions searches turned up, by (machine, session).
 static FOUND: LazyLock<Mutex<HashMap<(String, String), Reach>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+/// What a machine said one of its sessions is for, by (machine, session).
+static TOLD: LazyLock<Mutex<HashMap<(String, String), Told>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// What a session's own machine said about it when it listed it or found it.
+#[derive(Debug, Clone, Default)]
+pub struct Told {
+    pub about: Option<String>,
+    pub roles: Vec<crate::about::RoleLine>,
+}
+
+/// What its machine said a remote session is for, the last time it listed or found it.
+pub fn told(host_id: &str, session_id: &str) -> Option<Told> {
+    TOLD.lock().unwrap().get(&(host_id.to_string(), session_id.to_lowercase())).cloned()
+}
+
+fn remember_told(host_id: &str, rs: &wire::RemoteSession) {
+    let mut told = TOLD.lock().unwrap();
+    if told.len() > 5000 {
+        told.clear();
+    }
+    let key = (host_id.to_string(), rs.session.id.to_lowercase());
+    if rs.about.is_none() && rs.roles.is_empty() {
+        told.remove(&key);
+    } else {
+        told.insert(key, Told { about: rs.about.clone(), roles: rs.roles.clone() });
+    }
+}
+
 /// Peers that did not answer, and until when they are left alone.
 static OFFLINE: LazyLock<Mutex<HashMap<String, (Instant, String)>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// What a peer last said about a copy on it: (kind, stage key), by letter id.
@@ -620,6 +648,7 @@ pub fn sessions_of(p: &PeerInfo) -> Option<Vec<Session>> {
             let mut list = vec![];
             let mut reach = HashMap::new();
             for rs in sessions {
+                remember_told(&p.id, &rs);
                 let mut s = rs.session;
                 s.host = Some(Host { id: p.id.clone(), name: p.name.clone() });
                 s.transcript = None;
@@ -683,6 +712,7 @@ pub fn remote_find(query: &str, only: Option<&PeerInfo>) -> Vec<Session> {
                     found.clear();
                 }
                 for rs in sessions {
+                    remember_told(&p.id, &rs);
                     let mut s = rs.session;
                     s.host = Some(Host { id: p.id.clone(), name: p.name.clone() });
                     s.transcript = None;
