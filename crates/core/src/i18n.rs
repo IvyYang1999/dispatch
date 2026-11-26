@@ -155,7 +155,7 @@ pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
         // where a copy stands
         "stage.replied" => ("已回复", "Replied"),
         "stage.finished" => ("本轮结束，没有回信", "Turn finished, no reply"),
-        "notice.unanswered" => ("「{to}」处理完了你发给它的信（id {id}），这一轮已经结束，但它没有通过 Dispatch 回信。它在自己的会话里说了什么，这里看不到，不要假设它照做了或者还在处理。需要结果的话：用 dispatch_send 再给它发一封追问，或者告诉用户它没有回信，请用户去那个会话里看。", "\"{to}\" has finished its turn on the message you sent it (id {id}) and did not reply through Dispatch. What it said in its own session cannot be seen from here: do not assume it did what you asked, or that it is still working on it. If you need the result, send it a follow-up with dispatch_send, or tell the user it did not reply and ask them to look in that session."),
+        "notice.unanswered" => ("「{to}」处理完了你发给它的信（id {id}）的这一轮，没有通过 Dispatch 回信。这不一定是问题：它可能在等它自己的用户确认，或者要分几轮做完。它在自己的会话里说了什么，这里看不到，不要假设它照做了。不要追发；如果现在就需要结果，告诉你的用户它还没有回信，请用户去那个会话里看。", "\"{to}\" finished its turn on the message you sent it (id {id}) without replying through Dispatch. That may be no problem: it may be waiting for its own user, or working over several turns. What it said in its own session cannot be seen from here, so do not assume it did what you asked. Do not write to it again; if you need the result now, tell your user it has not replied yet and let them look in that session."),
         "notify.unanswered" => ("{to} 处理完了，但没有回信", "{to} finished without replying"),
         "stage.working" => ("处理中", "Working on it"),
         "stage.stopped" => ("已送达，这一轮被中断了，没有处理完", "Delivered; its turn was stopped before it finished"),
@@ -350,6 +350,7 @@ pub(crate) fn pair(key: &str) -> (&'static str, &'static str) {
         "send.peer_already" => ("这封已经到过了", "Already received"),
         "send.peer_recent" => ("这封已经在手里，几分钟内刚试过投递；由这边的邮差接着管", "Already here and tried within the last few minutes; this machine's sweep keeps at it"),
         "send.from_at" => ("{from} @ {host}", "{from} @ {host}"),
+        "send.quiet" => ("留在信箱，不唤醒它：它下次开口或查信箱时读到", "Kept in the store without waking it: it reads it the next time it speaks or looks in its inbox"),
         "send.stored_hook" => ("{why}，留在信箱，等 hook 递", "{why}; kept in the store for the hook"),
         "send.hold" => ("它跳过了权限确认，直投会被扣下；留在信箱：它忙着就本轮结束时递到，空闲就等它下次开口（设置里可开「立即收信」）", "It bypasses permission checks, so a direct delivery would be held; kept in the store: handed over when its turn ends if it is busy, at its next turn if idle (Settings can turn on immediate delivery)"),
         "send.refuse" => ("它拒收其他程序的消息；留在信箱，等 hook 递", "It refuses messages from other programs; kept in the store for the hook"),

@@ -215,7 +215,8 @@ pub fn open_command(s: &Session) -> Option<(String, Option<String>)> {
 /// The copies on this machine waiting for their session to be opened, oldest first.
 pub fn waiting(store: &Store) -> Vec<Value> {
     let Ok(letters) = store.list(None, false) else { return vec![] };
-    let candidates: Vec<Letter> = letters.into_iter().filter(|l| l.to_host.is_none() && (l.status == store::DELIVERED_CODEX || l.status == store::UNREAD) && current(l)).collect();
+    // a quiet copy waits for its session to speak: no session is opened for it
+    let candidates: Vec<Letter> = letters.into_iter().filter(|l| l.wake && l.to_host.is_none() && (l.status == store::DELIVERED_CODEX || l.status == store::UNREAD) && current(l)).collect();
     if candidates.is_empty() {
         return vec![];
     }

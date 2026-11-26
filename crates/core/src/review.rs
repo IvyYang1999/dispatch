@@ -454,7 +454,7 @@ mod tests {
         let a = "aaaaaaaa-1111-4222-8333-444455556666";
         let b = "bbbbbbbb-1111-4222-8333-444455556666";
         let send_as = |from: &str, to: &str, text: &str, review: bool| {
-            send::send(&store, send::Request { to: session(to, Harness::Claude, None), from: from.into(), from_name: "A".into(), text: text.into(), urgency: "普通".into(), dispatch_id: None, wait: false, allow_resume: false, deadline: None, review }).unwrap()
+            send::send(&store, send::Request { to: session(to, Harness::Claude, None), from: from.into(), from_name: "A".into(), text: text.into(), urgency: "普通".into(), dispatch_id: None, wait: false, allow_resume: false, deadline: None, review, quiet: false }).unwrap()
         };
         let letter = |id: &str| store.find(id).unwrap().unwrap();
 
@@ -602,7 +602,7 @@ mod tests {
         let a = "aaaaaaaa-1111-4222-8333-444455556666";
         let to = |id: &str| session(id, Harness::Claude, None);
         let send_to = |id: &str| {
-            send::send(&store, send::Request { to: to(id), from: a.into(), from_name: "A".into(), text: "hello".into(), urgency: "普通".into(), dispatch_id: None, wait: false, allow_resume: false, deadline: None, review: true }).unwrap()
+            send::send(&store, send::Request { to: to(id), from: a.into(), from_name: "A".into(), text: "hello".into(), urgency: "普通".into(), dispatch_id: None, wait: false, allow_resume: false, deadline: None, review: true, quiet: false }).unwrap()
         };
         let stage = |id: &str| {
             let v = crate::ops::status(&store, id).unwrap();
@@ -696,7 +696,7 @@ mod tests {
         let store = Store::open();
         touch_app(&store);
         let b = "bbbbbbbb-1111-4222-8333-444455556666";
-        let send_from = |from: &str| send::send(&store, send::Request { to: session(b, Harness::Claude, None), from: from.into(), from_name: from.into(), text: "hello".into(), urgency: "普通".into(), dispatch_id: None, wait: false, allow_resume: false, deadline: None, review: true }).unwrap();
+        let send_from = |from: &str| send::send(&store, send::Request { to: session(b, Harness::Claude, None), from: from.into(), from_name: from.into(), text: "hello".into(), urgency: "普通".into(), dispatch_id: None, wait: false, allow_resume: false, deadline: None, review: true, quiet: false }).unwrap();
         for from in ["cli", "mcp", "Test Bot"] {
             let rep = send_from(from);
             assert_eq!(rep.route, "review", "{from} is held");
