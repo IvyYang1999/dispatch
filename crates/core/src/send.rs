@@ -297,11 +297,36 @@ pub fn can_reply(l: &Letter) -> bool {
     l.from_host.is_some() || reply_target(&l.from).is_ok()
 }
 
-/// The text the session sees: who sent it, when, the body, and how to answer (or that it cannot
-/// be answered: no reply instruction that is bound to fail).
+/// What the recipient is told about the user's review of this message, as one line under the
+/// header: that the user was shown this text and pressed Send, or that they did not see it.
+/// Nothing when the message has no mark, when a mark from another machine was not signed by
+/// it (checked on arrival), or when the mark was made for another text than the body has now.
+pub fn mark_text(l: &Letter) -> Option<String> {
+    let m = l.review.as_ref()?;
+    if (l.from_host.is_some() && m.signature.is_none()) || !m.holds_for(&l.body) {
+        return None;
+    }
+    let key = match m.state.as_str() {
+        store::MARK_FULL => "send.mark_full",
+        store::MARK_PART => "send.mark_part",
+        store::MARK_STANDING => "send.mark_standing",
+        store::MARK_NONE => "send.mark_none",
+        _ => return None,
+    };
+    Some(t(key).replace("{at}", m.at.as_deref().unwrap_or("?")))
+}
+
+/// The mark as a line of its own after the header, or nothing.
+fn mark_line(l: &Letter) -> String {
+    mark_text(l).map(|m| format!("\n{m}")).unwrap_or_default()
+}
+
+/// The text the session sees: who sent it, when, what the user saw of it, the body, and how to
+/// answer (or that it cannot be answered: no reply instruction that is bound to fail).
 pub fn envelope(l: &Letter) -> String {
     let key = if can_reply(l) { "send.envelope" } else { "send.envelope_noreply" };
     t(key)
+        .replace("{mark}", &mark_line(l))
         .replace("{from}", &sender_text(l))
         .replace("{created}", &l.created)
         .replace("{id}", &crate::model::short_id(&l.id))
@@ -560,6 +585,9 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
         to_host_name: req.to.host.as_ref().map(|h| h.name.clone()),
         from_harness: sender_harness(&req.from).map(str::to_string),
         signature: None,
+        // a new message that is not held says it was not shown; a held one is marked when the
+        // user presses Send (`review::decide`); a reply carries no mark
+        review: if req.review && !held { crate::review::skipped(store, &req.from, &req.to) } else { None },
         created,
         body: req.text.clone(),
         path: String::new(),

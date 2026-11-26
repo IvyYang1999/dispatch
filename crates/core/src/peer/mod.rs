@@ -763,8 +763,14 @@ pub fn remote_reach(s: &Session) -> Reach {
 /// Hand a letter to the machine its recipient is on: (status there, route, detail).
 pub fn deliver(host: &Host, letter: &Letter) -> Result<(String, String, String), PeerError> {
     let Some(p) = peers().map_err(|e| PeerError::Refused(format!("{e:#}")))?.into_iter().find(|p| p.id == host.id) else { return Err(PeerError::Refused("not paired with that machine".into())) };
-    let signature = net::secret().ok().map(|k| sign::sign(&k, letter));
-    match ask(&p, &Request::Deliver { letter: letter.clone(), signature })? {
+    let key = net::secret().ok();
+    let signature = key.as_ref().map(|k| sign::sign(k, letter));
+    // the review mark travels with its own signature: an older version takes the letter without it
+    let mut out = letter.clone();
+    if let Some(k) = &key {
+        sign::seal_mark(k, &mut out);
+    }
+    match ask(&p, &Request::Deliver { letter: out, signature })? {
         Response::Delivered { status, route, detail } => Ok((status, route, detail)),
         Response::Error { message } => Err(PeerError::Refused(message)),
         _ => Err(PeerError::Protocol("unexpected answer".into())),
@@ -908,6 +914,7 @@ pub fn mirror(store: &Store) -> Result<usize> {
                         let hold = !p.verified || p.rule == "ask";
                         let mut l = remote.clone();
                         l.signature = rc.signature.clone();
+                        let unmarked = sign::keep_valid_mark(p.iroh_id.as_deref(), &mut l);
                         l.to_host = None;
                         l.to_host_name = None;
                         l.from_host = Some(p.id.clone());
@@ -916,6 +923,9 @@ pub fn mirror(store: &Store) -> Result<usize> {
                         l.path = String::new();
                         store.write_letter(&mut l)?;
                         store.append_run(&l.id, "peer", "pulled", &format!("{}; signature verified", p.name))?;
+                        if unmarked {
+                            store.append_run(&l.id, "mark", "dropped", "the review mark did not check out against that machine's key")?;
+                        }
                         if hold {
                             store.append_run(&l.id, "peer", "held", if !p.verified { "machine not confirmed yet" } else { "rule: ask first" })?;
                         } else {
@@ -1180,6 +1190,7 @@ mod tests {
             to_host_name: Some(b_me.name.clone()),
             from_harness: None,
             signature: None,
+            review: None,
         };
         let a_store = Store::at(a_root.clone());
         let mut mine = letter.clone();
@@ -1217,6 +1228,33 @@ mod tests {
             other => panic!("an unsigned letter must be refused: {other:?}"),
         }
         assert!(Store::at(b_root.clone()).list(None, false).unwrap().iter().all(|l| l.id != forged.id), "nothing forged was stored");
+        // a review mark crosses with the letter, signed by A, and B tells the recipient
+        let mut marked = letter.clone();
+        marked.id = uuid::Uuid::new_v4().to_string();
+        marked.body = "the user saw this".into();
+        marked.review = Some(store::Mark { state: store::MARK_FULL.into(), at: Some(store::now_text()), digest: Some(store::body_digest(&marked.body)), signature: None });
+        deliver(&Host { id: b_me.id.clone(), name: b_me.name.clone() }, &marked).expect("marked delivery");
+        let there = Store::at(b_root.clone()).list(None, false).unwrap().into_iter().find(|l| l.id == marked.id).expect("stored on B");
+        assert_eq!(there.review.as_ref().map(|m| m.state.as_str()), Some(store::MARK_FULL));
+        assert!(there.review.as_ref().unwrap().signature.is_some(), "kept with A's signature over it");
+        assert!(crate::send::envelope(&there).contains(&crate::send::mark_text(&there).expect("B tells the recipient")));
+        // a mark A's key did not sign (a session there wrote it in, or it changed on the way)
+        // is dropped; the letter itself is A's and is taken
+        let a_key = net::secret().unwrap();
+        let mut claimed = letter.clone();
+        claimed.id = uuid::Uuid::new_v4().to_string();
+        claimed.body = "nobody saw this".into();
+        let honest = sign::sign(&a_key, &claimed);
+        claimed.review = Some(store::Mark { state: store::MARK_FULL.into(), at: Some(store::now_text()), digest: Some(store::body_digest(&claimed.body)), signature: None });
+        sign::seal_mark(&iroh::SecretKey::generate(), &mut claimed);
+        match client::request(&p, &Request::Deliver { letter: claimed.clone(), signature: Some(honest) }) {
+            Ok(Response::Delivered { .. }) => {}
+            other => panic!("the letter is A's and must be taken: {other:?}"),
+        }
+        let b_store = Store::at(b_root.clone());
+        let plain = b_store.list(None, false).unwrap().into_iter().find(|l| l.id == claimed.id).expect("stored on B");
+        assert!(plain.review.is_none() && crate::send::mark_text(&plain).is_none(), "the forged mark did not come along");
+        assert!(b_store.runs(&claimed.id).iter().any(|r| r.action == "mark" && r.result == "dropped"));
         // a machine that is not confirmed gets its letters held; confirming it releases them
         store::set_thread_root(Some(b_root.clone()));
         persistence::update(|book| { book.peers.iter_mut().for_each(|x| x.verified = false); Ok(()) }).unwrap();

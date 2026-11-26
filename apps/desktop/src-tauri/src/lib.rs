@@ -513,8 +513,8 @@ async fn review_info(id: String) -> Result<Value, String> {
 /// The user's answer: send, trust (send, and let this sender write to this recipient from now
 /// on) or decline.
 #[tauri::command]
-async fn review_decide(app: AppHandle, id: String, decision: String) -> Result<Value, String> {
-    let r = blocking(move || review::decide(&Store::open(), &id, &decision).map_err(err)).await;
+async fn review_decide(app: AppHandle, id: String, decision: String, seen: review::Seen) -> Result<Value, String> {
+    let r = blocking(move || review::decide(&Store::open(), &id, &decision, &seen).map_err(err)).await;
     forget_feed(&app);
     let _ = app.emit("dispatch:changed", ());
     r

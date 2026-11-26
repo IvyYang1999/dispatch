@@ -690,6 +690,10 @@ fn run() -> Result<i32> {
             } else {
                 for l in &letters {
                     println!("{}\n    {}", t("cli.inbox_line").replace("{id}", &model::short_id(&l.id)).replace("{status}", status_label(&l.status)).replace("{from}", &send::sender_text(l)).replace("{created}", &l.created), first_line(&l.body));
+                    // what the user saw of it, when the sending machine said
+                    if let Some(mark) = send::mark_text(l) {
+                        println!("    {mark}");
+                    }
                 }
             }
         }

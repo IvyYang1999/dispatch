@@ -148,6 +148,12 @@ pub(crate) fn handle(conn: &Conn, req: Request) -> Response {
                             let kind = if kind == "finished" { "replied".to_string() } else { kind };
                             // a letter that started here (a reply) carries this machine's signature
                             let signature = if l.from_host.is_none() { key.as_ref().map(|k| sign::sign(k, &l)) } else { None };
+                            let mut l = l;
+                            match (&key, l.from_host.is_none()) {
+                                (Some(k), true) => sign::seal_mark(k, &mut l),
+                                // a mark another machine made is that machine's to pass on, not this one's
+                                _ => l.review = None,
+                            }
                             copies.push(RemoteCopy { letter: l, kind, stage_key, signature });
                         }
                     }
@@ -388,6 +394,7 @@ fn deliver_in(store: &Store, peer: &PeerInfo, mut letter: Letter, signature: Opt
     letter.to_host = None;
     letter.to_host_name = None;
     letter.signature = Some(signature);
+    let unmarked = sign::keep_valid_mark(Some(signer), &mut letter);
     letter.status = if hold { store::HELD.into() } else { store::UNREAD.into() };
     letter.path = String::new();
     letter.wake = true;
@@ -402,6 +409,9 @@ fn deliver_in(store: &Store, peer: &PeerInfo, mut letter: Letter, signature: Opt
         return Response::Error { message: format!("{e:#}") };
     }
     let _ = store.append_run(&letter.id, "peer", "received", &format!("{}; signature verified", peer.name));
+    if unmarked {
+        let _ = store.append_run(&letter.id, "mark", "dropped", "the review mark did not check out against that machine's key");
+    }
     if hold {
         let why = if !peer.verified { "machine not confirmed yet" } else { "rule: ask first" };
         let _ = store.append_run(&letter.id, "peer", "held", why);

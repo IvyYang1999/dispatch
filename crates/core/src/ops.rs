@@ -652,7 +652,7 @@ pub fn inbox(store: &Store, session: Option<&str>, all: bool) -> Result<Value> {
     let letters: Vec<store::Letter> = store.list(Some(&sid), !all)?.into_iter().filter(|l| l.status != store::REVIEW).collect();
     let rows: Vec<Value> = letters
         .iter()
-        .map(|l| json!({ "id": l.id, "short_id": short_id(&l.id), "dispatch_id": l.dispatch_id, "from": l.from, "from_name": l.from_name, "from_host_name": l.from_host_name, "status": l.status, "created": l.created, "urgency": l.urgency, "body": l.body, "path": l.path, "can_reply": send::can_reply(l) }))
+        .map(|l| json!({ "id": l.id, "short_id": short_id(&l.id), "dispatch_id": l.dispatch_id, "from": l.from, "from_name": l.from_name, "from_host_name": l.from_host_name, "status": l.status, "created": l.created, "urgency": l.urgency, "body": l.body, "path": l.path, "can_reply": send::can_reply(l), "review": mark_json(l) }))
         .collect();
     Ok(json!({ "session_id": sid, "unread_only": !all, "count": rows.len(), "messages": rows }))
 }
@@ -858,6 +858,15 @@ pub fn stage_of(store: &Store, c: &store::Letter) -> (String, String) {
 }
 
 /// One recipient copy with its stage (see `stage_of`), the machines involved, and its run log.
+/// The review mark as a reader gets it: its state, when, and the sentence the recipient is
+/// shown. Null when the message has none that holds (`send::mark_text`).
+fn mark_json(l: &store::Letter) -> Value {
+    match (l.review.as_ref(), send::mark_text(l)) {
+        (Some(m), Some(text)) => json!({ "state": m.state, "at": m.at, "text": text }),
+        _ => Value::Null,
+    }
+}
+
 fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
     let (kind, key) = stage_of(store, c);
     let deadline = store::time_text(c.deadline_at());
@@ -872,6 +881,11 @@ fn copy_json(store: &Store, c: &store::Letter, with_runs: bool) -> Value {
     let runs = store.runs(&c.id);
     if let Some(r) = crate::review::summary(store, &runs) {
         v["review"] = r;
+    }
+    // what the recipient is told about the user's review of it
+    let mark = mark_json(c);
+    if !mark.is_null() {
+        v["mark"] = mark;
     }
     if with_runs {
         v["runs"] = json!(runs);
@@ -1252,6 +1266,7 @@ mod tests {
             to_host_name: None,
             from_harness: None,
             signature: None,
+            review: None,
             body: "hi".into(),
             path: String::new(),
         };
@@ -1286,6 +1301,7 @@ mod tests {
                 to_host_name: None,
                 from_harness: Some("claude".into()),
                 signature: None,
+                review: None,
                 body: body.into(),
                 path: String::new(),
             };
@@ -1374,6 +1390,7 @@ mod tests {
                 to_host_name: None,
                 from_harness: Some("claude".into()),
                 signature: None,
+                review: None,
                 body: "hello".into(),
                 path: String::new(),
             };
@@ -1548,6 +1565,7 @@ mod tests {
                 to_host_name: None,
                 from_harness: Some("claude".into()),
                 signature: None,
+                review: None,
                 body: body.into(),
                 path: String::new(),
             };
