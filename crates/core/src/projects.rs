@@ -142,6 +142,30 @@ impl Book {
         self.home_of(s)
     }
 
+    /// What a search finds sessions by through where the user filed them, by project id: the
+    /// project's name and the name of every folder filed under it, lowercased, one per line.
+    /// So the name the user gave two merged folders finds the sessions in both, and so does
+    /// either folder's own name: the one on this machine finds the same work on the other.
+    pub fn search_index(&self) -> std::collections::HashMap<String, String> {
+        self.projects
+            .iter()
+            .map(|p| {
+                let mut text = p.name.to_lowercase();
+                for f in &p.folders {
+                    text.push('\n');
+                    text.push_str(&folder_name(f).to_lowercase());
+                }
+                (p.id.clone(), text)
+            })
+            .collect()
+    }
+
+    /// The project a session is filed under when the user made or changed it: its id. None for
+    /// a folder nobody touched, whose name is in the session's own folder already.
+    pub fn project_of(&self, s: &Session) -> Option<String> {
+        Some(self.group_of(s)).filter(|g| !g.auto).map(|g| g.id)
+    }
+
     /// Where it would be without having been moved by hand.
     fn home_of(&self, s: &Session) -> Group {
         match folder_key(s) {
