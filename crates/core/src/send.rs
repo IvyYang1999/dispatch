@@ -38,6 +38,10 @@ pub struct Request {
     pub deadline: Option<chrono::Duration>,
     /// A new message (not a reply): it waits for the user's review when `review::needed` says so.
     pub review: bool,
+    /// Kept in the store and nothing more: it is not pushed into the session, put in its queue
+    /// or a reason to open it. The session reads it the next time it speaks (the hook hands it
+    /// over) or looks in its inbox. For what is worth knowing and not worth a turn.
+    pub quiet: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -548,6 +552,11 @@ pub fn deliver(store: &Store, to: &Session, letter: &mut Letter, wait: bool, all
     if let Some(h) = &to.host {
         return deliver_remote(store, h, letter, &report);
     }
+    // a quiet copy stays where it is: handing it to a running session or to a queue starts a
+    // turn, which is what it is not worth
+    if !letter.wake && to.harness != Harness::Human {
+        return Ok(report("stored", t("send.quiet").into()));
+    }
     match to.harness {
         Harness::Codex => deliver_codex(store, to, letter, allow_resume, &report),
         Harness::Grok => deliver_grok(store, to, letter, &report),
@@ -574,7 +583,7 @@ pub fn send(store: &Store, req: Request) -> Result<Report> {
         to: req.to.id.clone(),
         to_name: req.to.display_name(),
         urgency: req.urgency.clone(),
-        wake: true,
+        wake: !req.quiet,
         // held from the first byte: nothing hands over a copy that waits for review
         status: if held { store::REVIEW.into() } else { UNREAD.into() },
         deadline: Some(store::deadline_text(&created, wait_for)),
@@ -669,6 +678,29 @@ mod tests {
         let (s, _) = resolve_how("发版").unwrap();
         assert_eq!((s.id.as_str(), s.host.as_ref().map(|h| h.id.as_str())), (there, Some("m-2")));
         crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A quiet message starts no turn: it is not queued in Codex, pushed into a session or sent
+    /// to a bot, however often delivery is tried. It waits in the store.
+    #[test]
+    fn a_quiet_message_is_kept_and_not_delivered() {
+        let dir = std::env::temp_dir().join(format!("dispatch-quiet-{}", uuid::Uuid::new_v4()));
+        let s = Store::at(dir.clone());
+        for harness in [Harness::Codex, Harness::Claude, Harness::Grok, Harness::Antigravity] {
+            let to = bare_session(harness, &uuid::Uuid::new_v4().to_string(), Some("B".into()));
+            let rep = send(&s, Request { to: to.clone(), from: "dispatch".into(), from_name: "Dispatch".into(), text: "a note".into(), urgency: "普通".into(), dispatch_id: None, wait: false, allow_resume: false, deadline: None, review: false, quiet: true }).unwrap();
+            assert_eq!(rep.route, "stored", "{harness:?}");
+            let mut l = s.find(&rep.letter_id).unwrap().unwrap();
+            assert!(!l.wake && l.status == UNREAD);
+            // the postman's round and a retry come through here too
+            assert_eq!(deliver(&s, &to, &mut l, true, true).unwrap().route, "stored");
+            assert_eq!(s.find(&rep.letter_id).unwrap().unwrap().status, UNREAD);
+            let runs = s.runs(&rep.letter_id);
+            assert!(runs.iter().all(|r| r.action == "store"), "nothing tried to hand it over: {runs:?}");
+            // it is there for the session to read
+            assert_eq!(s.list(Some(&to.id), true).unwrap().len(), 1);
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 

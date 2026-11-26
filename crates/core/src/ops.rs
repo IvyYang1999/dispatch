@@ -424,7 +424,7 @@ pub fn send_many_opts(store: &Store, to: &[String], text: &str, urgency: &str, f
     let mut reports = vec![];
     for who in to {
         let (target, how) = send::resolve_how(who)?;
-        let rep = send::send(store, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: text.to_string(), urgency: urgency.to_string(), dispatch_id: Some(dispatch_id.clone()), wait: true, allow_resume, deadline, review: true })?;
+        let rep = send::send(store, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: text.to_string(), urgency: urgency.to_string(), dispatch_id: Some(dispatch_id.clone()), wait: true, allow_resume, deadline, review: true, quiet: false })?;
         let named = remember_match(who, &target, how);
         reports.push(json!({ "to": { "id": target.id, "short_id": target.short_id, "name": target.display_name(), "host": target.host, "address": target.address() }, "letter_id": rep.letter_id, "route": rep.route, "detail": rep.detail, "path": rep.path, "named": named }));
     }
@@ -451,6 +451,13 @@ pub fn reconcile(store: &Store, letters: &mut [store::Letter]) -> Result<usize> 
     for l in letters.iter_mut() {
         if crate::review::expire(store, l, now)? {
             n += 1;
+            continue;
+        }
+        // a quiet copy nobody read in time is put away: it was never something to deliver,
+        // so it is not a failed delivery
+        if l.overdue(now) && !l.wake {
+            store.set_status(l, store::CANCELLED)?;
+            store.append_run(&l.id, "deadline", "lapsed", "a quiet note nobody read in time")?;
             continue;
         }
         if l.overdue(now) {
@@ -551,6 +558,11 @@ const UNANSWERED_STALE_SECS: i64 = 30 * 60;
 /// session's own record. Once per message, to the sender's machine only (the copy that was
 /// sent from here), and never about a notice itself. A person who sent from the app is told
 /// by a notification instead (`watch`). Returns the notices sent.
+///
+/// The notice is quiet: it is left in the sender's inbox and starts no turn. A turn that ended
+/// is often not an answer withheld: the other session may be waiting for its own user, or
+/// working over several turns, and waking the sender for that costs it a whole turn in which
+/// it can only go and ask its user.
 pub fn notify_unanswered(store: &Store) -> Result<Vec<Value>> {
     notify_unanswered_after(store, UNANSWERED_AFTER_SECS)
 }
@@ -573,7 +585,7 @@ fn notify_among(store: &Store, letters: &[store::Letter], after_secs: i64) -> Re
             }
         };
         let text = t("notice.unanswered").replace("{to}", &c.to_name).replace("{id}", &short_id(&c.id));
-        let rep = send::send(store, send::Request { to: target.clone(), from: NOTICE_FROM.into(), from_name: "Dispatch".into(), text, urgency: store::urgency_stored("normal").to_string(), dispatch_id: Some(c.dispatch_id.clone()), wait: false, allow_resume: false, deadline: None, review: false })?;
+        let rep = send::send(store, send::Request { to: target.clone(), from: NOTICE_FROM.into(), from_name: "Dispatch".into(), text, urgency: store::urgency_stored("normal").to_string(), dispatch_id: Some(c.dispatch_id.clone()), wait: false, allow_resume: false, deadline: None, review: false, quiet: true })?;
         store.append_run(&c.id, "notice", "sent", &rep.letter_id)?;
         out.push(json!({ "about": c.id, "to": target.id, "letter_id": rep.letter_id, "route": rep.route }));
     }
@@ -634,7 +646,8 @@ pub fn sweep(store: &Store) -> Result<Value> {
     let failed = reconcile(store, &mut letters)?;
     // sessions whose message was worked on and not answered are told so (the list is already read)
     let _ = notify_among(store, &letters, UNANSWERED_AFTER_SECS);
-    let queued: Vec<&store::Letter> = letters.iter().filter(|l| l.status == store::UNREAD).collect();
+    // (a quiet copy is not delivered: it waits for its session to speak)
+    let queued: Vec<&store::Letter> = letters.iter().filter(|l| l.status == store::UNREAD && l.wake).collect();
     let mut retried = vec![];
     if !queued.is_empty() {
         let all = discover::sessions();
@@ -685,7 +698,7 @@ pub fn reply(store: &Store, id: &str, text: &str) -> Result<Value> {
         }
         None => send::reply_target(&orig.from)?,
     };
-    let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false, deadline: None, review: false })?;
+    let rep = send::send(store, send::Request { to: target.clone(), from: orig.to.clone(), from_name: orig.to_name.clone(), text: text.to_string(), urgency: orig.urgency.clone(), dispatch_id: Some(orig.dispatch_id.clone()), wait: true, allow_resume: false, deadline: None, review: false, quiet: false })?;
     // a reply that could not go is no answer: the message stays as it was, and says so
     if rep.route == "failed" {
         store.append_run(&orig.id, "reply", "failed", &rep.letter_id)?;
@@ -1467,6 +1480,11 @@ mod tests {
         assert_eq!((notice.to.as_str(), notice.from_name.as_str()), (delivered.from.as_str(), "Dispatch"));
         assert!(notice.body.contains(&short_id(&delivered.id)) && notice.body.contains("B"), "{}", notice.body);
         assert!(!notice.body.contains("hello"), "not what was written, and nothing of what the other session said");
+        // it is left for the sender to read and starts no turn: often the other session is only
+        // waiting for its own user
+        assert!(!notice.wake && notice.status == UNREAD, "{}", notice.status);
+        assert!(s.runs(&notice.id).iter().all(|r| r.action == "store"), "nothing handed it over");
+        assert!(!notice.body.contains("dispatch_send"), "and it does not suggest writing again");
         // once, and never a notice about a notice
         assert!(notify_unanswered_after(&s, 0).unwrap().is_empty());
         assert!(!notice_due(&s, &delivered, 0).unwrap() && !notice_due(&s, &notice, 0).unwrap());
@@ -1640,6 +1658,14 @@ mod tests {
         assert_eq!(got.iter().find(|l| l.id == old.id).unwrap().status, FAILED);
         assert_eq!(got.iter().find(|l| l.id == fresh.id).unwrap().status, UNREAD);
         assert!(s.runs(&old.id).iter().any(|r| r.action == "deadline" && r.result == "failed"));
+        // a quiet note nobody read in time is put away, not reported as a failed delivery
+        let note = letter(&s, "2020-01-01 10:00", None, UNREAD);
+        std::fs::write(&note.path, std::fs::read_to_string(&note.path).unwrap().replace("wake: true", "wake: false")).unwrap();
+        let mut all: Vec<Letter> = s.list(None, false).unwrap().into_iter().filter(|l| l.id == note.id).collect();
+        assert_eq!(all.len(), 1);
+        assert_eq!(reconcile(&s, &mut all).unwrap(), 0, "not counted among the failures");
+        assert_eq!(s.find(&note.id).unwrap().unwrap().status, CANCELLED);
+        cancel(&s, &note.id, "test").unwrap_err();
         // a failed copy is still pending: the hook would hand it over, a cancel withdraws it
         assert_eq!(s.list(Some(&old.to), true).unwrap().len(), 2);
         let v = cancel(&s, &old.id[..8], "test").unwrap();

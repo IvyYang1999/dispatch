@@ -651,7 +651,7 @@ fn run() -> Result<i32> {
             let mut reports = vec![];
             for who in &to {
                 let (target, how) = send::resolve_how(who)?;
-                let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume, deadline, review: true })?;
+                let rep = send::send(&st, send::Request { to: target.clone(), from: from_id.clone(), from_name: from_name.clone(), text: body.clone(), urgency: urgency.clone(), dispatch_id: Some(dispatch_id.clone()), wait: !no_wait, allow_resume, deadline, review: true, quiet: false })?;
                 if !json {
                     println!("→ {} ({}): {} [{}]", target.address(), target.short_id, rep.detail, model::short_id(&rep.letter_id));
                     if let Some(n) = dispatch_core::ops::remember_match(who, &target, how) {
