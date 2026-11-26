@@ -90,7 +90,11 @@ pub fn plain(s: &Session, r: &Reach) -> Plain {
         Some("reach.now_desktop" | "reach.now_terminal" | "reach.codex_now" | "reach.grok_now" | "reach.antigravity_now") => plain_of("now", "plain.now_title", t("plain.now").into(), None),
         Some("reach.human") => plain_of("now", "plain.now_title", r.text.clone(), None),
         Some("reach.codex_queue" | "reach.codex_nodaemon" | "reach.codex_notloaded") => {
-            if auto {
+            // a thread on this machine the user took back from the app: the app does not open
+            // it, whatever the setting says, and the page must not say it will
+            if s.host.is_none() && crate::wake::handed_back(&s.id) {
+                plain_of("you", "plain.you_title", t("plain.codex_handed").into(), None)
+            } else if auto {
                 plain_of("auto", "plain.auto_title", t("plain.codex").into(), None)
             } else {
                 plain_of("you", "plain.you_title", t("plain.codex_you").into(), None)
@@ -269,5 +273,32 @@ mod tests {
         }
         let odd = localized(Reach { level: Level::None, text: "something else".into(), fix: None, mode: None, client: None });
         assert_eq!(odd.text, "something else");
+    }
+
+    /// The thread's page said "Dispatch opens it for you" right above the line saying it had
+    /// been handed back and would not be opened.
+    #[test]
+    fn a_thread_handed_back_is_not_said_to_be_opened_for_you() {
+        let dir = std::env::temp_dir().join(format!("dispatch-reach-handed-{}", uuid::Uuid::new_v4()));
+        crate::store::set_thread_root(Some(dir.clone()));
+        let id = "019d0000-1111-7222-8333-444455556666";
+        let mut s = Session { harness: Harness::Codex, id: id.into(), short_id: "019d0000".into(), name: None, cwd: None, title: None, last_active: 0, running: false, desktop: false, host_session_id: None, status: None, transcript: None, host: None, project: None, app_name: None };
+        let queued = Reach { level: Level::Later, text: t("reach.codex_queue").into(), fix: None, mode: None, client: None };
+        // open automatically (the default): the app takes care of it
+        let p = plain(&s, &queued);
+        assert_eq!((p.kind.as_str(), p.detail.as_str()), ("auto", t("plain.codex")));
+        // taken back: it is the user's to open, and the words say why
+        crate::wake::set_handed_back(id, true).unwrap();
+        let p = plain(&s, &queued);
+        assert_eq!((p.kind.as_str(), p.title.as_str(), p.detail.as_str()), ("you", t("plain.you_title"), t("plain.codex_handed")));
+        // the same id on another machine is another thread: what this machine holds back says nothing about it
+        s.host = Some(crate::model::Host { id: "m-2".into(), name: "Mac mini".into() });
+        assert_eq!(plain(&s, &queued).kind, "auto");
+        s.host = None;
+        // let go again: back to what the setting says
+        crate::wake::set_handed_back(id, false).unwrap();
+        assert_eq!(plain(&s, &queued).kind, "auto");
+        crate::store::set_thread_root(None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
