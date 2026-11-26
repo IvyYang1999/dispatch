@@ -32,10 +32,20 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
 
 1. Once per session, call `dispatch_whoami` so you know your own address (and
    your machine's name: an agent elsewhere reaches you at `address_elsewhere`).
+   When its `note` says nothing describes you, say what you are for in one
+   line: `dispatch_register` with only `description` (without MCP,
+   `dispatch describe "<line>"`): which project or area you handle, what you
+   can change, what not to ask you for. No secrets, no personal details. This
+   does not name you; it is what a sender reads when it looks for who handles
+   something, and the user can change it in Dispatch.
 2. Locate the recipient with `dispatch_find` (a few words: a name, a project
    or folder, a word from its title, `codex`; every word must match) or
    `dispatch_sessions`. `dispatch_find` searches sessions of any age on every
-   paired machine, so an old session is found too; without MCP, run
+   paired machine, so an old session is found too. It also looks in what each
+   session was asked lately: when you do not know a name, search for the work
+   itself ("login page", "release notes"). A candidate found that way says
+   `reason: asked`, and one that shares its questions lists them under
+   `lately`; check them against what you are about to send; without MCP, run
    `dispatch find <words>`. Send only when exactly one candidate is clearly
    right; if several match, show them to the user and ask. Each session shares
    what its user chose (`share`): by default its name, the line about it and its
@@ -86,6 +96,17 @@ lists them with their `host`, and you address them as `<machine>/<session>`.
    recipient you found by a fragment is noted under those words as a
    provisional name (`named` in the send result): mention it, so the user can
    confirm or rename it in the directory.
+8. Something with no session of its own (a scheduled task, a bot that only
+   runs now and then) gets an address as a role: when the user says a session
+   answers for it, `dispatch_register` with `role: true`, the role's name and a
+   line on what it is (without MCP, `dispatch contacts add "<name>" --role
+   --about "<line>"`). The session keeps its own name; a search for the role
+   finds that session (the role is under `roles`) and a message to the role
+   goes to it.
+9. When `dispatch_find` finds nothing it lists the sessions most recently
+   active under `recent`. They are not matches: try other words or ask the
+   user, never send to one for looking closest. Among candidates, read `about`
+   and `active`: a thread last active months ago has probably lost its context.
 
 ## If you are a Grok Bot
 
